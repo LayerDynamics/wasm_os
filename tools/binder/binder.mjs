@@ -6,7 +6,9 @@ import { join, dirname, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
-const KERNEL_WASM = join(ROOT, "target", "wasm32-wasip1", "release", "kernel.wasm");
+// Kernel is a pure component (wasm32-unknown-unknown): its only imports are
+// home-store/mnt-store. Building for wasip1 would link std's phantom WASI imports.
+const KERNEL_WASM = join(ROOT, "target", "wasm32-unknown-unknown", "release", "kernel.wasm");
 const OUT = join(ROOT, "packages", "abi", "generated");
 
 function transpile(outDir) {

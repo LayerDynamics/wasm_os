@@ -6,7 +6,7 @@
   "scripts": {
     "binder": "node tools/binder/binder.mjs",
     "binder:check": "node tools/binder/binder.mjs check",
-    "build:kernel": "cargo component build --release -p kernel",
+    "build:kernel": "cargo component build --release -p kernel --target wasm32-unknown-unknown",
     "build": "npm run build:kernel && npm run binder gen",
     "test:rust": "cargo test -p kernel",
     "test:host": "vitest run",

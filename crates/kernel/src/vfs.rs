@@ -11,6 +11,11 @@ pub trait Blockstore {
     fn get(&self, key: &str) -> Option<Vec<u8>>;
     fn put(&mut self, key: &str, value: Vec<u8>) -> bool;
     fn list(&self, prefix: &str) -> Vec<String>;
+    /// Part of the home-store/mnt-store WIT contract and implemented end-to-end
+    /// (host `delete`). Its kernel-side caller (control `fs-delete` / unlink) is
+    /// scheduled for M1; the M0 control surface is intentionally write/read/list,
+    /// so this is contract-complete but not yet invoked at M0.
+    #[allow(dead_code)]
     fn delete(&mut self, key: &str) -> bool;
 }
 

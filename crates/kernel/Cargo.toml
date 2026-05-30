@@ -10,6 +10,7 @@ license.workspace = true
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+wit-bindgen-rt = { version = "0.44.0", features = ["bitflags"] }
 # NOTE: do NOT add `wit-bindgen` here — `cargo-component` vendors its own and
 # injects the `bindings` module at build time. A second copy causes version friction.
 
