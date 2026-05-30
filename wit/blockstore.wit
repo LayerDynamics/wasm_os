@@ -1,0 +1,17 @@
+package wasmos:abi@0.1.0;
+
+/// /home — host backs this with OPFS (IndexedDB fallback). Flat key->bytes.
+interface home-store {
+  get: func(key: string) -> option<list<u8>>;
+  put: func(key: string, value: list<u8>) -> bool;
+  list-keys: func(prefix: string) -> list<string>;
+  delete: func(key: string) -> bool;
+}
+
+/// /mnt — host backs this with IndexedDB. Identical shape to home-store.
+interface mnt-store {
+  get: func(key: string) -> option<list<u8>>;
+  put: func(key: string, value: list<u8>) -> bool;
+  list-keys: func(prefix: string) -> list<string>;
+  delete: func(key: string) -> bool;
+}

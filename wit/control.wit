@@ -1,0 +1,43 @@
+package wasmos:abi@0.1.0;
+
+interface control {
+  /// Backends a path can be mounted on.
+  enum backend { tmpfs, opfs, idb }
+
+  record proc-info {
+    pid: u32,
+    name: string,
+    state: string,
+  }
+
+  record feature-report {
+    shared-array-buffer: bool,
+    cross-origin-isolated: bool,
+    opfs: bool,
+    jspi: bool,
+    tier: string,           // "A" (SAB) | "B" (cooperative)
+  }
+
+  record boot-status {
+    ready: bool,
+    boot-millis: u32,
+    features: feature-report,
+  }
+
+  variant fs-error { not-found, io-failure(string), bad-path(string) }
+
+  /// Bring the kernel to ready; idempotent. Host passes the detected features.
+  boot: func(features: feature-report) -> boot-status;
+
+  /// Mount a backend at a path prefix. The host must already have bound the
+  /// matching blockstore import for opfs/idb backends.
+  mount: func(path: string, on: backend) -> result<_, fs-error>;
+
+  // --- VFS operations (exercised by the M0 integration + E2E tests) ---
+  fs-write: func(path: string, bytes: list<u8>) -> result<_, fs-error>;
+  fs-read:  func(path: string) -> result<list<u8>, fs-error>;
+  fs-list:  func(path: string) -> result<list<string>, fs-error>;
+
+  /// Process table view (empty at M0; proves the table exists).
+  list-procs: func() -> list<proc-info>;
+}
