@@ -1,0 +1,21 @@
+[package]
+name = "kernel"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[lib]
+# rlib is REQUIRED so `cargo test` builds a host test harness for types/vfs.
+# cdylib is what `cargo component build` turns into the WASM component.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# NOTE: do NOT add `wit-bindgen` here — `cargo-component` vendors its own and
+# injects the `bindings` module at build time. A second copy causes version friction.
+
+[package.metadata.component]
+package = "wasmos:abi"
+
+[package.metadata.component.target]
+path = "../../wit"
+world = "kernel"
