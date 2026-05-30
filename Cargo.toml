@@ -1,0 +1,13 @@
+[workspace]
+resolver = "2"
+members = ["crates/kernel"]
+
+[workspace.package]
+edition = "2021"
+version = "0.0.0"
+license = "MIT"
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true

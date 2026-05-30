@@ -1,0 +1,6 @@
+{
+  "name": "@wasmos/binder",
+  "version": "0.0.0",
+  "type": "module",
+  "bin": { "binder": "./binder.mjs" }
+}

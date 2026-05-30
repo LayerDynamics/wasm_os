@@ -12,7 +12,7 @@ wasm-opt version 129
 wat2wasm 1.0.41
 node v24.8.0
 npm 11.6.0
-jco — recorded in Task 3 after `npm install` (workspace devDependency)
+jco 1.20.0 (@bytecodealliance/jco, workspace devDependency)
 ```
 
 Rust targets installed: `wasm32-wasip1`, `wasm32-unknown-unknown` (pinned in `rust-toolchain.toml`).
