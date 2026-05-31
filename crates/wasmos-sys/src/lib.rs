@@ -206,6 +206,20 @@ pub const EV_POINTER_UP: u8 = 3;
 pub const EV_KEY_DOWN: u8 = 4;
 pub const EV_KEY_UP: u8 = 5;
 
+/// Named-key codes in the `InputEvent::key` field. A printable key carries its
+/// actual character code (`key < 0x100`); these are the non-printable keys.
+pub const KEY_ENTER: u32 = 0x100;
+pub const KEY_BACKSPACE: u32 = 0x101;
+pub const KEY_LEFT: u32 = 0x102;
+pub const KEY_RIGHT: u32 = 0x103;
+pub const KEY_UP: u32 = 0x104;
+pub const KEY_DOWN: u32 = 0x105;
+pub const KEY_TAB: u32 = 0x106;
+pub const KEY_ESCAPE: u32 = 0x107;
+pub const KEY_DELETE: u32 = 0x108;
+pub const KEY_HOME: u32 = 0x109;
+pub const KEY_END: u32 = 0x10a;
+
 /// A decoded keyboard/mouse event delivered to a process's focused window.
 #[derive(Clone, Copy, Debug)]
 pub struct InputEvent {

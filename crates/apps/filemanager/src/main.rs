@@ -9,7 +9,7 @@
 use wasmgfx::{rgb, Color, Framebuffer, GLYPH_H, GLYPH_W};
 use wasmos_sys::{
     spawn, win_present, win_read_input, win_surface, Stdio, EV_KEY_DOWN, EV_POINTER_DOWN,
-    EV_POINTER_MOVE,
+    EV_POINTER_MOVE, KEY_BACKSPACE, KEY_DOWN, KEY_ENTER, KEY_UP,
 };
 
 const W: u32 = 460;
@@ -164,11 +164,10 @@ fn main() {
                     }
                 }
                 EV_KEY_DOWN => match ev.key {
-                    40 if st.selected + 1 < st.rows() => st.selected += 1, // ArrowDown
-                    38 => st.selected = st.selected.saturating_sub(1),     // ArrowUp
-                    13 => st.activate(st.selected),                        // Enter
-                    8 if st.cwd != "/" => {
-                        // Backspace → up a directory
+                    KEY_DOWN if st.selected + 1 < st.rows() => st.selected += 1,
+                    KEY_UP => st.selected = st.selected.saturating_sub(1),
+                    KEY_ENTER => st.activate(st.selected),
+                    KEY_BACKSPACE if st.cwd != "/" => {
                         st.cwd = parent_of(&st.cwd);
                         st.relist();
                     }

@@ -16,6 +16,25 @@ export const EV_KEY_DOWN = 4;
 export const EV_KEY_UP = 5;
 const INPUT_EVENT_SIZE = 12;
 
+/**
+ * Key encoding for the `key` field: a printable key carries its actual character
+ * code (browser-resolved layout + shift, e.g. 'A'=65, '!'=33); named keys carry a
+ * code at or above 0x100. Guests share these via `wasmos_sys::KEY_*`.
+ */
+const NAMED_KEYS: Record<string, number> = {
+  Enter: 0x100,
+  Backspace: 0x101,
+  ArrowLeft: 0x102,
+  ArrowRight: 0x103,
+  ArrowUp: 0x104,
+  ArrowDown: 0x105,
+  Tab: 0x106,
+  Escape: 0x107,
+  Delete: 0x108,
+  Home: 0x109,
+  End: 0x10a,
+};
+
 function encode(kind: number, x: number, y: number, button: number, key: number, mods: number): Uint8Array {
   const b = new Uint8Array(INPUT_EVENT_SIZE);
   const dv = new DataView(b.buffer);
@@ -45,7 +64,16 @@ export class InputRouter {
   private onKey(kind: number, e: KeyboardEvent): void {
     const pid = this.activeCanvasOwner();
     if (pid === undefined) return; // focus is on a DOM window (e.g. the terminal)
-    this.deliver(pid, encode(kind, 0, 0, 0, e.keyCode, modBits(e)));
+    let key: number;
+    if (e.key.length === 1) {
+      key = e.key.charCodeAt(0); // the actual character (layout + shift applied)
+    } else {
+      key = NAMED_KEYS[e.key] ?? 0;
+      if (key === 0) return; // ignore pure modifiers (Shift/Control/…) and unmapped keys
+    }
+    // A focused canvas window consuming the key shouldn't also scroll/navigate the page.
+    if (e.key.length === 1 || key >= 0x100) e.preventDefault();
+    this.deliver(pid, encode(kind, 0, 0, 0, key, modBits(e)));
   }
 
   /** Route pointer events on `canvas` to `ownerPid` (surface-local coordinates). */

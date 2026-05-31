@@ -95,6 +95,12 @@ export class Compositor {
     }
     this.activeId = id;
     win.setActive(true);
+    // DOM-focus coordination: a focused CANVAS window receives keyboard through
+    // the input broker (window-level listener), so the terminal's xterm must not
+    // also capture keystrokes — blur it. A DOM window keeps its content focusable.
+    if (win.surface === "canvas") {
+      (document.activeElement as HTMLElement | null)?.blur?.();
+    }
     this.taskbar.render(this.windowList());
   }
 
