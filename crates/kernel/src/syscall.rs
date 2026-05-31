@@ -435,7 +435,8 @@ fn fd_readdir(vfs: &mut Vfs, procs: &mut ProcTable, pid: u32, r: &mut Reader) ->
     let names = child_names(vfs, &dir_path);
     // WASI dirent: d_next:u64, d_ino:u64, d_namlen:u32, d_type:u8, then name.
     let mut out: Vec<u8> = Vec::new();
-    for (i, name) in names.iter().enumerate().skip(cookie as usize) {
+    let skip_count = usize::try_from(cookie).unwrap_or(usize::MAX);
+    for (i, name) in names.iter().enumerate().skip(skip_count) {
         let mut ent = Vec::new();
         ent.extend_from_slice(&((i as u64) + 1).to_le_bytes()); // d_next
         ent.extend_from_slice(&(i as u64).to_le_bytes()); // d_ino
