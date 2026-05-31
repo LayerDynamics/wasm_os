@@ -1,8 +1,15 @@
 //! M0 kernel component. Exports `wasmos:abi/control`; imports two blockstores
 //! (`home`->OPFS, `mnt`->IndexedDB) provided by the host.
 
-mod types;
-mod vfs;
+// These modules are the kernel's public library API (the crate is built as an
+// rlib as well as the wasm cdylib component). Exposing them publicly is correct
+// design — the process table, scheduler, capability system, and VFS are the
+// kernel's surface — and it means items reached only by the wasm-gated
+// `component` or by M1 callers are not miscounted as dead on the host build.
+pub mod kcore;
+pub mod sched;
+pub mod types;
+pub mod vfs;
 
 // Everything below depends on the `bindings` module that `cargo component`
 // injects ONLY for the wasm32 target. Gate the whole component layer behind
@@ -17,8 +24,9 @@ mod bindings;
 #[cfg(target_arch = "wasm32")]
 mod component {
     use super::bindings;
-    use super::types::{Backend, ProcTable};
-    use super::vfs::{Blockstore, FsError, Vfs};
+    use super::kcore::KernelCore;
+    use super::types::Backend;
+    use super::vfs::{Blockstore, FsError};
     use std::cell::RefCell;
 
     use bindings::exports::wasmos::abi::control::{
@@ -59,18 +67,9 @@ mod component {
         }
     }
 
-    struct KernelState {
-        vfs: Vfs,
-        procs: ProcTable,
-        booted: bool,
-    }
-
     thread_local! {
-        static STATE: RefCell<KernelState> = RefCell::new(KernelState {
-            vfs: Vfs::new(Box::new(HostStore::Home), Box::new(HostStore::Mnt)),
-            procs: ProcTable::default(),
-            booted: false,
-        });
+        static KERNEL: RefCell<KernelCore> =
+            RefCell::new(KernelCore::new(Box::new(HostStore::Home), Box::new(HostStore::Mnt)));
     }
 
     fn map_backend(b: WBackend) -> Backend {
@@ -92,39 +91,30 @@ mod component {
 
     impl Guest for Component {
         fn boot(features: FeatureReport) -> BootStatus {
-            STATE.with(|s| {
-                let mut st = s.borrow_mut();
-                if !st.booted {
-                    // Standard M0 mount layout.
-                    let _ = st.vfs.mount("/home", Backend::Opfs);
-                    let _ = st.vfs.mount("/mnt", Backend::Idb);
-                    st.booted = true;
-                }
-                BootStatus { ready: true, boot_millis: 0, features }
-            })
+            KERNEL.with(|k| k.borrow_mut().boot());
+            BootStatus { ready: true, boot_millis: 0, features }
         }
 
         fn mount(path: String, on: WBackend) -> Result<(), WFsError> {
-            STATE.with(|s| s.borrow_mut().vfs.mount(&path, map_backend(on)).map_err(map_err))
+            KERNEL.with(|k| k.borrow_mut().mount(&path, map_backend(on)).map_err(map_err))
         }
 
         fn fs_write(path: String, bytes: Vec<u8>) -> Result<(), WFsError> {
-            STATE.with(|s| s.borrow_mut().vfs.write(&path, bytes).map_err(map_err))
+            KERNEL.with(|k| k.borrow_mut().write(&path, bytes).map_err(map_err))
         }
 
         fn fs_read(path: String) -> Result<Vec<u8>, WFsError> {
-            STATE.with(|s| s.borrow().vfs.read(&path).map_err(map_err))
+            KERNEL.with(|k| k.borrow().read(&path).map_err(map_err))
         }
 
         fn fs_list(path: String) -> Result<Vec<String>, WFsError> {
-            STATE.with(|s| s.borrow().vfs.list(&path).map_err(map_err))
+            KERNEL.with(|k| k.borrow().list(&path).map_err(map_err))
         }
 
         fn list_procs() -> Vec<WProcInfo> {
-            STATE.with(|s| {
-                s.borrow()
-                    .procs
-                    .list()
+            KERNEL.with(|k| {
+                k.borrow()
+                    .list_procs()
                     .into_iter()
                     .map(|p| WProcInfo { pid: p.pid, name: p.name, state: p.state })
                     .collect()

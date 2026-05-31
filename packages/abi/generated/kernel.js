@@ -3574,7 +3574,85 @@ let gen = (function* _initGenerator () {
   }
   _trampoline1.fnName = 'wasmos:abi/mnt-store@0.1.0#put';
   
-  const _trampoline2 = function(arg0, arg1, arg2) {
+  const _trampoline2 = function(arg0, arg1) {
+    var ptr0 = arg0;
+    var len0 = arg1;
+    var result0 = TEXT_DECODER_UTF8.decode(new Uint8Array(memory0.buffer, ptr0, len0));
+    _debugLog('[iface="wasmos:abi/mnt-store@0.1.0", function="delete"] [Instruction::CallInterface] (sync, @ enter)');
+    let hostProvided = true;
+    
+    let parentTask;
+    let task;
+    let subtask;
+    
+    const createTask = () => {
+      const results = createNewCurrentTask({
+        componentIdx: -1,
+        isAsync: false,
+        entryFnName: '_delete',
+        getCallbackFn: () => null,
+        callbackFnName: null,
+        errHandling: 'none',
+        callingWasmExport: false,
+      });
+      task = results[0];
+    };
+    
+    taskCreation: {
+      parentTask = getCurrentTask(
+      0,
+      _getGlobalCurrentTaskMeta(0)?.taskID,
+      )?.task;
+      
+      if (!parentTask) {
+        createTask();
+        break taskCreation;
+      }
+      
+      createTask();
+      
+      if (hostProvided) {
+        subtask = parentTask.getLatestSubtask();
+        if (!subtask) {
+          throw new Error(`Missing subtask (in parent task [${parentTask.id()}]) for host import, has the import been lowered? (ensure asyncImports are set properly)`);
+        }
+        task.setParentSubtask(subtask);
+      }
+    }
+    
+    const started = task.enterSync();
+    
+    let ret;
+    
+    try {
+      ret = _withGlobalCurrentTaskMeta({
+        componentIdx: task.componentIdx(),
+        taskID: task.id(),
+        fn: () => _delete(result0),
+      })
+      ;
+    } catch (err) {
+      
+      task.setErrored(err);
+      task.reject(err);
+      task.exit();
+      throw err;
+      
+    }
+    
+    _debugLog('[iface="wasmos:abi/mnt-store@0.1.0", function="delete"][Instruction::Return]', {
+      funcName: 'delete',
+      paramCount: 1,
+      async: false,
+      postReturn: false
+    });
+    task.resolve([ret ? 1 : 0]);
+    task.exit();
+    return ret ? 1 : 0;
+  }
+  _trampoline2.fnName = 'wasmos:abi/mnt-store@0.1.0#_delete';
+  
+  const _trampoline3 = function(arg0, arg1, arg2) {
     var ptr0 = arg0;
     var len0 = arg1;
     var result0 = TEXT_DECODER_UTF8.decode(new Uint8Array(memory0.buffer, ptr0, len0));
@@ -3664,85 +3742,7 @@ let gen = (function* _initGenerator () {
     task.resolve([ret]);
     task.exit();
   }
-  _trampoline2.fnName = 'wasmos:abi/mnt-store@0.1.0#listKeys';
-  
-  const _trampoline3 = function(arg0, arg1) {
-    var ptr0 = arg0;
-    var len0 = arg1;
-    var result0 = TEXT_DECODER_UTF8.decode(new Uint8Array(memory0.buffer, ptr0, len0));
-    _debugLog('[iface="wasmos:abi/mnt-store@0.1.0", function="delete"] [Instruction::CallInterface] (sync, @ enter)');
-    let hostProvided = true;
-    
-    let parentTask;
-    let task;
-    let subtask;
-    
-    const createTask = () => {
-      const results = createNewCurrentTask({
-        componentIdx: -1,
-        isAsync: false,
-        entryFnName: '_delete',
-        getCallbackFn: () => null,
-        callbackFnName: null,
-        errHandling: 'none',
-        callingWasmExport: false,
-      });
-      task = results[0];
-    };
-    
-    taskCreation: {
-      parentTask = getCurrentTask(
-      0,
-      _getGlobalCurrentTaskMeta(0)?.taskID,
-      )?.task;
-      
-      if (!parentTask) {
-        createTask();
-        break taskCreation;
-      }
-      
-      createTask();
-      
-      if (hostProvided) {
-        subtask = parentTask.getLatestSubtask();
-        if (!subtask) {
-          throw new Error(`Missing subtask (in parent task [${parentTask.id()}]) for host import, has the import been lowered? (ensure asyncImports are set properly)`);
-        }
-        task.setParentSubtask(subtask);
-      }
-    }
-    
-    const started = task.enterSync();
-    
-    let ret;
-    
-    try {
-      ret = _withGlobalCurrentTaskMeta({
-        componentIdx: task.componentIdx(),
-        taskID: task.id(),
-        fn: () => _delete(result0),
-      })
-      ;
-    } catch (err) {
-      
-      task.setErrored(err);
-      task.reject(err);
-      task.exit();
-      throw err;
-      
-    }
-    
-    _debugLog('[iface="wasmos:abi/mnt-store@0.1.0", function="delete"][Instruction::Return]', {
-      funcName: 'delete',
-      paramCount: 1,
-      async: false,
-      postReturn: false
-    });
-    task.resolve([ret ? 1 : 0]);
-    task.exit();
-    return ret ? 1 : 0;
-  }
-  _trampoline3.fnName = 'wasmos:abi/mnt-store@0.1.0#_delete';
+  _trampoline3.fnName = 'wasmos:abi/mnt-store@0.1.0#listKeys';
   
   const _trampoline4 = function(arg0, arg1, arg2) {
     var ptr0 = arg0;
@@ -3933,7 +3933,85 @@ let gen = (function* _initGenerator () {
   }
   _trampoline5.fnName = 'wasmos:abi/home-store@0.1.0#put$1';
   
-  const _trampoline6 = function(arg0, arg1, arg2) {
+  const _trampoline6 = function(arg0, arg1) {
+    var ptr0 = arg0;
+    var len0 = arg1;
+    var result0 = TEXT_DECODER_UTF8.decode(new Uint8Array(memory0.buffer, ptr0, len0));
+    _debugLog('[iface="wasmos:abi/home-store@0.1.0", function="delete"] [Instruction::CallInterface] (sync, @ enter)');
+    let hostProvided = true;
+    
+    let parentTask;
+    let task;
+    let subtask;
+    
+    const createTask = () => {
+      const results = createNewCurrentTask({
+        componentIdx: -1,
+        isAsync: false,
+        entryFnName: '_delete$1',
+        getCallbackFn: () => null,
+        callbackFnName: null,
+        errHandling: 'none',
+        callingWasmExport: false,
+      });
+      task = results[0];
+    };
+    
+    taskCreation: {
+      parentTask = getCurrentTask(
+      0,
+      _getGlobalCurrentTaskMeta(0)?.taskID,
+      )?.task;
+      
+      if (!parentTask) {
+        createTask();
+        break taskCreation;
+      }
+      
+      createTask();
+      
+      if (hostProvided) {
+        subtask = parentTask.getLatestSubtask();
+        if (!subtask) {
+          throw new Error(`Missing subtask (in parent task [${parentTask.id()}]) for host import, has the import been lowered? (ensure asyncImports are set properly)`);
+        }
+        task.setParentSubtask(subtask);
+      }
+    }
+    
+    const started = task.enterSync();
+    
+    let ret;
+    
+    try {
+      ret = _withGlobalCurrentTaskMeta({
+        componentIdx: task.componentIdx(),
+        taskID: task.id(),
+        fn: () => _delete$1(result0),
+      })
+      ;
+    } catch (err) {
+      
+      task.setErrored(err);
+      task.reject(err);
+      task.exit();
+      throw err;
+      
+    }
+    
+    _debugLog('[iface="wasmos:abi/home-store@0.1.0", function="delete"][Instruction::Return]', {
+      funcName: 'delete',
+      paramCount: 1,
+      async: false,
+      postReturn: false
+    });
+    task.resolve([ret ? 1 : 0]);
+    task.exit();
+    return ret ? 1 : 0;
+  }
+  _trampoline6.fnName = 'wasmos:abi/home-store@0.1.0#_delete$1';
+  
+  const _trampoline7 = function(arg0, arg1, arg2) {
     var ptr0 = arg0;
     var len0 = arg1;
     var result0 = TEXT_DECODER_UTF8.decode(new Uint8Array(memory0.buffer, ptr0, len0));
@@ -4023,85 +4101,7 @@ let gen = (function* _initGenerator () {
     task.resolve([ret]);
     task.exit();
   }
-  _trampoline6.fnName = 'wasmos:abi/home-store@0.1.0#listKeys$1';
-  
-  const _trampoline7 = function(arg0, arg1) {
-    var ptr0 = arg0;
-    var len0 = arg1;
-    var result0 = TEXT_DECODER_UTF8.decode(new Uint8Array(memory0.buffer, ptr0, len0));
-    _debugLog('[iface="wasmos:abi/home-store@0.1.0", function="delete"] [Instruction::CallInterface] (sync, @ enter)');
-    let hostProvided = true;
-    
-    let parentTask;
-    let task;
-    let subtask;
-    
-    const createTask = () => {
-      const results = createNewCurrentTask({
-        componentIdx: -1,
-        isAsync: false,
-        entryFnName: '_delete$1',
-        getCallbackFn: () => null,
-        callbackFnName: null,
-        errHandling: 'none',
-        callingWasmExport: false,
-      });
-      task = results[0];
-    };
-    
-    taskCreation: {
-      parentTask = getCurrentTask(
-      0,
-      _getGlobalCurrentTaskMeta(0)?.taskID,
-      )?.task;
-      
-      if (!parentTask) {
-        createTask();
-        break taskCreation;
-      }
-      
-      createTask();
-      
-      if (hostProvided) {
-        subtask = parentTask.getLatestSubtask();
-        if (!subtask) {
-          throw new Error(`Missing subtask (in parent task [${parentTask.id()}]) for host import, has the import been lowered? (ensure asyncImports are set properly)`);
-        }
-        task.setParentSubtask(subtask);
-      }
-    }
-    
-    const started = task.enterSync();
-    
-    let ret;
-    
-    try {
-      ret = _withGlobalCurrentTaskMeta({
-        componentIdx: task.componentIdx(),
-        taskID: task.id(),
-        fn: () => _delete$1(result0),
-      })
-      ;
-    } catch (err) {
-      
-      task.setErrored(err);
-      task.reject(err);
-      task.exit();
-      throw err;
-      
-    }
-    
-    _debugLog('[iface="wasmos:abi/home-store@0.1.0", function="delete"][Instruction::Return]', {
-      funcName: 'delete',
-      paramCount: 1,
-      async: false,
-      postReturn: false
-    });
-    task.resolve([ret ? 1 : 0]);
-    task.exit();
-    return ret ? 1 : 0;
-  }
-  _trampoline7.fnName = 'wasmos:abi/home-store@0.1.0#_delete$1';
+  _trampoline7.fnName = 'wasmos:abi/home-store@0.1.0#listKeys$1';
   let exports2;
   let postReturn0;
   let postReturn0Async;
@@ -4976,12 +4976,8 @@ let gen = (function* _initGenerator () {
     isAsync: false,
     isManualAsync: _trampoline2.manuallyAsync,
     paramLiftFns: [_liftFlatStringAny],
-    resultLowerFns: [_lowerFlatList({
-      elemLowerFn: _lowerFlatStringAny,
-      elemSize32: 8,
-      elemAlign32: 4,
-    })],
-    hasResultPointer: true,
+    resultLowerFns: [_lowerFlatBool],
+    hasResultPointer: false,
     funcTypeIsAsync: false,
     getCallbackFn: () => null,
     getPostReturnFn: () => null,
@@ -4989,7 +4985,7 @@ let gen = (function* _initGenerator () {
     memoryIdx: 0,
     stringEncoding: 'utf8',
     getMemoryFn: () => memory0,
-    getReallocFn: () => realloc0,
+    getReallocFn: undefined,
     importFn: _trampoline2,
   },
   )) : _lowerImportBackwardsCompat.bind(
@@ -5000,12 +4996,8 @@ let gen = (function* _initGenerator () {
     isAsync: false,
     isManualAsync: _trampoline2.manuallyAsync,
     paramLiftFns: [_liftFlatStringAny],
-    resultLowerFns: [_lowerFlatList({
-      elemLowerFn: _lowerFlatStringAny,
-      elemSize32: 8,
-      elemAlign32: 4,
-    })],
-    hasResultPointer: true,
+    resultLowerFns: [_lowerFlatBool],
+    hasResultPointer: false,
     funcTypeIsAsync: false,
     getCallbackFn: () => null,
     getPostReturnFn: () => null,
@@ -5013,7 +5005,7 @@ let gen = (function* _initGenerator () {
     memoryIdx: 0,
     stringEncoding: 'utf8',
     getMemoryFn: () => memory0,
-    getReallocFn: () => realloc0,
+    getReallocFn: undefined,
     importFn: _trampoline2,
   },
   );
@@ -5025,8 +5017,12 @@ let gen = (function* _initGenerator () {
     isAsync: false,
     isManualAsync: _trampoline3.manuallyAsync,
     paramLiftFns: [_liftFlatStringAny],
-    resultLowerFns: [_lowerFlatBool],
-    hasResultPointer: false,
+    resultLowerFns: [_lowerFlatList({
+      elemLowerFn: _lowerFlatStringAny,
+      elemSize32: 8,
+      elemAlign32: 4,
+    })],
+    hasResultPointer: true,
     funcTypeIsAsync: false,
     getCallbackFn: () => null,
     getPostReturnFn: () => null,
@@ -5034,7 +5030,7 @@ let gen = (function* _initGenerator () {
     memoryIdx: 0,
     stringEncoding: 'utf8',
     getMemoryFn: () => memory0,
-    getReallocFn: undefined,
+    getReallocFn: () => realloc0,
     importFn: _trampoline3,
   },
   )) : _lowerImportBackwardsCompat.bind(
@@ -5045,8 +5041,12 @@ let gen = (function* _initGenerator () {
     isAsync: false,
     isManualAsync: _trampoline3.manuallyAsync,
     paramLiftFns: [_liftFlatStringAny],
-    resultLowerFns: [_lowerFlatBool],
-    hasResultPointer: false,
+    resultLowerFns: [_lowerFlatList({
+      elemLowerFn: _lowerFlatStringAny,
+      elemSize32: 8,
+      elemAlign32: 4,
+    })],
+    hasResultPointer: true,
     funcTypeIsAsync: false,
     getCallbackFn: () => null,
     getPostReturnFn: () => null,
@@ -5054,7 +5054,7 @@ let gen = (function* _initGenerator () {
     memoryIdx: 0,
     stringEncoding: 'utf8',
     getMemoryFn: () => memory0,
-    getReallocFn: undefined,
+    getReallocFn: () => realloc0,
     importFn: _trampoline3,
   },
   );
@@ -5174,12 +5174,8 @@ let gen = (function* _initGenerator () {
     isAsync: false,
     isManualAsync: _trampoline6.manuallyAsync,
     paramLiftFns: [_liftFlatStringAny],
-    resultLowerFns: [_lowerFlatList({
-      elemLowerFn: _lowerFlatStringAny,
-      elemSize32: 8,
-      elemAlign32: 4,
-    })],
-    hasResultPointer: true,
+    resultLowerFns: [_lowerFlatBool],
+    hasResultPointer: false,
     funcTypeIsAsync: false,
     getCallbackFn: () => null,
     getPostReturnFn: () => null,
@@ -5187,7 +5183,7 @@ let gen = (function* _initGenerator () {
     memoryIdx: 0,
     stringEncoding: 'utf8',
     getMemoryFn: () => memory0,
-    getReallocFn: () => realloc0,
+    getReallocFn: undefined,
     importFn: _trampoline6,
   },
   )) : _lowerImportBackwardsCompat.bind(
@@ -5198,12 +5194,8 @@ let gen = (function* _initGenerator () {
     isAsync: false,
     isManualAsync: _trampoline6.manuallyAsync,
     paramLiftFns: [_liftFlatStringAny],
-    resultLowerFns: [_lowerFlatList({
-      elemLowerFn: _lowerFlatStringAny,
-      elemSize32: 8,
-      elemAlign32: 4,
-    })],
-    hasResultPointer: true,
+    resultLowerFns: [_lowerFlatBool],
+    hasResultPointer: false,
     funcTypeIsAsync: false,
     getCallbackFn: () => null,
     getPostReturnFn: () => null,
@@ -5211,7 +5203,7 @@ let gen = (function* _initGenerator () {
     memoryIdx: 0,
     stringEncoding: 'utf8',
     getMemoryFn: () => memory0,
-    getReallocFn: () => realloc0,
+    getReallocFn: undefined,
     importFn: _trampoline6,
   },
   );
@@ -5223,8 +5215,12 @@ let gen = (function* _initGenerator () {
     isAsync: false,
     isManualAsync: _trampoline7.manuallyAsync,
     paramLiftFns: [_liftFlatStringAny],
-    resultLowerFns: [_lowerFlatBool],
-    hasResultPointer: false,
+    resultLowerFns: [_lowerFlatList({
+      elemLowerFn: _lowerFlatStringAny,
+      elemSize32: 8,
+      elemAlign32: 4,
+    })],
+    hasResultPointer: true,
     funcTypeIsAsync: false,
     getCallbackFn: () => null,
     getPostReturnFn: () => null,
@@ -5232,7 +5228,7 @@ let gen = (function* _initGenerator () {
     memoryIdx: 0,
     stringEncoding: 'utf8',
     getMemoryFn: () => memory0,
-    getReallocFn: undefined,
+    getReallocFn: () => realloc0,
     importFn: _trampoline7,
   },
   )) : _lowerImportBackwardsCompat.bind(
@@ -5243,8 +5239,12 @@ let gen = (function* _initGenerator () {
     isAsync: false,
     isManualAsync: _trampoline7.manuallyAsync,
     paramLiftFns: [_liftFlatStringAny],
-    resultLowerFns: [_lowerFlatBool],
-    hasResultPointer: false,
+    resultLowerFns: [_lowerFlatList({
+      elemLowerFn: _lowerFlatStringAny,
+      elemSize32: 8,
+      elemAlign32: 4,
+    })],
+    hasResultPointer: true,
     funcTypeIsAsync: false,
     getCallbackFn: () => null,
     getPostReturnFn: () => null,
@@ -5252,7 +5252,7 @@ let gen = (function* _initGenerator () {
     memoryIdx: 0,
     stringEncoding: 'utf8',
     getMemoryFn: () => memory0,
-    getReallocFn: undefined,
+    getReallocFn: () => realloc0,
     importFn: _trampoline7,
   },
   );
@@ -5260,15 +5260,15 @@ let gen = (function* _initGenerator () {
   ({ exports: exports0 } = yield instantiateCore(yield module1));
   ({ exports: exports1 } = yield instantiateCore(yield module0, {
     'wasmos:abi/home-store@0.1.0': {
-      'delete': exports0['7'],
+      'delete': exports0['6'],
       get: exports0['4'],
-      'list-keys': exports0['6'],
+      'list-keys': exports0['7'],
       put: exports0['5'],
     },
     'wasmos:abi/mnt-store@0.1.0': {
-      'delete': exports0['3'],
+      'delete': exports0['2'],
       get: exports0['0'],
-      'list-keys': exports0['2'],
+      'list-keys': exports0['3'],
       put: exports0['1'],
     },
   }));

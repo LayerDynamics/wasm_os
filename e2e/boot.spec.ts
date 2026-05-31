@@ -35,6 +35,14 @@ test("boots to ready under 1.5s and reports a tier", async ({ page }) => {
   expect(result.features.crossOriginIsolated).toBe(true);
   expect(result.features.tier).toBe("A");
   await expect(page.locator("#status")).toContainText("ready in");
+
+  // FR-2/FR-3 live through the real WASM boundary: boot registers the `init`
+  // process and the scheduler runs it. listProcs() must reflect that.
+  const procs = await page.evaluate(() =>
+    (window as unknown as { __wasmos: { control: { listProcs(): { pid: number; name: string; state: string }[] } } })
+      .__wasmos.control.listProcs(),
+  );
+  expect(procs).toEqual([{ pid: 1, name: "init", state: "running" }]);
 });
 
 test("writes to /home (OPFS) and /mnt (IndexedDB) survive a reload", async ({ page }) => {
