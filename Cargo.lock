@@ -46,6 +46,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "wasmgfx"
+version = "0.0.0"
+
+[[package]]
 name = "wasmos-sys"
 version = "0.0.0"
 

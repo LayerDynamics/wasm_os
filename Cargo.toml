@@ -6,6 +6,7 @@ members = [
     "crates/crash",
     "crates/catfile",
     "crates/wasmos-sys",
+    "crates/wasmgfx",
     "crates/sh",
     "crates/coreutils",
     "crates/gfxspike",
