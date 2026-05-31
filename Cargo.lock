@@ -13,6 +13,10 @@ name = "catfile"
 version = "0.0.0"
 
 [[package]]
+name = "coreutils"
+version = "0.0.0"
+
+[[package]]
 name = "crash"
 version = "0.0.0"
 
@@ -26,6 +30,17 @@ version = "0.0.0"
 dependencies = [
  "wit-bindgen-rt",
 ]
+
+[[package]]
+name = "sh"
+version = "0.0.0"
+dependencies = [
+ "wasmos-sys",
+]
+
+[[package]]
+name = "wasmos-sys"
+version = "0.0.0"
 
 [[package]]
 name = "wit-bindgen-rt"

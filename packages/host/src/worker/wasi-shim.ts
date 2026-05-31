@@ -162,6 +162,69 @@ export function makeWasiImports(getMemory: () => WebAssembly.Memory, ring: RingC
       return errno;
     },
 
+    path_filestat_get(
+      dirfd: number,
+      _flags: number,
+      pathPtr: number,
+      pathLen: number,
+      bufPtr: number,
+    ): number {
+      const path = td.decode(u8().subarray(pathPtr, pathPtr + pathLen));
+      const resp = new Reader(
+        ring.call(new Writer().u8(OP.PATH_FILESTAT_GET).u32(dirfd).bytes(te.encode(path)).build()),
+      );
+      const errno = resp.u16();
+      const filetype = resp.u8();
+      const size = resp.u64();
+      if (errno === ERRNO.SUCCESS) {
+        const view = dv();
+        for (let i = 0; i < 64; i++) view.setUint8(bufPtr + i, 0); // filestat is 64 bytes
+        view.setUint8(bufPtr + 16, filetype); // fs_filetype
+        view.setBigUint64(bufPtr + 24, 1n, true); // fs_nlink
+        view.setBigUint64(bufPtr + 32, size, true); // fs_size
+      }
+      return errno;
+    },
+
+    path_create_directory(dirfd: number, pathPtr: number, pathLen: number): number {
+      const path = td.decode(u8().subarray(pathPtr, pathPtr + pathLen));
+      const req = new Writer().u8(OP.PATH_CREATE_DIRECTORY).u32(dirfd).bytes(te.encode(path)).build();
+      return new Reader(ring.call(req)).u16();
+    },
+
+    path_unlink_file(dirfd: number, pathPtr: number, pathLen: number): number {
+      const path = td.decode(u8().subarray(pathPtr, pathPtr + pathLen));
+      const req = new Writer().u8(OP.PATH_UNLINK_FILE).u32(dirfd).bytes(te.encode(path)).build();
+      return new Reader(ring.call(req)).u16();
+    },
+
+    path_remove_directory(dirfd: number, pathPtr: number, pathLen: number): number {
+      const path = td.decode(u8().subarray(pathPtr, pathPtr + pathLen));
+      const req = new Writer().u8(OP.PATH_REMOVE_DIRECTORY).u32(dirfd).bytes(te.encode(path)).build();
+      return new Reader(ring.call(req)).u16();
+    },
+
+    path_rename(
+      oldDirfd: number,
+      oldPtr: number,
+      oldLen: number,
+      newDirfd: number,
+      newPtr: number,
+      newLen: number,
+    ): number {
+      const mem = u8();
+      const oldPath = td.decode(mem.subarray(oldPtr, oldPtr + oldLen));
+      const newPath = td.decode(mem.subarray(newPtr, newPtr + newLen));
+      const req = new Writer()
+        .u8(OP.PATH_RENAME)
+        .u32(oldDirfd)
+        .bytes(te.encode(oldPath))
+        .u32(newDirfd)
+        .bytes(te.encode(newPath))
+        .build();
+      return new Reader(ring.call(req)).u16();
+    },
+
     fd_readdir(fd: number, buf: number, bufLen: number, cookie: bigint, bufusedPtr: number): number {
       const resp = new Reader(
         ring.call(new Writer().u8(OP.FD_READDIR).u32(fd).u64(cookie).u32(bufLen).build()),
@@ -201,9 +264,24 @@ export function makeWasiImports(getMemory: () => WebAssembly.Memory, ring: RingC
       return errno;
     },
 
-    args_get(_argvPtr: number, _bufPtr: number): number {
-      // M1 guests have no argv; nothing to lay out.
-      return new Reader(ring.call(new Writer().u8(OP.ARGS_GET).build())).u16();
+    args_get(argvPtr: number, bufPtr: number): number {
+      // The kernel returns argv as a NUL-terminated, NUL-joined blob; lay out the
+      // bytes at `bufPtr` and a pointer to each arg at `argvPtr[i]` (M2).
+      const resp = new Reader(ring.call(new Writer().u8(OP.ARGS_GET).build()));
+      const errno = resp.u16();
+      const blob = resp.bytes();
+      u8().set(blob, bufPtr);
+      const view = dv();
+      let ai = 0;
+      let start = 0;
+      for (let i = 0; i < blob.length; i++) {
+        if (blob[i] === 0) {
+          view.setUint32(argvPtr + ai * 4, bufPtr + start, true);
+          ai += 1;
+          start = i + 1;
+        }
+      }
+      return errno;
     },
 
     random_get(buf: number, bufLen: number): number {
@@ -259,4 +337,24 @@ export function makeWasiImports(getMemory: () => WebAssembly.Memory, ring: RingC
       return (..._args: never[]): number => ERRNO.NOSYS;
     },
   }) as Wasi;
+}
+
+/**
+ * Build the `wasmos_kernel` import object — the process-control extension used
+ * by the shell (spawn/pipe/wait). It is a single passthrough: the guest builds
+ * a request (KSPAWN/KPIPE/KWAIT + fields), `syscall` forwards it through the
+ * SAME ring (the kernel router dispatches by opcode), and the response bytes are
+ * written back into a guest-provided buffer. Returns the response length.
+ */
+export function makeKernelImports(getMemory: () => WebAssembly.Memory, ring: RingClient): Wasi {
+  return {
+    syscall(reqPtr: number, reqLen: number, respPtr: number, respCap: number): number {
+      const mem = new Uint8Array(getMemory().buffer);
+      const req = mem.slice(reqPtr, reqPtr + reqLen);
+      const resp = ring.call(req);
+      const n = Math.min(resp.length, respCap);
+      new Uint8Array(getMemory().buffer).set(resp.subarray(0, n), respPtr);
+      return resp.length; // actual length (so the guest can detect truncation)
+    },
+  };
 }

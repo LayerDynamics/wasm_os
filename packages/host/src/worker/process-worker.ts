@@ -12,7 +12,7 @@
  * way the worker posts its exit and terminates.
  */
 import { RingClient } from "../ring/guest.js";
-import { makeWasiImports, ProcExit } from "./wasi-shim.js";
+import { makeWasiImports, makeKernelImports, ProcExit } from "./wasi-shim.js";
 
 interface SpawnMessage {
   wasmBytes: ArrayBuffer;
@@ -39,11 +39,16 @@ ctx.onmessage = async (ev: MessageEvent) => {
   const { wasmBytes, pid, ringSab } = ev.data as SpawnMessage;
   const ring = new RingClient(ringSab);
   let instance: WebAssembly.Instance | undefined;
-  const wasi = makeWasiImports(() => instance!.exports.memory as WebAssembly.Memory, ring);
+  const getMemory = () => instance!.exports.memory as WebAssembly.Memory;
+  const wasi = makeWasiImports(getMemory, ring);
+  const wasmosKernel = makeKernelImports(getMemory, ring);
   let sharedMemory = false;
 
   try {
-    const result = await WebAssembly.instantiate(wasmBytes, { wasi_snapshot_preview1: wasi });
+    const result = await WebAssembly.instantiate(wasmBytes, {
+      wasi_snapshot_preview1: wasi,
+      wasmos_kernel: wasmosKernel,
+    });
     instance = result.instance;
     const mem = instance.exports.memory as WebAssembly.Memory;
     sharedMemory = mem.buffer instanceof SharedArrayBuffer;

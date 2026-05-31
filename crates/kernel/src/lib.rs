@@ -7,6 +7,7 @@
 // kernel's surface — and it means items reached only by the wasm-gated
 // `component` or by M1 callers are not miscounted as dead on the host build.
 pub mod kcore;
+pub mod pipe;
 pub mod sched;
 pub mod syscall;
 pub mod types;
@@ -32,7 +33,8 @@ mod component {
 
     use bindings::exports::wasmos::abi::control::{
         Backend as WBackend, BootStatus, FeatureReport, FsError as WFsError, Guest,
-        ProcInfo as WProcInfo, SpawnSpec,
+        ProcInfo as WProcInfo, SpawnRequest as WSpawnRequest, SpawnSpec,
+        SyscallOutcome as WSyscallOutcome,
     };
     use bindings::wasmos::abi::{home_store, mnt_store};
 
@@ -85,6 +87,11 @@ mod component {
             FsError::NotFound => WFsError::NotFound,
             FsError::IoFailure(s) => WFsError::IoFailure(s),
             FsError::BadPath(s) => WFsError::BadPath(s),
+            // The control fs-error variant is coarse (M0/M1); map the M2
+            // directory errors onto io-failure with a descriptive message.
+            FsError::IsDir => WFsError::IoFailure("is a directory".into()),
+            FsError::NotEmpty => WFsError::IoFailure("directory not empty".into()),
+            FsError::Exists => WFsError::IoFailure("already exists".into()),
         }
     }
 
@@ -138,8 +145,22 @@ mod component {
             KERNEL.with(|k| k.borrow_mut().spawn(&spec.name, grant_fs, spec.grant_spawn))
         }
 
-        fn service_syscall(pid: u32, request: Vec<u8>) -> Vec<u8> {
-            KERNEL.with(|k| k.borrow_mut().service_syscall(pid, &request))
+        fn service_syscall(pid: u32, request: Vec<u8>) -> WSyscallOutcome {
+            let out = KERNEL.with(|k| k.borrow_mut().service_syscall(pid, &request));
+            WSyscallOutcome {
+                reply: out.reply,
+                wakeups: out.wakeups,
+                term_output: out.term_output,
+                spawn: out.spawn.map(|s| WSpawnRequest { pid: s.pid, image_path: s.image_path }),
+            }
+        }
+
+        fn deliver_stdin(pid: u32, bytes: Vec<u8>) -> Vec<u32> {
+            KERNEL.with(|k| k.borrow_mut().deliver_stdin(pid, &bytes))
+        }
+
+        fn bind_terminal(pid: u32) {
+            KERNEL.with(|k| k.borrow_mut().bind_terminal(pid));
         }
 
         fn exit_code(pid: u32) -> Option<i32> {

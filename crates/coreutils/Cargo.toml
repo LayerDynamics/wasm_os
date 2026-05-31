@@ -1,0 +1,61 @@
+[package]
+name = "coreutils"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+# WASI coreutils (FR-18) — one wasm32-wasip1 binary per utility, plain WASI on
+# the M1 syscall surface + the hierarchical VFS (no wasmos_kernel needed). The
+# spine (echo/ls/cat/grep/wc) lands first; the rest fan out in M2-T9.
+
+[[bin]]
+name = "echo"
+path = "src/bin/echo.rs"
+
+[[bin]]
+name = "cat"
+path = "src/bin/cat.rs"
+
+[[bin]]
+name = "grep"
+path = "src/bin/grep.rs"
+
+[[bin]]
+name = "ls"
+path = "src/bin/ls.rs"
+
+[[bin]]
+name = "wc"
+path = "src/bin/wc.rs"
+
+[[bin]]
+name = "cp"
+path = "src/bin/cp.rs"
+
+[[bin]]
+name = "mv"
+path = "src/bin/mv.rs"
+
+[[bin]]
+name = "rm"
+path = "src/bin/rm.rs"
+
+[[bin]]
+name = "mkdir"
+path = "src/bin/mkdir.rs"
+
+[[bin]]
+name = "pwd"
+path = "src/bin/pwd.rs"
+
+[[bin]]
+name = "head"
+path = "src/bin/head.rs"
+
+[[bin]]
+name = "tail"
+path = "src/bin/tail.rs"
+
+[[bin]]
+name = "env"
+path = "src/bin/env.rs"

@@ -4,7 +4,7 @@
 //! registers its own `init` process through them at boot, and M1 attaches real
 //! WASM instances that drive the fd table through the WASI syscall router.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 
 // ---------------------------------------------------------------------------
 // Backends
@@ -121,6 +121,9 @@ pub enum DescKind {
     Stderr,                 // captured into Process::stderr
     Dir { path: String },   // a directory (the preopen "/" or an opened dir)
     File { path: String },  // a regular file backed by the VFS
+    PipeRead { id: u32 },   // the read end of a kernel pipe (M2)
+    PipeWrite { id: u32 },  // the write end of a kernel pipe (M2)
+    Terminal,               // a write end bound to the interactive terminal (M2)
 }
 
 /// An open file descriptor: what it points at, the read/write cursor, and the
@@ -160,6 +163,21 @@ impl ProcState {
     }
 }
 
+/// Why a process is parked on a blocking syscall (M2 park/resume). A parked
+/// process stays blocked in `Atomics.wait` while the kworker services others;
+/// the matching event returns it in a wakeup list so its syscall is re-driven.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum WaitReason {
+    /// Blocked reading its own stdin with no buffered data (terminal input).
+    Stdin,
+    /// Blocked reading an empty pipe (id) whose write end is still open.
+    PipeRead(u32),
+    /// Blocked writing a full pipe (id) whose read end is still open.
+    PipeWrite(u32),
+    /// Blocked in `wait()` on a child process (pid) that has not yet exited.
+    Wait(u32),
+}
+
 /// A process table entry. `caps` is the owning capability set (FR-2); `fds` is
 /// the per-process descriptor table (FR-4) — isolated from every other process.
 #[derive(Clone, Debug)]
@@ -174,6 +192,15 @@ pub struct Process {
     pub stdout: Vec<u8>,
     pub stderr: Vec<u8>,
     pub exit_code: Option<i32>,
+    /// Buffered stdin bytes not yet consumed by a `fd_read` (M2).
+    pub stdin: VecDeque<u8>,
+    /// True once stdin is closed (reads then return EOF instead of parking).
+    pub stdin_eof: bool,
+    /// Set while the process is parked on a blocking syscall (M2 park/resume).
+    pub blocked_on: Option<WaitReason>,
+    /// Command-line arguments (argv) surfaced via `args_get` (M2). argv[0] is
+    /// the program name.
+    pub argv: Vec<String>,
 }
 
 /// Build the standard descriptor table for a fresh process: stdin/stdout/stderr
@@ -238,6 +265,10 @@ impl ProcTable {
             stdout: Vec::new(),
             stderr: Vec::new(),
             exit_code: None,
+            stdin: VecDeque::new(),
+            stdin_eof: false,
+            blocked_on: None,
+            argv: vec![name.to_string()],
         });
         pid
     }
@@ -260,6 +291,20 @@ impl ProcTable {
         p.next_fd += 1;
         p.fds.insert(fd, desc);
         Some(fd)
+    }
+
+    /// Install a descriptor at a specific fd number (used to configure a child's
+    /// stdio 0/1/2 at spawn). Replaces any existing descriptor at that fd.
+    pub fn set_fd(&mut self, pid: u32, fd: u32, desc: Descriptor) -> bool {
+        self.get_mut(pid).map(|p| { p.fds.insert(fd, desc); }).is_some()
+    }
+
+    pub fn set_argv(&mut self, pid: u32, argv: Vec<String>) -> bool {
+        self.get_mut(pid).map(|p| p.argv = argv).is_some()
+    }
+
+    pub fn argv(&self, pid: u32) -> Vec<String> {
+        self.get(pid).map(|p| p.argv.clone()).unwrap_or_default()
     }
 
     pub fn fd(&self, pid: u32, fd: u32) -> Option<&Descriptor> {
@@ -300,6 +345,81 @@ impl ProcTable {
 
     pub fn exit_code(&self, pid: u32) -> Option<i32> {
         self.get(pid).and_then(|p| p.exit_code)
+    }
+
+    // --- Stdin buffer + park/resume state (M2) ---
+
+    /// Append input bytes to a process's stdin buffer (terminal keystrokes).
+    pub fn push_stdin(&mut self, pid: u32, bytes: &[u8]) -> bool {
+        self.get_mut(pid).map(|p| p.stdin.extend(bytes.iter().copied())).is_some()
+    }
+
+    /// Mark a process's stdin as closed (subsequent empty reads return EOF).
+    pub fn close_stdin(&mut self, pid: u32) -> bool {
+        self.get_mut(pid).map(|p| p.stdin_eof = true).is_some()
+    }
+
+    /// Drain up to `max` bytes from the front of a process's stdin buffer.
+    pub fn read_stdin(&mut self, pid: u32, max: usize) -> Vec<u8> {
+        match self.get_mut(pid) {
+            Some(p) => {
+                let n = max.min(p.stdin.len());
+                p.stdin.drain(..n).collect()
+            }
+            None => Vec::new(),
+        }
+    }
+
+    pub fn stdin_len(&self, pid: u32) -> usize {
+        self.get(pid).map(|p| p.stdin.len()).unwrap_or(0)
+    }
+
+    pub fn stdin_is_eof(&self, pid: u32) -> bool {
+        self.get(pid).map(|p| p.stdin_eof).unwrap_or(true)
+    }
+
+    /// Park a process on a blocking syscall (records why; sets state `Blocked`).
+    pub fn set_blocked(&mut self, pid: u32, reason: WaitReason) -> bool {
+        if let Some(p) = self.get_mut(pid) {
+            p.blocked_on = Some(reason);
+            p.state = ProcState::Blocked;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Clear a process's parked state (it is runnable again).
+    pub fn clear_blocked(&mut self, pid: u32) -> bool {
+        if let Some(p) = self.get_mut(pid) {
+            p.blocked_on = None;
+            if p.state == ProcState::Blocked {
+                p.state = ProcState::Running;
+            }
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn blocked_on(&self, pid: u32) -> Option<WaitReason> {
+        self.get(pid).and_then(|p| p.blocked_on.clone())
+    }
+
+    /// Find every process parked on `reason`, clear their parked state, and
+    /// return their pids (the wakeup list for an event, M2 park/resume).
+    pub fn take_blocked_on(&mut self, reason: &WaitReason) -> Vec<u32> {
+        let mut woken = Vec::new();
+        for p in self.procs.iter_mut() {
+            if p.blocked_on.as_ref() == Some(reason) {
+                p.blocked_on = None;
+                if p.state == ProcState::Blocked {
+                    p.state = ProcState::Running;
+                }
+                woken.push(p.pid);
+            }
+        }
+        woken
     }
 
     pub fn set_state(&mut self, pid: u32, state: ProcState) -> bool {

@@ -19,6 +19,11 @@ command -v wasm-opt >/dev/null 2>&1 || brew install binaryen
 echo "== wabt (wat2wasm, for hand-written WAT later) =="
 command -v wat2wasm >/dev/null 2>&1 || brew install wabt
 
+echo "== zig (FR-14 polyglot guest: wasm32-wasi coreutil) =="
+# Single self-contained toolchain. `build:guests:zig` builds guests/zig/echo.zig.
+command -v zig >/dev/null 2>&1 || brew install zig
+zig version
+
 echo "== node deps (jco, vitest, playwright via package.json) =="
 npm install
 

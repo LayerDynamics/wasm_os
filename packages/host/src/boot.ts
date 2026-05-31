@@ -40,6 +40,12 @@ export interface AsyncKernelControl {
   spawn(wasmBytes: ArrayBuffer, opts?: SpawnOptions): Promise<number>;
   /** Resolve when the process exits, with its exit code + isolation proof. */
   wait(pid: number): Promise<ProcExit>;
+  /** Deliver input bytes to a process's stdin (terminal keystrokes, M2). */
+  stdin(pid: number, bytes: Uint8Array): Promise<void>;
+  /** Bind a process's stdout/stderr to the terminal (writes stream to xterm). */
+  bindTerminal(pid: number): Promise<void>;
+  /** Register a listener for streamed terminal output (stdout/stderr → xterm). */
+  onOutput(cb: (pid: number, bytes: Uint8Array) => void): void;
   /** Await durability of all OPFS/IndexedDB writes (used before reload). */
   flush(): Promise<void>;
 }
@@ -65,22 +71,33 @@ export async function boot(): Promise<BootResult> {
   let nextId = 1;
   const pending = new Map<number, Pending>();
 
+  const outputListeners: Array<(pid: number, bytes: Uint8Array) => void> = [];
+
   worker.onmessage = (e: MessageEvent) => {
-    const { id, ok, result, error, tag } = e.data as {
-      id: number;
-      ok: boolean;
+    const data = e.data as {
+      type?: string;
+      pid?: number;
+      bytes?: Uint8Array;
+      id?: number;
+      ok?: boolean;
       result?: unknown;
       error?: string;
       tag?: string;
     };
-    const p = pending.get(id);
+    // Streaming (non-RPC) messages: terminal output as processes write it.
+    if (data.type === "output") {
+      for (const cb of outputListeners) cb(data.pid ?? 0, data.bytes ?? new Uint8Array());
+      return;
+    }
+    if (typeof data.id !== "number") return; // unknown message
+    const p = pending.get(data.id);
     if (!p) return;
-    pending.delete(id);
-    if (ok) {
-      p.resolve(result);
+    pending.delete(data.id);
+    if (data.ok) {
+      p.resolve(data.result);
     } else {
-      const err = new Error(error ?? "kworker error") as Error & { tag?: string };
-      if (tag) err.tag = tag;
+      const err = new Error(data.error ?? "kworker error") as Error & { tag?: string };
+      if (data.tag) err.tag = data.tag;
       p.reject(err);
     }
   };
@@ -118,6 +135,11 @@ export async function boot(): Promise<BootResult> {
         },
       }),
     wait: (pid) => call("wait", { pid }),
+    stdin: (pid, bytes) => call("stdin", { pid, bytes }),
+    bindTerminal: (pid) => call("bindTerminal", { pid }),
+    onOutput: (cb) => {
+      outputListeners.push(cb);
+    },
     flush: () => call("flush"),
   };
 

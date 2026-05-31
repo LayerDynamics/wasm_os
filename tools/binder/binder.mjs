@@ -72,7 +72,36 @@ function check() {
   }
 }
 
+/**
+ * Conformance gate for the wasmos_kernel guest extension (M2, FR-36). The
+ * `wasmos:kernel` world is transported over the SAB ring rather than the
+ * Component Model, so it cannot be jco-transpiled like wasmos:abi. Instead we
+ * verify the hand-written guest stub crate (crates/wasmos-sys) exposes a public
+ * function for every `func` declared in crates/wasmos-sys/wit/kernel.wit — so a
+ * new kernel.wit verb without a matching stub fails the build (drift gate).
+ */
+function kernelCheck() {
+  const witPath = join(ROOT, "crates", "wasmos-sys", "wit", "kernel.wit");
+  const srcPath = join(ROOT, "crates", "wasmos-sys", "src", "lib.rs");
+  if (!existsSync(witPath) || !existsSync(srcPath)) {
+    console.error("binder kernel-check: wasmos-sys wit/ or src/ missing");
+    process.exit(1);
+  }
+  const wit = readFileSync(witPath, "utf8");
+  const src = readFileSync(srcPath, "utf8");
+  // Every `name: func(...)` in the WIT must have a `pub fn name` in the stub.
+  const funcs = [...wit.matchAll(/^\s*([a-z][a-z0-9-]*)\s*:\s*func/gim)].map((m) => m[1]);
+  const missing = funcs.filter((f) => !new RegExp(`pub fn ${f.replace(/-/g, "_")}\\b`).test(src));
+  if (missing.length) {
+    console.error("binder kernel-check FAILED — wasmos-sys is missing stubs for:");
+    for (const f of missing) console.error("  " + f);
+    process.exit(1);
+  }
+  console.log(`binder kernel-check: wasmos-sys conforms to kernel.wit (${funcs.join(", ")}).`);
+}
+
 const cmd = process.argv[2] ?? "gen";
 if (cmd === "gen") gen();
 else if (cmd === "check") check();
-else { console.error(`unknown command: ${cmd} (use gen|check)`); process.exit(1); }
+else if (cmd === "kernel-check") kernelCheck();
+else { console.error(`unknown command: ${cmd} (use gen|check|kernel-check)`); process.exit(1); }

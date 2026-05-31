@@ -3,9 +3,12 @@
 //! `lib.rs` is a thin WIT adapter over this; `cargo test` exercises it directly
 //! on the host with an in-memory blockstore.
 
+use crate::pipe::PipeTable;
 use crate::sched::Scheduler;
 use crate::syscall;
-use crate::types::{Backend, Capability, CapabilitySet, ProcInfo, ProcState, ProcTable, Rights};
+use crate::types::{
+    Backend, Capability, CapabilitySet, DescKind, ProcInfo, ProcState, ProcTable, Rights,
+};
 use crate::vfs::{Blockstore, FsError, Vfs};
 
 /// Default scheduling priority for user processes spawned at M1 (init is 10).
@@ -15,6 +18,7 @@ pub struct KernelCore {
     vfs: Vfs,
     procs: ProcTable,
     sched: Scheduler,
+    pipes: PipeTable,
     booted: bool,
 }
 
@@ -24,6 +28,7 @@ impl KernelCore {
             vfs: Vfs::new(home, mnt),
             procs: ProcTable::new(),
             sched: Scheduler::new(),
+            pipes: PipeTable::new(),
             booted: false,
         }
     }
@@ -111,10 +116,33 @@ impl KernelCore {
         pid
     }
 
-    /// Route one WASI Preview 1 syscall for `pid` (FR-4). The bytes are the
-    /// hand-rolled wire format decoded by [`crate::syscall::dispatch`].
-    pub fn service_syscall(&mut self, pid: u32, req: &[u8]) -> Vec<u8> {
-        syscall::dispatch(&mut self.vfs, &mut self.procs, pid, req)
+    /// Route one syscall for `pid` (FR-4). Returns a [`syscall::SyscallOutcome`]
+    /// — a ready reply, or a park (M2) the kworker defers until a wakeup.
+    pub fn service_syscall(&mut self, pid: u32, req: &[u8]) -> syscall::SyscallOutcome {
+        syscall::dispatch(&mut self.vfs, &mut self.procs, &mut self.pipes, pid, req)
+    }
+
+    /// Bind a process's stdout + stderr (fd 1/2) to the interactive terminal so
+    /// its writes stream to xterm (M2). fd 0 stays stdin, fed by `deliver_stdin`.
+    pub fn bind_terminal(&mut self, pid: u32) {
+        if let Some(d) = self.procs.fd_mut(pid, 1) {
+            d.kind = DescKind::Terminal;
+        }
+        if let Some(d) = self.procs.fd_mut(pid, 2) {
+            d.kind = DescKind::Terminal;
+        }
+    }
+
+    /// Deliver input bytes to a process's stdin (terminal keystrokes, M2).
+    /// Returns the pids whose parked stdin reads are now runnable.
+    pub fn deliver_stdin(&mut self, pid: u32, bytes: &[u8]) -> Vec<u32> {
+        self.procs.push_stdin(pid, bytes);
+        if self.procs.blocked_on(pid) == Some(crate::types::WaitReason::Stdin) {
+            self.procs.clear_blocked(pid);
+            vec![pid]
+        } else {
+            vec![]
+        }
     }
 
     /// The process's exit code, if it has exited (FR-5 `wait`).
@@ -202,6 +230,12 @@ mod tests {
         v.extend_from_slice(&code.to_le_bytes());
         v
     }
+    fn fd_read_req(fd: u32, len: u32) -> Vec<u8> {
+        let mut v = vec![0x02u8]; // Op::FdRead
+        v.extend_from_slice(&fd.to_le_bytes());
+        v.extend_from_slice(&len.to_le_bytes());
+        v
+    }
 
     #[test]
     fn spawn_then_service_fd_write_then_exit() {
@@ -212,12 +246,54 @@ mod tests {
         // Process is Ready and enqueued.
         assert!(k.ready_count() >= 1);
         // Route an fd_write to stdout, then proc_exit(0).
-        let resp = k.service_syscall(pid, &fd_write_req(1, b"hi"));
+        let resp = k.service_syscall(pid, &fd_write_req(1, b"hi")).reply.expect("ready");
         assert_eq!(u16::from_le_bytes([resp[0], resp[1]]), 0); // SUCCESS
         k.service_syscall(pid, &proc_exit_req(0));
         let (out, _err) = k.take_capture(pid);
         assert_eq!(out, b"hi");
         assert_eq!(k.exit_code(pid), Some(0));
+    }
+
+    #[test]
+    fn stdin_read_parks_then_deliver_wakes_and_redrives() {
+        let mut k = core();
+        k.boot();
+        let pid = k.spawn("reader", Some(("/", Rights::RW)), false);
+        let req = fd_read_req(0, 16); // read stdin (fd 0)
+
+        // No input yet → the syscall PARKS (no reply).
+        assert!(k.service_syscall(pid, &req).reply.is_none());
+
+        // Deliver input → the parked reader is woken.
+        assert_eq!(k.deliver_stdin(pid, b"hi\n"), vec![pid]);
+
+        // Re-driving the SAME request now returns the delivered bytes.
+        let resp = k.service_syscall(pid, &req).reply.expect("ready after deliver");
+        assert_eq!(u16::from_le_bytes([resp[0], resp[1]]), 0); // SUCCESS
+        let n = u32::from_le_bytes([resp[2], resp[3], resp[4], resp[5]]) as usize;
+        assert_eq!(&resp[6..6 + n], b"hi\n");
+
+        // Delivering to a process that is NOT parked yields no wakeups.
+        assert!(k.deliver_stdin(pid, b"more").is_empty());
+    }
+
+    #[test]
+    fn bind_terminal_streams_writes_as_term_output() {
+        let mut k = core();
+        k.boot();
+        let pid = k.spawn("shell", Some(("/", Rights::RW)), false);
+        k.bind_terminal(pid);
+        // A write to fd 1 (now Terminal) streams out as term_output (→ xterm),
+        // and is NOT accumulated in the at-exit capture buffer.
+        let out = k.service_syscall(pid, &fd_write_req(1, b"prompt$ "));
+        assert_eq!(out.term_output, b"prompt$ ");
+        assert_eq!(read_u16(&out.reply.expect("ready")), 0); // SUCCESS
+        let (cap, _) = k.take_capture(pid);
+        assert!(cap.is_empty());
+    }
+
+    fn read_u16(b: &[u8]) -> u16 {
+        u16::from_le_bytes([b[0], b[1]])
     }
 
     #[test]

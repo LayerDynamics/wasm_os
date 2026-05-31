@@ -1,0 +1,39 @@
+package wasmos:kernel@0.1.0;
+
+/// The wasmos_kernel process-control extension (M2) — the guest syscall surface
+/// beyond WASI Preview 1. The shell uses these to run pipelines. Transported
+/// over the SAB syscall ring (opcodes 0x20.. in crates/kernel/src/syscall.rs);
+/// the guest stubs live in crates/wasmos-sys/src/lib.rs and the host shim
+/// provides the matching `wasmos_kernel.syscall` import. This world is the
+/// documented source of truth; `binder kernel-check` verifies crates/wasmos-sys
+/// exposes a matching `spawn` / `pipe` / `wait` (FR-36). It lives outside the
+/// kernel component's `wit/` tree (which is a single `wasmos:abi` package) on
+/// purpose — it is not consumed by `cargo-component`/`jco`.
+interface process {
+  /// How a child's stdio fd (0/1/2) is wired.
+  variant stdio {
+    terminal,
+    pipe-read(u32),
+    pipe-write(u32),
+    file(file-redirect),
+  }
+  record file-redirect {
+    path: string,
+    write: bool,
+  }
+
+  /// Spawn a child from a VFS image with argv + stdio + working directory;
+  /// returns the child PID.
+  spawn: func(path: string, argv: list<string>, stdio: tuple<stdio, stdio, stdio>, cwd: string) -> result<u32, u16>;
+
+  /// Create a pipe; returns (read-fd, write-fd, pipe-id). The fds are the
+  /// caller's ends; the id is used in a child's stdio spec.
+  pipe: func() -> result<tuple<u32, u32, u32>, u16>;
+
+  /// Wait for a child to exit; returns its exit code (blocks until it exits).
+  wait: func(pid: u32) -> result<s32, u16>;
+}
+
+world shell-guest {
+  import process;
+}
