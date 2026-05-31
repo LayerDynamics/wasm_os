@@ -63,7 +63,7 @@ impl State {
         if let Ok(rd) = std::fs::read_dir(&self.cwd) {
             for e in rd.flatten() {
                 let name = e.file_name().to_string_lossy().into_owned();
-                let is_dir = std::fs::metadata(join(&self.cwd, &name)).map(|m| m.is_dir()).unwrap_or(false);
+                let is_dir = e.file_type().map(|t| t.is_dir()).unwrap_or(false);
                 self.entries.push(Entry { name, is_dir });
             }
         }
