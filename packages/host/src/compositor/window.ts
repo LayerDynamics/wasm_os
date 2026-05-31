@@ -226,14 +226,18 @@ export class Win {
       if (dir.includes("n")) {
         h = Math.max(MIN_H, o.h - dy);
         y = o.y + (o.h - h);
+        // Keep the window's top edge within the workspace: clamp y >= 0 and
+        // absorb the overflow into the height.
+        if (y < 0) {
+          h += y;
+          y = 0;
+        }
       }
       this.geom = { x, y, w, h };
-      if (dir.includes("n")) {
-        const targetH = Math.max(MIN_H, o.h - dy);
-        const targetY = o.y + (o.h - targetH);
-        y = Math.max(0, targetY);
-        h = o.h - (y - o.y);
-      }
+      this.applyGeom();
+    };
+    const onUp = (ev: PointerEvent) => {
+      target.releasePointerCapture(ev.pointerId);
       target.removeEventListener("pointermove", onMove);
       target.removeEventListener("pointerup", onUp);
       this.delegate.onChanged(this.id);
