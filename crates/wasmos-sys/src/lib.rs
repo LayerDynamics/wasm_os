@@ -21,9 +21,15 @@ unsafe fn syscall(_req_ptr: *const u8, _req_len: usize, _resp_ptr: *mut u8, _res
 }
 
 // Opcodes — must match `crates/kernel/src/syscall.rs` `Op`.
+const FD_CLOSE: u8 = 0x04;
 const KSPAWN: u8 = 0x20;
 const KPIPE: u8 = 0x21;
 const KWAIT: u8 = 0x22;
+
+/// File open mode for a stdio redirect.
+pub const FILE_READ: u8 = 0; // `<`
+pub const FILE_TRUNC: u8 = 1; // `>`
+pub const FILE_APPEND: u8 = 2; // `>>`
 
 /// How a child's stdio fd (0/1/2) is wired.
 pub enum Stdio {
@@ -33,8 +39,8 @@ pub enum Stdio {
     PipeRead(u32),
     /// The write end of a pipe (id).
     PipeWrite(u32),
-    /// A file in the VFS (`write` = open for writing/truncate, used by `>`).
-    File { path: String, write: bool },
+    /// A file in the VFS opened with `mode` (FILE_READ/TRUNC/APPEND).
+    File { path: String, mode: u8 },
 }
 
 struct W(Vec<u8>);
@@ -63,10 +69,10 @@ impl W {
                 self.u8(2);
                 self.u32(*id);
             }
-            Stdio::File { path, write } => {
+            Stdio::File { path, mode } => {
                 self.u8(3);
                 self.bytes(path.as_bytes());
-                self.u8(u8::from(*write));
+                self.u8(*mode);
             }
         }
     }
@@ -88,7 +94,7 @@ fn rd_u32(b: &[u8], at: usize) -> u32 {
 
 /// Spawn a child process from a VFS image with argv and stdio wiring. Returns
 /// the child PID, or the kernel errno on failure.
-pub fn spawn(path: &str, argv: &[&str], stdio: &[Stdio; 3]) -> Result<u32, u16> {
+pub fn spawn(path: &str, argv: &[&str], stdio: &[Stdio; 3], cwd: &str) -> Result<u32, u16> {
     let mut w = W::new();
     w.u8(KSPAWN);
     w.bytes(path.as_bytes());
@@ -99,6 +105,7 @@ pub fn spawn(path: &str, argv: &[&str], stdio: &[Stdio; 3]) -> Result<u32, u16> 
     for s in stdio {
         w.stdio(s);
     }
+    w.bytes(cwd.as_bytes());
     let resp = call(&w.0);
     let errno = rd_u16(&resp, 0);
     if errno != 0 {
@@ -107,14 +114,25 @@ pub fn spawn(path: &str, argv: &[&str], stdio: &[Stdio; 3]) -> Result<u32, u16> 
     Ok(rd_u32(&resp, 2))
 }
 
-/// Create a pipe; returns `(read_fd, write_fd)` in this process's fd table.
-pub fn pipe() -> Result<(u32, u32), u16> {
+/// Create a pipe; returns `(read_fd, write_fd, pipe_id)`. The fds are the
+/// caller's ends (close them after spawning the stages); the id is passed as a
+/// child's stdio spec (`Stdio::PipeRead/PipeWrite`).
+pub fn pipe() -> Result<(u32, u32, u32), u16> {
     let resp = call(&[KPIPE]);
     let errno = rd_u16(&resp, 0);
     if errno != 0 {
         return Err(errno);
     }
-    Ok((rd_u32(&resp, 2), rd_u32(&resp, 6)))
+    Ok((rd_u32(&resp, 2), rd_u32(&resp, 6), rd_u32(&resp, 10)))
+}
+
+/// Close a file descriptor in this process (a WASI `fd_close`, used by the shell
+/// to release its pipe ends so EOF/EPIPE propagate between pipeline stages).
+pub fn close(fd: u32) -> u16 {
+    let mut w = W::new();
+    w.u8(FD_CLOSE);
+    w.u32(fd);
+    rd_u16(&call(&w.0), 0)
 }
 
 /// Wait for a child to exit; returns its exit code (blocks until it exits).

@@ -11,3 +11,19 @@ license.workspace = true
 [[bin]]
 name = "echo"
 path = "src/bin/echo.rs"
+
+[[bin]]
+name = "cat"
+path = "src/bin/cat.rs"
+
+[[bin]]
+name = "grep"
+path = "src/bin/grep.rs"
+
+[[bin]]
+name = "ls"
+path = "src/bin/ls.rs"
+
+[[bin]]
+name = "wc"
+path = "src/bin/wc.rs"

@@ -22,11 +22,13 @@ interface process {
     write: bool,
   }
 
-  /// Spawn a child from a VFS image with argv + stdio; returns the child PID.
-  spawn: func(path: string, argv: list<string>, stdio: tuple<stdio, stdio, stdio>) -> result<u32, u16>;
+  /// Spawn a child from a VFS image with argv + stdio + working directory;
+  /// returns the child PID.
+  spawn: func(path: string, argv: list<string>, stdio: tuple<stdio, stdio, stdio>, cwd: string) -> result<u32, u16>;
 
-  /// Create a pipe; returns (read-fd, write-fd) in the caller's fd table.
-  pipe: func() -> result<tuple<u32, u32>, u16>;
+  /// Create a pipe; returns (read-fd, write-fd, pipe-id). The fds are the
+  /// caller's ends; the id is used in a child's stdio spec.
+  pipe: func() -> result<tuple<u32, u32, u32>, u16>;
 
   /// Wait for a child to exit; returns its exit code (blocks until it exits).
   wait: func(pid: u32) -> result<s32, u16>;

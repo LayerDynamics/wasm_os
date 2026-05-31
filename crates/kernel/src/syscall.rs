@@ -240,14 +240,34 @@ fn err_only(e: u16) -> Vec<u8> {
 // Path resolution
 // ---------------------------------------------------------------------------
 
-/// Resolve a guest `path_open` path against the directory fd's path. Absolute
-/// paths are used as-is; relative paths join under the dir (the preopen "/").
+/// Resolve a guest `path_open` path against the directory fd's path and
+/// normalize `.`/`..`. Absolute paths ignore the dir; relative paths join under
+/// it (the dir is the process's preopen / cwd).
 fn resolve_path(dir: &str, path: &str) -> String {
-    if path.starts_with('/') {
+    let combined = if path.starts_with('/') {
         path.to_string()
     } else {
-        let base = dir.trim_end_matches('/');
-        format!("{base}/{path}")
+        format!("{}/{}", dir.trim_end_matches('/'), path)
+    };
+    normalize(&combined)
+}
+
+/// Collapse `.`/`..` and redundant slashes into a clean absolute path.
+fn normalize(p: &str) -> String {
+    let mut parts: Vec<&str> = Vec::new();
+    for seg in p.split('/').filter(|s| !s.is_empty()) {
+        match seg {
+            "." => {}
+            ".." => {
+                parts.pop();
+            }
+            s => parts.push(s),
+        }
+    }
+    if parts.is_empty() {
+        "/".to_string()
+    } else {
+        format!("/{}", parts.join("/"))
     }
 }
 
@@ -694,7 +714,8 @@ fn proc_exit(procs: &mut ProcTable, pid: u32, r: &mut Reader) -> SyscallOutcome 
 // wasmos_kernel extension — guest process control (M2)
 // ---------------------------------------------------------------------------
 
-/// One of a child's stdio fds, as the shell requests it.
+/// One of a child's stdio fds, as the shell requests it. File `mode`: 0 = read
+/// (`<`), 1 = write/truncate (`>`), 2 = write/append (`>>`).
 fn parse_fd_spec(r: &mut Reader) -> Option<FdSpec> {
     Some(match r.u8()? {
         0 => FdSpec::Terminal,
@@ -702,8 +723,8 @@ fn parse_fd_spec(r: &mut Reader) -> Option<FdSpec> {
         2 => FdSpec::PipeWrite(r.u32()?),
         3 => {
             let path = r.string()?;
-            let write = r.u8()? != 0;
-            FdSpec::File { path, write }
+            let mode = r.u8()?;
+            FdSpec::File { path, mode }
         }
         _ => return None,
     })
@@ -713,7 +734,7 @@ enum FdSpec {
     Terminal,
     PipeRead(u32),
     PipeWrite(u32),
-    File { path: String, write: bool },
+    File { path: String, mode: u8 },
 }
 
 /// `wasmos_kernel.spawn(path, argv, stdio)` — register a child process and ask
@@ -746,6 +767,8 @@ fn k_spawn(
             None => return SyscallOutcome::ready(resp(errno::INVAL, 0)),
         }
     }
+    // Working directory for the child (its preopen / relative-path base).
+    let cwd = r.string().unwrap_or_else(|| "/".to_string());
 
     // The child inherits a broad FS grant (the shell's children operate on the
     // user's files); never Shm, never Spawn (only the shell spawns).
@@ -772,16 +795,30 @@ fn k_spawn(
                 pipes.add_writer(id);
                 Descriptor { kind: DescKind::PipeWrite { id }, offset: 0, rights: Rights::RW }
             }
-            FdSpec::File { path, write } => {
-                if write {
-                    let _ = vfs.write(&path, Vec::new()); // truncate-create for `>`
-                }
-                let rights = if write { Rights::RW } else { Rights::R };
-                Descriptor { kind: DescKind::File { path }, offset: 0, rights }
+            FdSpec::File { path, mode } => {
+                let (rights, offset) = match mode {
+                    1 => {
+                        let _ = vfs.write(&path, Vec::new()); // `>` truncate-create
+                        (Rights::RW, 0)
+                    }
+                    2 => {
+                        // `>>` append: start the cursor at the current file end.
+                        let end = vfs.read(&path).map(|c| c.len() as u64).unwrap_or(0);
+                        (Rights::RW, end)
+                    }
+                    _ => (Rights::R, 0), // `<` read
+                };
+                Descriptor { kind: DescKind::File { path }, offset, rights }
             }
         };
         procs.set_fd(child, fd, desc);
     }
+    // Set the child's preopen (fd 3) to its cwd so relative paths resolve there.
+    procs.set_fd(
+        child,
+        PREOPEN_FD,
+        Descriptor { kind: DescKind::Dir { path: cwd }, offset: 0, rights: Rights::RWX },
+    );
     procs.set_state(child, ProcState::Ready);
 
     SyscallOutcome {
@@ -802,7 +839,9 @@ fn k_pipe(procs: &mut ProcTable, pipes: &mut PipeTable, pid: u32, _r: &mut Reade
     let wfd = procs
         .open_fd(pid, Descriptor { kind: DescKind::PipeWrite { id }, offset: 0, rights: Rights::RW })
         .unwrap_or(0);
-    SyscallOutcome::ready(Writer::new().u16(errno::SUCCESS).u32(rfd).u32(wfd).build())
+    // Return the caller's fds (to close after spawning) AND the pipe id (to pass
+    // as a child's stdio spec).
+    SyscallOutcome::ready(Writer::new().u16(errno::SUCCESS).u32(rfd).u32(wfd).u32(id).build())
 }
 
 /// `wasmos_kernel.wait(pid)` — return a child's exit code, parking until it exits.

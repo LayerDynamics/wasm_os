@@ -31,7 +31,7 @@ test("terminal runs `echo` end-to-end through the real shell process", async ({ 
 
   // The shell prompt should already be on screen (the shell wrote it to stdout).
   await page.waitForFunction(
-    () => ((window as unknown as { __wasmos: { term: { log(): string } } }).__wasmos.term.log()).includes("wasmos$"),
+    () => ((window as unknown as { __wasmos: { term: { log(): string } } }).__wasmos.term.log()).includes("wasmos:"),
     null,
     { timeout: 10_000 },
   );
@@ -63,5 +63,5 @@ test("terminal runs `echo` end-to-end through the real shell process", async ({ 
   // shell printed a fresh prompt afterwards (the command completed + reaped).
   expect(log).toContain("echo ohai");
   expect((log.match(/ohai/g) || []).length).toBeGreaterThanOrEqual(2);
-  expect((log.match(/wasmos\$/g) || []).length).toBeGreaterThanOrEqual(2); // prompt returned
+  expect((log.match(/wasmos:/g) || []).length).toBeGreaterThanOrEqual(2); // prompt returned
 });
