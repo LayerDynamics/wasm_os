@@ -11,7 +11,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: wasm32-unknown-unknown
+          # wasm32-unknown-unknown: the kernel component. wasm32-wasip1: guests.
+          targets: wasm32-unknown-unknown, wasm32-wasip1
+          components: clippy
       - name: Install component tooling
         run: cargo install cargo-component wasm-tools --locked
       - uses: actions/setup-node@v4
@@ -27,9 +29,16 @@ jobs:
         run: npm run build
       - name: Typecheck host against fresh bindings
         run: npm run typecheck
+      - name: Clippy (-D warnings, both targets)
+        run: npm run lint
       - name: Rust tests
         run: npm run test:rust
       - name: Host tests
         run: npm run test:host
+      - name: Build guest binaries (wasm32-wasip1)
+        # Real Rust guests the M1 E2E spawns (hello/crash/catfile). Building here
+        # surfaces a guest compile failure as its own step (the E2E web server
+        # also builds them, but this fails fast and clearly).
+        run: npm run build:guests
       - name: E2E (real browser)
         run: npm run test:e2e
