@@ -228,10 +228,12 @@ export class Win {
         y = o.y + (o.h - h);
       }
       this.geom = { x, y, w, h };
-      this.applyGeom();
-    };
-    const onUp = (ev: PointerEvent) => {
-      target.releasePointerCapture(ev.pointerId);
+      if (dir.includes("n")) {
+        const targetH = Math.max(MIN_H, o.h - dy);
+        const targetY = o.y + (o.h - targetH);
+        y = Math.max(0, targetY);
+        h = o.h - (y - o.y);
+      }
       target.removeEventListener("pointermove", onMove);
       target.removeEventListener("pointerup", onUp);
       this.delegate.onChanged(this.id);
