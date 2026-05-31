@@ -1,76 +1,130 @@
 import { detectFeatures, type FeatureReport } from "./features.js";
-import { OpfsBlockstore } from "./blockstore/opfs.js";
-import { IdbBlockstore } from "./blockstore/idb.js";
-import { CachedStore } from "./blockstore/cached.js";
-import type { Blockstore } from "./blockstore/types.js";
 
-/** Where the Binder writes the jco-transpiled component (served at site root). */
-const ABI_BASE = "/packages/abi/generated";
+/** Where the bundled kernel worker is served (see the `bundle` build step).
+ * esbuild mirrors the src/ layout under dist/, so worker entries land in
+ * dist/worker/. */
+const KWORKER_URL = "/dist/worker/kernel-worker.js";
 
-/** Structural shape of the generated `control` export (jco camelCase names). */
 export type Backend = "tmpfs" | "opfs" | "idb";
-export interface KernelControl {
-  boot(features: FeatureReport): { ready: boolean; bootMillis: number; features: FeatureReport };
-  mount(path: string, on: Backend): void;
-  fsWrite(path: string, bytes: Uint8Array): void;
-  fsRead(path: string): Uint8Array;
-  fsList(path: string): string[];
-  fsDelete(path: string): void;
-  listProcs(): { pid: number; name: string; state: string }[];
+export interface ProcInfo {
+  pid: number;
+  name: string;
+  state: string;
+}
+export interface SpawnOptions {
+  name?: string;
+  /** FS subtree granted to the child (read+write); empty = no FS grant. */
+  grantFsSubtree?: string;
+  grantSpawn?: boolean;
+}
+export interface ProcExit {
+  exitCode: number;
+  /** Must be false — proves the guest ran in non-shared memory (FR-6). */
+  sharedMemory: boolean;
+}
+
+/**
+ * Async control surface. Every call round-trips to the kernel worker (the
+ * kernel itself no longer runs on the main thread), so all methods are async.
+ */
+export interface AsyncKernelControl {
+  mount(path: string, on: Backend): Promise<void>;
+  fsWrite(path: string, bytes: Uint8Array): Promise<void>;
+  fsRead(path: string): Promise<Uint8Array>;
+  fsList(path: string): Promise<string[]>;
+  fsDelete(path: string): Promise<void>;
+  listProcs(): Promise<ProcInfo[]>;
+  /** Drain a process's captured `[stdout, stderr]`. */
+  takeCapture(pid: number): Promise<[Uint8Array, Uint8Array]>;
+  /** Spawn a guest `.wasm` as a process; returns its PID. */
+  spawn(wasmBytes: ArrayBuffer, opts?: SpawnOptions): Promise<number>;
+  /** Resolve when the process exits, with its exit code + isolation proof. */
+  wait(pid: number): Promise<ProcExit>;
+  /** Await durability of all OPFS/IndexedDB writes (used before reload). */
+  flush(): Promise<void>;
 }
 
 export interface BootResult {
   bootMillis: number;
   features: FeatureReport;
-  control: KernelControl;
-  /** Await durability of all writes to OPFS/IndexedDB (used before reload). */
+  control: AsyncKernelControl;
+  /** Convenience alias of `control.flush` (kept for existing callers/E2E). */
   flush(): Promise<void>;
+}
+
+interface Pending {
+  resolve: (value: unknown) => void;
+  reject: (err: Error) => void;
 }
 
 export async function boot(): Promise<BootResult> {
   const t0 = performance.now();
   const features = detectFeatures();
 
-  // Backing stores: /home on OPFS (IndexedDB fallback), /mnt on IndexedDB.
-  const homeBacking: Blockstore = features.opfs
-    ? await OpfsBlockstore.create("home")
-    : await IdbBlockstore.create("home");
-  const mntBacking: Blockstore = await IdbBlockstore.create("mnt");
+  const worker = new Worker(KWORKER_URL, { type: "module" });
+  let nextId = 1;
+  const pending = new Map<number, Pending>();
 
-  // Pre-load persisted data into synchronous write-back caches BEFORE boot,
-  // so the kernel's synchronous imports observe data from previous sessions.
-  const home = await CachedStore.load(homeBacking);
-  const mnt = await CachedStore.load(mntBacking);
+  worker.onmessage = (e: MessageEvent) => {
+    const { id, ok, result, error, tag } = e.data as {
+      id: number;
+      ok: boolean;
+      result?: unknown;
+      error?: string;
+      tag?: string;
+    };
+    const p = pending.get(id);
+    if (!p) return;
+    pending.delete(id);
+    if (ok) {
+      p.resolve(result);
+    } else {
+      const err = new Error(error ?? "kworker error") as Error & { tag?: string };
+      if (tag) err.tag = tag;
+      p.reject(err);
+    }
+  };
+  worker.onerror = (e) => {
+    const err = new Error(`kernel worker crashed: ${e.message}`);
+    for (const p of pending.values()) p.reject(err);
+    pending.clear();
+  };
 
-  // Instantiate the kernel component (jco async-instantiation mode). The kernel
-  // is split into kernel.coreN.wasm modules fetched on demand by getCoreModule.
-  const mod: {
-    instantiate(
-      getCoreModule: (path: string) => Promise<WebAssembly.Module>,
-      imports: Record<string, unknown>,
-    ): Promise<{ control: KernelControl }>;
-  } = await import(/* @vite-ignore */ `${ABI_BASE}/kernel.js`);
+  function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
+    const id = nextId++;
+    return new Promise<T>((resolve, reject) => {
+      pending.set(id, { resolve: resolve as (v: unknown) => void, reject });
+      worker.postMessage({ id, cmd, args });
+    });
+  }
 
-  const getCoreModule = (path: string) =>
-    WebAssembly.compileStreaming(fetch(`${ABI_BASE}/${path}`));
+  await call<{ bootMillis: number; features: FeatureReport }>("init", { features });
 
-  // jco's instantiate() reads UNVERSIONED import keys at runtime (the @0.1.0
-  // suffix appears only in the .d.ts ImportObject type).
-  const instance = await mod.instantiate(getCoreModule, {
-    "wasmos:abi/home-store": home.imports(),
-    "wasmos:abi/mnt-store": mnt.imports(),
-  });
-
-  const control = instance.control;
-  const status = control.boot(features);
-  if (!status.ready) throw new Error("kernel failed to reach ready");
+  const control: AsyncKernelControl = {
+    mount: (path, on) => call("mount", { path, on }),
+    fsWrite: (path, bytes) => call("fsWrite", { path, bytes }),
+    fsRead: (path) => call("fsRead", { path }),
+    fsList: (path) => call("fsList", { path }),
+    fsDelete: (path) => call("fsDelete", { path }),
+    listProcs: () => call("listProcs"),
+    takeCapture: (pid) => call("takeCapture", { pid }),
+    spawn: (wasmBytes, opts) =>
+      call("spawn", {
+        wasmBytes,
+        spec: {
+          name: opts?.name ?? "proc",
+          grantFsSubtree: opts?.grantFsSubtree ?? "",
+          grantSpawn: opts?.grantSpawn ?? false,
+        },
+      }),
+    wait: (pid) => call("wait", { pid }),
+    flush: () => call("flush"),
+  };
 
   return {
     bootMillis: Math.round(performance.now() - t0),
     features,
     control,
-    flush: async () => {
-      await Promise.all([home.flush(), mnt.flush()]);
-    },
+    flush: () => control.flush(),
   };
 }
