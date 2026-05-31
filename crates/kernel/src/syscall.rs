@@ -277,7 +277,11 @@ fn fd_write(vfs: &mut Vfs, procs: &mut ProcTable, pid: u32, r: &mut Reader) -> V
                 return resp(errno::ACCES, 0);
             }
             let offset = desc.offset as usize;
-            let mut content = vfs.read(&path).unwrap_or_default();
+            let mut content = match vfs.read(&path) {
+                Ok(c) => c,
+                Err(crate::vfs::FsError::NotFound) => Vec::new(),
+                Err(_) => return resp(errno::INVAL, 0),
+            };
             if content.len() < offset {
                 content.resize(offset, 0);
             }
