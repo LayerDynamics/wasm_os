@@ -12,6 +12,7 @@
     "build:kernel": "cargo component build --release -p kernel --target wasm32-unknown-unknown",
     "build": "npm run build:kernel && npm run binder gen",
     "bundle": "esbuild packages/host/src/index.ts --bundle --format=esm --outfile=dist/host.js",
+    "bundle:harness": "esbuild packages/host/src/test-harness.ts --bundle --format=esm --outfile=dist/test-harness.js",
     "drift": "npm run build && git diff --exit-code -- packages/abi/generated",
     "test:rust": "cargo test -p kernel",
     "test:host": "vitest run",
