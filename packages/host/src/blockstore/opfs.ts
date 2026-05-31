@@ -26,7 +26,11 @@ export class OpfsBlockstore implements Blockstore {
     try {
       const fh = await this.root.getFileHandle(enc(key), { create: true });
       const w = await fh.createWritable();
-      await w.write(value);
+      // Copy into a guaranteed ArrayBuffer-backed view (the input may be
+      // SharedArrayBuffer-backed, which the Writable stream type rejects).
+      const buf = new Uint8Array(value.byteLength);
+      buf.set(value);
+      await w.write(buf);
       await w.close();
       return true;
     } catch { return false; }
