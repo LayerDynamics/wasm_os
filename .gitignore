@@ -24,3 +24,7 @@ crates/kernel/src/bindings.rs
 
 # OS
 .DS_Store
+
+# Local-only / session + scratch
+development/reference_only
+.claude/

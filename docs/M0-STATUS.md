@@ -13,11 +13,26 @@
 ## Verify gate breakdown (latest local run)
 
 ```text
-binder check : bindings are in sync.
-cargo test   : 4 passed; 0 failed   (vfs routing, prefix list, not-found, bad-path)
-vitest       : 5 passed (2 files)    (features detection ×2, IdbBlockstore ×3)
-playwright   : 2 passed              (boot<1.5s+tier; tri-backend persist across reload)
+drift gate   : DETERMINISTIC — committed bindings == rebuild (git diff --exit-code, mac + Linux)
+cargo test   : 20 passed; 0 failed  (vfs ×4, types/capabilities ×7, scheduler ×5, kcore ×4)
+vitest       : 5 passed (2 files)   (features detection ×2, IdbBlockstore ×3)
+playwright   : 4 passed             (boot<1.5s+tierA+init-proc; tri-backend persist;
+                                      OpfsBlockstore real-OPFS; IdbBlockstore real-IDB)
 ```
+
+## Post-review gap closure (FR-2, FR-3, sub-gaps)
+
+After a completeness audit, the following spec-M0 gaps were closed (each with tests):
+
+| Gap | What was added | Verified by |
+|-----|----------------|-------------|
+| **FR-3 scheduler scaffold** | `sched.rs` — priority round-robin Scheduler + per-process time accounting | 5 unit tests incl. ≥32 concurrent procs; live in `boot()` |
+| **FR-2 process table + capabilities** | `types.rs` — `Capability`/`CapabilitySet` (default-deny), `ProcState` machine, `ProcTable` (spawn/kill/reap/has_cap) | 7 unit tests; `boot()` registers `init` (New→Ready→Running) with caps |
+| **Live wiring** | `kcore.rs` `KernelCore` joins VFS+table+scheduler+caps; `component` is a thin WIT adapter | 4 kcore tests + E2E asserts `listProcs()==[init/running]` through WASM |
+| **Sound local drift gate** | `npm run verify` uses `drift` (build + `git diff`), not the weaker `binder:check` | `npm run drift` exit 0 |
+| **Full cold-load timing** | `coldLoadMillis` (navigation start → ready) | E2E asserts `coldLoadMillis < 1500` |
+| **Real OPFS test** | in-browser harness exercising `OpfsBlockstore` directly | `e2e/opfs.spec.ts` (real OPFS + IndexedDB) |
+| **Cross-platform determinism** | bindings rebuilt on **Linux** (Docker) match committed (mac) byte-for-byte | `tools/ci-linux-determinism.sh` → `DETERMINISTIC_LINUX_OK` |
 
 ## Architecture as built
 
@@ -34,10 +49,11 @@ playwright   : 2 passed              (boot<1.5s+tier; tri-backend persist across
 4. **Unversioned import keys** at runtime: jco's `instantiate()` reads `wasmos:abi/home-store` (the `@0.1.0` suffix is types-only).
 5. **`wit-bindgen-rt`** runtime dep required by cargo-component-generated bindings (distinct from the `wit-bindgen` codegen crate).
 
-## Deferred to M1 (out of scope here; tracked)
+## Deferred to M1 (genuinely out of M0 scope; tracked)
 
 - `wasmos:kernel` guest syscall world + `wit-bindgen` Rust/C guest stubs; Asyncify/JSPI Tier-B path.
-- Worker-per-process execution + SharedArrayBuffer ring transport.
-- Control `fs-delete`/unlink wiring (the `Blockstore::delete` contract method exists, awaiting its caller).
+- Worker-per-process execution + SharedArrayBuffer ring transport; actual WASM process *execution* (the table/scheduler/caps scaffolding is in place; M1 attaches real instances).
+- Control `fs-delete`/unlink + `spawn`/`kill` exposed over WIT (the `ProcTable`/`Blockstore` methods exist and are tested, awaiting their WIT callers).
 - Hierarchical VFS dirs (M0 uses flat keys); revisit with `fd_readdir` in M2.
-- Cross-platform determinism of committed `kernel.js` vs CI-regenerated (glue is platform-independent; watch the first CI run).
+
+> Resolved (were watch-items): cross-platform binding determinism is now **proven** on Linux (`tools/ci-linux-determinism.sh` → byte-identical), and CI is run for real (see CI status below).
