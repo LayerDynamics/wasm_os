@@ -1,5 +1,6 @@
 import { boot, type BootResult } from "./boot.js";
 import { attachTerminal, type TerminalSession } from "./term/terminal.js";
+import { Compositor } from "./compositor/compositor.js";
 
 /** Executables loaded into the VFS `/bin` at boot (tmpfs, repopulated each boot). */
 // "echo.zig" is the Zig-built sibling of "echo" (FR-14 polyglot proof): same WASI
@@ -15,6 +16,7 @@ export type ReadyState = BootResult & {
   coldLoadMillis: number;
   shellPid: number;
   term: TerminalSession;
+  compositor: Compositor;
 };
 
 declare global {
@@ -43,10 +45,20 @@ async function main() {
   const shellPid = await control.spawn(bins.sh!, { name: "sh", grantSpawn: true, grantFsSubtree: "/" });
   await control.bindTerminal(shellPid);
 
-  const el = document.getElementById("terminal") ?? document.body;
-  const term = attachTerminal(el, control, shellPid);
+  // Bring up the desktop compositor and run the terminal inside its first window
+  // (a DOM surface). The content host keeps id="terminal" so xterm sizing + the
+  // existing E2E selectors continue to work under the compositor.
+  const desktop = document.getElementById("desktop") ?? document.body;
+  const taskbarEl = document.getElementById("taskbar") ?? document.body;
+  const compositor = new Compositor(desktop, taskbarEl);
 
-  const state: ReadyState = { ...result, coldLoadMillis, shellPid, term };
+  const termWin = compositor.open({ title: "Terminal — sh", width: 724, height: 460, ownerPid: shellPid, surface: "dom" });
+  const termHost = document.createElement("div");
+  termHost.id = "terminal";
+  termWin.content.appendChild(termHost);
+  const term = attachTerminal(termHost, control, shellPid);
+
+  const state: ReadyState = { ...result, coldLoadMillis, shellPid, term, compositor };
   window.__wasmos = state;
 
   const status = document.getElementById("status");
