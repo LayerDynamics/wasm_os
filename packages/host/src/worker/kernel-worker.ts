@@ -197,10 +197,11 @@ function onProcExit(pid: number, msg: ExitMessage): void {
   const rt = procs.get(pid);
   if (!rt || rt.exited) return;
 
-  if (msg.exit.kind === "trap") {
-    // A trapping guest never reached proc_exit; record the exit in the kernel
-    // so the process zombifies and `wait` resolves (FR-34 containment). Process
-    // any wakeups (e.g. a parent parked in wait() on this child — M2-T5).
+  // If the kernel does not already know this process exited, record it now. A
+  // guest that returns from `_start` (or traps) never sends a ring `proc_exit`,
+  // so without this the kernel never zombifies it and a parent parked in
+  // `wait()` would hang (M2-T5) — and a trap would not be contained (FR-34).
+  if (requireControl().exitCode(pid) === undefined) {
     const outcome = requireControl().serviceSyscall(pid, encodeProcExit(msg.exit.code));
     processWakeups(outcome.wakeups);
   }
