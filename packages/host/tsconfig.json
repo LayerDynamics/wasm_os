@@ -1,5 +1,5 @@
 {
   "extends": "../../tsconfig.base.json",
-  "compilerOptions": { "lib": ["ES2022", "DOM", "DOM.Iterable"] },
+  "compilerOptions": { "lib": ["ES2022", "ES2024.SharedMemory", "DOM", "DOM.Iterable"] },
   "include": ["src", "test"]
 }
