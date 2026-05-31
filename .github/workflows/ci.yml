@@ -17,12 +17,23 @@ jobs:
       - name: Install component tooling
         run: cargo install cargo-component wasm-tools --locked
       - name: Install Zig (FR-14 polyglot guest)
-        # Pinned stable release. echo.zig builds reproducibly here; the polyglot
-        # host test (test:host) runs it through node:wasi and byte-diffs it against
-        # the Rust echo, and the E2E runs it through the real kernel.
-        uses: mlugg/setup-zig@v1
-        with:
-          version: 0.14.1
+        # Pinned stable release, fetched directly from the official archive with a
+        # checksum pin. We do NOT use a setup-zig action: those resolve through
+        # community mirrors that don't carry tagged releases (0.14.1 -> 404), then
+        # fall back to ziglang.org/builds, which only hosts dev/master builds.
+        # echo.zig builds reproducibly here; the polyglot host test byte-diffs it
+        # against the Rust echo and the E2E runs it through the real kernel.
+        run: |
+          set -euo pipefail
+          ZIG_VERSION=0.14.1
+          ZIG_TARBALL="zig-x86_64-linux-${ZIG_VERSION}.tar.xz"
+          ZIG_SHA256=24aeeec8af16c381934a6cd7d95c807a8cb2cf7df9fa40d359aa884195c4716c
+          curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/${ZIG_TARBALL}" -o "$ZIG_TARBALL"
+          echo "${ZIG_SHA256}  ${ZIG_TARBALL}" | sha256sum -c -
+          tar -xf "$ZIG_TARBALL"
+          echo "${GITHUB_WORKSPACE}/zig-x86_64-linux-${ZIG_VERSION}" >> "$GITHUB_PATH"
+      - name: Verify Zig is on PATH
+        run: zig version
       - uses: actions/setup-node@v4
         with:
           node-version: "24"
