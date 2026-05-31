@@ -1,7 +1,10 @@
-//! Core kernel data model for M0: capabilities, process states, the process
-//! table. No WASM process is *executed* at M0 (that is M1/FR-5), but the table,
-//! capability system, and state machine are real and fully functional — the
-//! kernel registers its own `init` process through them at boot.
+//! Core kernel data model: capabilities, process states, the process table,
+//! and (M1) the per-process file-descriptor table. The table, capability
+//! system, and state machine are real and fully functional — the kernel
+//! registers its own `init` process through them at boot, and M1 attaches real
+//! WASM instances that drive the fd table through the WASI syscall router.
+
+use std::collections::BTreeMap;
 
 // ---------------------------------------------------------------------------
 // Backends
@@ -105,6 +108,34 @@ impl CapabilitySet {
 }
 
 // ---------------------------------------------------------------------------
+// File descriptors (FR-4 — the WASI fd surface; per-process, isolated)
+// ---------------------------------------------------------------------------
+
+/// What a file descriptor refers to. fds 0/1/2 are the standard streams; fd 3
+/// is the preopened root directory (so guest WASI libc can `path_open`); fds
+/// >= 4 are opened files/dirs in the VFS.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DescKind {
+    Stdin,
+    Stdout,                 // captured into Process::stdout
+    Stderr,                 // captured into Process::stderr
+    Dir { path: String },   // a directory (the preopen "/" or an opened dir)
+    File { path: String },  // a regular file backed by the VFS
+}
+
+/// An open file descriptor: what it points at, the read/write cursor, and the
+/// rights it was opened with.
+#[derive(Clone, Debug)]
+pub struct Descriptor {
+    pub kind: DescKind,
+    pub offset: u64,
+    pub rights: Rights,
+}
+
+/// fd number of the preopened root directory (WASI libc scans from fd 3).
+pub const PREOPEN_FD: u32 = 3;
+
+// ---------------------------------------------------------------------------
 // Process state machine (FR-2, FR-7, FR-34)
 // ---------------------------------------------------------------------------
 
@@ -129,7 +160,8 @@ impl ProcState {
     }
 }
 
-/// A process table entry. `caps` is the owning capability set (FR-2).
+/// A process table entry. `caps` is the owning capability set (FR-2); `fds` is
+/// the per-process descriptor table (FR-4) — isolated from every other process.
 #[derive(Clone, Debug)]
 pub struct Process {
     pub pid: u32,
@@ -137,6 +169,25 @@ pub struct Process {
     pub state: ProcState,
     pub priority: u8,
     pub caps: CapabilitySet,
+    pub fds: BTreeMap<u32, Descriptor>,
+    pub next_fd: u32,
+    pub stdout: Vec<u8>,
+    pub stderr: Vec<u8>,
+    pub exit_code: Option<i32>,
+}
+
+/// Build the standard descriptor table for a fresh process: stdin/stdout/stderr
+/// plus the preopened root directory at fd 3. Subsequent opens start at fd 4.
+fn std_fds() -> BTreeMap<u32, Descriptor> {
+    let mut fds = BTreeMap::new();
+    fds.insert(0, Descriptor { kind: DescKind::Stdin, offset: 0, rights: Rights::R });
+    fds.insert(1, Descriptor { kind: DescKind::Stdout, offset: 0, rights: Rights::RW });
+    fds.insert(2, Descriptor { kind: DescKind::Stderr, offset: 0, rights: Rights::RW });
+    fds.insert(
+        PREOPEN_FD,
+        Descriptor { kind: DescKind::Dir { path: "/".into() }, offset: 0, rights: Rights::RWX },
+    );
+    fds
 }
 
 /// WIT-facing projection of a process (matches wit/control.wit `proc-info`).
@@ -171,6 +222,8 @@ impl ProcTable {
     }
 
     /// Create a process entry in the `New` state and return its unique PID.
+    /// The process starts with the standard descriptor table (stdin/stdout/
+    /// stderr + the preopened root dir at fd 3); opens allocate from fd 4.
     pub fn spawn(&mut self, name: &str, priority: u8, caps: CapabilitySet) -> u32 {
         let pid = self.next_pid;
         self.next_pid += 1;
@@ -180,12 +233,73 @@ impl ProcTable {
             state: ProcState::New,
             priority,
             caps,
+            fds: std_fds(),
+            next_fd: PREOPEN_FD + 1,
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+            exit_code: None,
         });
         pid
     }
 
     pub fn get(&self, pid: u32) -> Option<&Process> {
         self.procs.iter().find(|p| p.pid == pid)
+    }
+
+    fn get_mut(&mut self, pid: u32) -> Option<&mut Process> {
+        self.procs.iter_mut().find(|p| p.pid == pid)
+    }
+
+    // --- Per-process file-descriptor table (FR-4) ---
+
+    /// Allocate the next fd (>= 4) for `pid` and bind it to `desc`. Returns the
+    /// new fd, or `None` if the pid is unknown.
+    pub fn open_fd(&mut self, pid: u32, desc: Descriptor) -> Option<u32> {
+        let p = self.get_mut(pid)?;
+        let fd = p.next_fd;
+        p.next_fd += 1;
+        p.fds.insert(fd, desc);
+        Some(fd)
+    }
+
+    pub fn fd(&self, pid: u32, fd: u32) -> Option<&Descriptor> {
+        self.get(pid).and_then(|p| p.fds.get(&fd))
+    }
+
+    pub fn fd_mut(&mut self, pid: u32, fd: u32) -> Option<&mut Descriptor> {
+        self.get_mut(pid).and_then(|p| p.fds.get_mut(&fd))
+    }
+
+    /// Close an fd. Returns false if the pid or fd is unknown.
+    pub fn close_fd(&mut self, pid: u32, fd: u32) -> bool {
+        self.get_mut(pid).is_some_and(|p| p.fds.remove(&fd).is_some())
+    }
+
+    /// Append bytes to a process's captured stdout. Returns false if pid unknown.
+    pub fn push_stdout(&mut self, pid: u32, bytes: &[u8]) -> bool {
+        self.get_mut(pid).map(|p| p.stdout.extend_from_slice(bytes)).is_some()
+    }
+
+    /// Append bytes to a process's captured stderr. Returns false if pid unknown.
+    pub fn push_stderr(&mut self, pid: u32, bytes: &[u8]) -> bool {
+        self.get_mut(pid).map(|p| p.stderr.extend_from_slice(bytes)).is_some()
+    }
+
+    /// Drain and return `(stdout, stderr)` for `pid` (empty if unknown).
+    pub fn take_capture(&mut self, pid: u32) -> (Vec<u8>, Vec<u8>) {
+        match self.get_mut(pid) {
+            Some(p) => (std::mem::take(&mut p.stdout), std::mem::take(&mut p.stderr)),
+            None => (Vec::new(), Vec::new()),
+        }
+    }
+
+    /// Record a process's exit code (does not change state; the caller zombifies).
+    pub fn set_exit(&mut self, pid: u32, code: i32) -> bool {
+        self.get_mut(pid).map(|p| p.exit_code = Some(code)).is_some()
+    }
+
+    pub fn exit_code(&self, pid: u32) -> Option<i32> {
+        self.get(pid).and_then(|p| p.exit_code)
     }
 
     pub fn set_state(&mut self, pid: u32, state: ProcState) -> bool {
@@ -313,5 +427,78 @@ mod tests {
         assert!(t.has_cap(pid, &Capability::Spawn));
         assert!(!t.has_cap(pid, &Capability::Net));
         assert!(!t.has_cap(424242, &Capability::Spawn)); // unknown pid => deny
+    }
+
+    // --- M1: per-process fd table (FR-4) ---
+
+    #[test]
+    fn spawn_preopens_std_fds() {
+        let mut t = ProcTable::new();
+        let pid = t.spawn("p", 5, CapabilitySet::default());
+        assert_eq!(t.fd(pid, 0).unwrap().kind, DescKind::Stdin);
+        assert_eq!(t.fd(pid, 1).unwrap().kind, DescKind::Stdout);
+        assert_eq!(t.fd(pid, 2).unwrap().kind, DescKind::Stderr);
+        // fd 3 is the preopened root directory (so guest WASI libc can path_open).
+        assert_eq!(t.fd(pid, PREOPEN_FD).unwrap().kind, DescKind::Dir { path: "/".into() });
+        // No fd 4 yet.
+        assert!(t.fd(pid, 4).is_none());
+    }
+
+    #[test]
+    fn open_fd_allocates_increasing_fds_from_4() {
+        let mut t = ProcTable::new();
+        let pid = t.spawn("p", 5, CapabilitySet::default());
+        let a = t.open_fd(pid, Descriptor { kind: DescKind::File { path: "/a".into() }, offset: 0, rights: Rights::R }).unwrap();
+        let b = t.open_fd(pid, Descriptor { kind: DescKind::File { path: "/b".into() }, offset: 0, rights: Rights::R }).unwrap();
+        assert_eq!(a, 4); // first open is fd 4 (0/1/2 std + 3 preopen)
+        assert_eq!(b, 5);
+        assert_eq!(t.fd(pid, a).unwrap().kind, DescKind::File { path: "/a".into() });
+        assert!(t.open_fd(999, Descriptor { kind: DescKind::File { path: "/x".into() }, offset: 0, rights: Rights::R }).is_none());
+    }
+
+    #[test]
+    fn fd_tables_are_per_process_and_do_not_alias() {
+        let mut t = ProcTable::new();
+        let a = t.spawn("a", 5, CapabilitySet::default());
+        let b = t.spawn("b", 5, CapabilitySet::default());
+        let fda = t.open_fd(a, Descriptor { kind: DescKind::File { path: "/secret".into() }, offset: 0, rights: Rights::RW }).unwrap();
+        // B's table is unaffected by A's open.
+        assert!(t.fd(b, fda).is_none());
+        // Closing A's fd does not touch B.
+        assert!(t.close_fd(a, fda));
+        assert!(t.fd(a, fda).is_none());
+        // B still has exactly its standard fds.
+        assert_eq!(t.fd(b, 1).unwrap().kind, DescKind::Stdout);
+    }
+
+    #[test]
+    fn stdout_capture_accumulates_and_drains() {
+        let mut t = ProcTable::new();
+        let pid = t.spawn("p", 5, CapabilitySet::default());
+        assert!(t.push_stdout(pid, b"hello "));
+        assert!(t.push_stdout(pid, b"world"));
+        assert!(t.push_stderr(pid, b"warn"));
+        let (out, err) = t.take_capture(pid);
+        assert_eq!(out, b"hello world");
+        assert_eq!(err, b"warn");
+        // Drained: a second take returns empty.
+        let (out2, err2) = t.take_capture(pid);
+        assert!(out2.is_empty() && err2.is_empty());
+        // Unknown pid is a no-op, not a panic.
+        assert!(!t.push_stdout(999, b"x"));
+        assert_eq!(t.take_capture(999), (Vec::new(), Vec::new()));
+    }
+
+    #[test]
+    fn set_and_read_exit_code() {
+        let mut t = ProcTable::new();
+        let pid = t.spawn("p", 5, CapabilitySet::default());
+        assert_eq!(t.exit_code(pid), None); // not exited
+        assert!(t.set_exit(pid, 0));
+        assert_eq!(t.exit_code(pid), Some(0));
+        assert!(t.set_exit(pid, 42));
+        assert_eq!(t.exit_code(pid), Some(42));
+        assert!(!t.set_exit(999, 1)); // unknown pid
+        assert_eq!(t.exit_code(999), None);
     }
 }
