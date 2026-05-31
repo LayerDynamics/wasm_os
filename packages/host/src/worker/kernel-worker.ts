@@ -223,6 +223,20 @@ function onProcExit(pid: number, msg: ExitMessage): void {
 
   for (const resolve of rt.waiters) resolve(rt.exitCode);
   rt.waiters = [];
+
+  // Drop this process's surface ownership and tell the main thread so the
+  // compositor closes any windows it owned (crash containment, FR-34).
+  for (const [sid, owner] of surfaceOwners) if (owner === pid) surfaceOwners.delete(sid);
+  ctx.postMessage({ type: "exit", pid });
+}
+
+/** Host-initiated kill (M3): close a window → reap its process. Records the exit
+ * (zombifies + releases pipes/surfaces + wakes waiters) then tears the worker
+ * down via onProcExit. A no-op if the process already exited. */
+function killProcess(pid: number): void {
+  const rt = procs.get(pid);
+  if (!rt || rt.exited) return;
+  onProcExit(pid, { pid, exit: { kind: "exit", code: 137 }, sharedMemory: rt.sharedMemory });
 }
 
 /**
@@ -370,6 +384,10 @@ ctx.onmessage = async (ev: MessageEvent) => {
       }
       case "bindTerminal":
         requireControl().bindTerminal(args.pid as number);
+        result = undefined;
+        break;
+      case "kill":
+        killProcess(args.pid as number);
         result = undefined;
         break;
       case "flush":

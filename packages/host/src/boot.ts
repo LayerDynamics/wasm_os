@@ -66,6 +66,10 @@ export interface AsyncKernelControl {
   onSurface(cb: (info: SurfaceInfo) => void): void;
   /** A process published a frame to `surfaceId` (M3) — blit it to the canvas. */
   onPresent(cb: (surfaceId: number) => void): void;
+  /** Kill a process (M3): close a window → reap its process. */
+  kill(pid: number): Promise<void>;
+  /** A process exited/trapped (M3) — close its windows (crash containment). */
+  onExit(cb: (pid: number) => void): void;
   /** Await durability of all OPFS/IndexedDB writes (used before reload). */
   flush(): Promise<void>;
 }
@@ -94,6 +98,7 @@ export async function boot(): Promise<BootResult> {
   const outputListeners: Array<(pid: number, bytes: Uint8Array) => void> = [];
   const surfaceListeners: Array<(info: SurfaceInfo) => void> = [];
   const presentListeners: Array<(surfaceId: number) => void> = [];
+  const exitListeners: Array<(pid: number) => void> = [];
 
   worker.onmessage = (e: MessageEvent) => {
     const data = e.data as {
@@ -129,6 +134,10 @@ export async function boot(): Promise<BootResult> {
     }
     if (data.type === "present" && data.surfaceId !== undefined) {
       for (const cb of presentListeners) cb(data.surfaceId);
+      return;
+    }
+    if (data.type === "exit" && data.pid !== undefined) {
+      for (const cb of exitListeners) cb(data.pid);
       return;
     }
     if (typeof data.id !== "number") return; // unknown message
@@ -190,6 +199,10 @@ export async function boot(): Promise<BootResult> {
     },
     onPresent: (cb) => {
       presentListeners.push(cb);
+    },
+    kill: (pid) => call("kill", { pid }),
+    onExit: (cb) => {
+      exitListeners.push(cb);
     },
     flush: () => call("flush"),
   };

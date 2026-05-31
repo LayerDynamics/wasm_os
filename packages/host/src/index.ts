@@ -77,6 +77,24 @@ async function main() {
   control.onSurface((info) => surfaces.onSurface(info));
   control.onPresent((id) => surfaces.onPresent(id));
 
+  // Closing a process window reaps the owning process (M3-T9); a process that
+  // exits or traps has its windows closed (crash containment, FR-34).
+  compositor.onWindowClosed = (id, ownerPid) => {
+    surfaces.closeByWindow(id);
+    if (ownerPid !== undefined) void control.kill(ownerPid);
+  };
+  control.onExit((pid) => compositor.closeByOwner(pid));
+
+  // Taskbar launcher: spawn each graphical app with its minimal capability set.
+  const launch = (name: string, opts: { grantGpu?: boolean; grantInput?: boolean; grantSpawn?: boolean; grantFsSubtree?: string }) =>
+    void control.spawn(bins[name]!, { name, ...opts });
+  compositor.setLauncherApps([
+    { label: "Files", launch: () => launch("filemanager", { grantGpu: true, grantInput: true, grantSpawn: true, grantFsSubtree: "/" }) },
+    { label: "Paint", launch: () => launch("paint", { grantGpu: true, grantInput: true, grantFsSubtree: "/" }) },
+    { label: "Editor", launch: () => launch("editor", { grantGpu: true, grantInput: true, grantFsSubtree: "/" }) },
+    { label: "Mandelbrot", launch: () => launch("mandelbrot", { grantGpu: true, grantInput: true }) },
+  ]);
+
   const termWin = compositor.open({ title: "Terminal — sh", width: 724, height: 460, ownerPid: shellPid, surface: "dom" });
   const termHost = document.createElement("div");
   termHost.id = "terminal";

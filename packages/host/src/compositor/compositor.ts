@@ -108,6 +108,17 @@ export class Compositor {
     return this.wins.get(id);
   }
 
+  /** Close every window owned by `ownerPid` (used when a process exits/traps). */
+  closeByOwner(ownerPid: number): void {
+    const ids = [...this.wins.values()].filter((w) => w.ownerPid === ownerPid).map((w) => w.id);
+    for (const id of ids) this.close(id);
+  }
+
+  /** Wire the taskbar launcher menu to a fixed app list (M3-T9). */
+  setLauncherApps(apps: Array<{ label: string; launch: () => void }>): void {
+    this.taskbar.setApps(apps);
+  }
+
   activeWindow(): Win | undefined {
     return this.activeId !== null ? this.wins.get(this.activeId) : undefined;
   }

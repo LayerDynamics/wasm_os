@@ -10,6 +10,7 @@
 use std::io::Read;
 use wasmos_sys::{
     win_present, win_read_input, win_surface, EV_KEY_DOWN, EV_POINTER_DOWN, EV_POINTER_MOVE,
+    KEY_ESCAPE,
 };
 
 const W: u32 = 192;
@@ -63,6 +64,9 @@ fn main() {
                             cursor = (ev.x, ev.y);
                             bg = bg.wrapping_add(40);
                         }
+                        // Escape triggers a deliberate trap — the crash-containment
+                        // fixture (FR-34): the window closes, the desktop survives.
+                        EV_KEY_DOWN if ev.key == KEY_ESCAPE => std::process::abort(),
                         EV_KEY_DOWN => bg = bg.wrapping_add(40),
                         _ => {}
                     }

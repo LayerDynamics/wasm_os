@@ -20,10 +20,9 @@ export interface TaskbarWindow {
 export class Taskbar {
   private el: HTMLElement;
   private launcher: HTMLButtonElement;
+  private menu: HTMLDivElement;
   private winList: HTMLDivElement;
   private clock: HTMLSpanElement;
-  /** Click handler for the launcher; wired to the app menu in M3-T9. */
-  onLauncher: () => void = () => {};
 
   constructor(el: HTMLElement, private host: TaskbarHost) {
     this.el = el;
@@ -33,7 +32,19 @@ export class Taskbar {
     this.launcher.className = "wasmos-launcher";
     this.launcher.type = "button";
     this.launcher.textContent = "☰ Apps";
-    this.launcher.addEventListener("click", () => this.onLauncher());
+
+    // The launcher menu (populated by setApps): a popup above the launcher.
+    this.menu = document.createElement("div");
+    this.menu.className = "wasmos-launcher-menu";
+    this.menu.style.display = "none";
+    this.launcher.addEventListener("click", (e) => {
+      e.stopPropagation();
+      this.menu.style.display = this.menu.style.display === "none" ? "block" : "none";
+    });
+    // Click elsewhere closes the menu.
+    document.addEventListener("click", () => {
+      this.menu.style.display = "none";
+    });
 
     this.winList = document.createElement("div");
     this.winList.className = "wasmos-tasks";
@@ -46,8 +57,26 @@ export class Taskbar {
     setInterval(() => this.tickClock(), 1000);
 
     this.el.appendChild(this.launcher);
+    this.el.appendChild(this.menu);
     this.el.appendChild(this.winList);
     this.el.appendChild(this.clock);
+  }
+
+  /** Populate the launcher menu with apps (M3-T9). */
+  setApps(apps: Array<{ label: string; launch: () => void }>): void {
+    this.menu.replaceChildren();
+    for (const app of apps) {
+      const b = document.createElement("button");
+      b.className = "wasmos-launch-item";
+      b.type = "button";
+      b.textContent = app.label;
+      b.addEventListener("click", (e) => {
+        e.stopPropagation();
+        this.menu.style.display = "none";
+        app.launch();
+      });
+      this.menu.appendChild(b);
+    }
   }
 
   private tickClock(): void {

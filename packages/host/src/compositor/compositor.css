@@ -39,6 +39,32 @@
 }
 .wasmos-launcher:hover { background: #3b7ec0; }
 
+.wasmos-launcher-menu {
+  position: absolute;
+  bottom: 34px;
+  left: 6px;
+  min-width: 160px;
+  background: #14171c;
+  border: 1px solid #2c313a;
+  border-radius: 6px;
+  box-shadow: 0 -6px 24px rgba(0, 0, 0, 0.5);
+  padding: 4px;
+  z-index: 100000;
+}
+.wasmos-launch-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  color: #d6d9df;
+  border: none;
+  border-radius: 4px;
+  padding: 7px 10px;
+  cursor: pointer;
+  font: 13px/1 system-ui, sans-serif;
+}
+.wasmos-launch-item:hover { background: #2b6cb0; color: #fff; }
+
 .wasmos-tasks { display: flex; gap: 4px; flex: 1; overflow: hidden; }
 
 .wasmos-task {
