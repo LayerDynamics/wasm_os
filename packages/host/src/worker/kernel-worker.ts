@@ -42,6 +42,7 @@ interface KernelControl {
   spawn(spec: SpawnSpec): number;
   serviceSyscall(pid: number, request: Uint8Array): SyscallOutcome;
   deliverStdin(pid: number, bytes: Uint8Array): Uint32Array;
+  bindTerminal(pid: number): void;
   exitCode(pid: number): number | undefined;
   takeCapture(pid: number): [Uint8Array, Uint8Array];
 }
@@ -307,6 +308,10 @@ ctx.onmessage = async (ev: MessageEvent) => {
         result = undefined;
         break;
       }
+      case "bindTerminal":
+        requireControl().bindTerminal(args.pid as number);
+        result = undefined;
+        break;
       case "flush":
         await Promise.all([home?.flush(), mnt?.flush()]);
         result = undefined;

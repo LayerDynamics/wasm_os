@@ -299,6 +299,14 @@ fn fd_write(
             procs.push_stderr(pid, data);
             SyscallOutcome::ready(resp(errno::SUCCESS, data.len() as u32))
         }
+        DescKind::Terminal => {
+            // Stream the bytes to the interactive terminal (xterm) live.
+            SyscallOutcome {
+                reply: Some(resp(errno::SUCCESS, data.len() as u32)),
+                wakeups: Vec::new(),
+                term_output: data.to_vec(),
+            }
+        }
         DescKind::PipeWrite { id } => {
             if !pipes.read_open(id) {
                 // No readers left — writing would be lost (SIGPIPE/EPIPE).
@@ -406,9 +414,11 @@ fn fd_read(
             }
             SyscallOutcome::ready(ok(slice))
         }
-        DescKind::Stdout | DescKind::Stderr | DescKind::Dir { .. } | DescKind::PipeWrite { .. } => {
-            SyscallOutcome::ready(err(errno::BADF))
-        }
+        DescKind::Stdout
+        | DescKind::Stderr
+        | DescKind::Terminal
+        | DescKind::Dir { .. }
+        | DescKind::PipeWrite { .. } => SyscallOutcome::ready(err(errno::BADF)),
     }
 }
 
@@ -597,6 +607,7 @@ fn fd_fdstat_get(procs: &mut ProcTable, pid: u32, r: &mut Reader) -> Vec<u8> {
         DescKind::Stdin
         | DescKind::Stdout
         | DescKind::Stderr
+        | DescKind::Terminal
         | DescKind::PipeRead { .. }
         | DescKind::PipeWrite { .. } => filetype::CHARACTER_DEVICE,
         DescKind::Dir { .. } => filetype::DIRECTORY,

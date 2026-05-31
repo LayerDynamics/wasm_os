@@ -6,7 +6,9 @@
 use crate::pipe::PipeTable;
 use crate::sched::Scheduler;
 use crate::syscall;
-use crate::types::{Backend, Capability, CapabilitySet, ProcInfo, ProcState, ProcTable, Rights};
+use crate::types::{
+    Backend, Capability, CapabilitySet, DescKind, ProcInfo, ProcState, ProcTable, Rights,
+};
 use crate::vfs::{Blockstore, FsError, Vfs};
 
 /// Default scheduling priority for user processes spawned at M1 (init is 10).
@@ -118,6 +120,17 @@ impl KernelCore {
     /// — a ready reply, or a park (M2) the kworker defers until a wakeup.
     pub fn service_syscall(&mut self, pid: u32, req: &[u8]) -> syscall::SyscallOutcome {
         syscall::dispatch(&mut self.vfs, &mut self.procs, &mut self.pipes, pid, req)
+    }
+
+    /// Bind a process's stdout + stderr (fd 1/2) to the interactive terminal so
+    /// its writes stream to xterm (M2). fd 0 stays stdin, fed by `deliver_stdin`.
+    pub fn bind_terminal(&mut self, pid: u32) {
+        if let Some(d) = self.procs.fd_mut(pid, 1) {
+            d.kind = DescKind::Terminal;
+        }
+        if let Some(d) = self.procs.fd_mut(pid, 2) {
+            d.kind = DescKind::Terminal;
+        }
     }
 
     /// Deliver input bytes to a process's stdin (terminal keystrokes, M2).
@@ -262,6 +275,25 @@ mod tests {
 
         // Delivering to a process that is NOT parked yields no wakeups.
         assert!(k.deliver_stdin(pid, b"more").is_empty());
+    }
+
+    #[test]
+    fn bind_terminal_streams_writes_as_term_output() {
+        let mut k = core();
+        k.boot();
+        let pid = k.spawn("shell", Some(("/", Rights::RW)), false);
+        k.bind_terminal(pid);
+        // A write to fd 1 (now Terminal) streams out as term_output (→ xterm),
+        // and is NOT accumulated in the at-exit capture buffer.
+        let out = k.service_syscall(pid, &fd_write_req(1, b"prompt$ "));
+        assert_eq!(out.term_output, b"prompt$ ");
+        assert_eq!(read_u16(&out.reply.expect("ready")), 0); // SUCCESS
+        let (cap, _) = k.take_capture(pid);
+        assert!(cap.is_empty());
+    }
+
+    fn read_u16(b: &[u8]) -> u16 {
+        u16::from_le_bytes([b[0], b[1]])
     }
 
     #[test]

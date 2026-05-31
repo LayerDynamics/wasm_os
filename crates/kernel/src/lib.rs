@@ -153,6 +153,10 @@ mod component {
             KERNEL.with(|k| k.borrow_mut().deliver_stdin(pid, &bytes))
         }
 
+        fn bind_terminal(pid: u32) {
+            KERNEL.with(|k| k.borrow_mut().bind_terminal(pid));
+        }
+
         fn exit_code(pid: u32) -> Option<i32> {
             KERNEL.with(|k| k.borrow().exit_code(pid))
         }

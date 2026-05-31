@@ -79,6 +79,10 @@ interface control {
   /// pids whose parked stdin reads are now runnable.
   deliver-stdin: func(pid: u32, bytes: list<u8>) -> list<u32>;
 
+  /// Bind a process's stdout/stderr to the interactive terminal: subsequent
+  /// writes stream out as `syscall-outcome.term-output` (M2).
+  bind-terminal: func(pid: u32);
+
   /// Has the process exited? Returns the exit code if it is a zombie.
   exit-code: func(pid: u32) -> option<s32>;
 

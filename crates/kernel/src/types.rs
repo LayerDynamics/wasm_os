@@ -123,6 +123,7 @@ pub enum DescKind {
     File { path: String },  // a regular file backed by the VFS
     PipeRead { id: u32 },   // the read end of a kernel pipe (M2)
     PipeWrite { id: u32 },  // the write end of a kernel pipe (M2)
+    Terminal,               // a write end bound to the interactive terminal (M2)
 }
 
 /// An open file descriptor: what it points at, the read/write cursor, and the
