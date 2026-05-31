@@ -1,0 +1,11 @@
+[package]
+name = "crash"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+# Deliberately traps — used to prove crash containment (FR-34): the trap must
+# terminate only this process while the kernel and peers keep running.
+[[bin]]
+name = "crash"
+path = "src/main.rs"

@@ -1,0 +1,11 @@
+[package]
+name = "catfile"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+# Reads /mnt/in.txt via path_open + fd_read and echoes it to stdout — proves the
+# syscall router reaches the VFS, not just captured stdout (M1 exit criterion 4).
+[[bin]]
+name = "catfile"
+path = "src/main.rs"

@@ -1,0 +1,11 @@
+[package]
+name = "hello"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+# A stock wasm32-wasip1 binary — imports only standard wasi_snapshot_preview1.
+# Runs as a process under the M1 kernel (FR-9).
+[[bin]]
+name = "hello"
+path = "src/main.rs"
