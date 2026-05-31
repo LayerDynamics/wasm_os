@@ -5,7 +5,8 @@ export default defineConfig({
   timeout: 30_000,
   use: { baseURL: "http://localhost:8080", ...devices["Desktop Chrome"] },
   webServer: {
-    command: "npm run build && npm run bundle && npm run bundle:harness && node tools/serve.mjs",
+    command:
+      "npm run build && npm run build:guests && npm run bundle && npm run bundle:harness && node tools/serve.mjs",
     url: "http://localhost:8080/",
     timeout: 120_000,
     reuseExistingServer: false,

@@ -39,9 +39,10 @@ test("boots to ready under 1.5s and reports a tier", async ({ page }) => {
   await expect(page.locator("#status")).toContainText("ready in");
 
   // FR-2/FR-3 live through the real WASM boundary: boot registers the `init`
-  // process and the scheduler runs it. listProcs() must reflect that.
+  // process and the scheduler runs it. listProcs() (async proxy to the kworker)
+  // must reflect that.
   const procs = await page.evaluate(() =>
-    (window as unknown as { __wasmos: { control: { listProcs(): { pid: number; name: string; state: string }[] } } })
+    (window as unknown as { __wasmos: { control: { listProcs(): Promise<{ pid: number; name: string; state: string }[]> } } })
       .__wasmos.control.listProcs(),
   );
   expect(procs).toEqual([{ pid: 1, name: "init", state: "running" }]);
@@ -52,14 +53,15 @@ test("writes to /home (OPFS) and /mnt (IndexedDB) survive a reload", async ({ pa
   await page.goto("/");
   await waitForBoot(page, errors);
 
-  // Write across all three backends through the real kernel control API,
-  // then flush so OPFS/IndexedDB writes are durable before reload.
+  // Write across all three backends through the real kernel control API (now an
+  // async proxy to the kernel worker), then flush so OPFS/IndexedDB writes are
+  // durable before reload.
   await page.evaluate(async () => {
     const w = (window as unknown as { __wasmos: { control: any; flush: () => Promise<void> } }).__wasmos;
     const enc = new TextEncoder();
-    w.control.fsWrite("/scratch.txt", enc.encode("tmp"));
-    w.control.fsWrite("/home/persisted.txt", enc.encode("home-data"));
-    w.control.fsWrite("/mnt/persisted.txt", enc.encode("mnt-data"));
+    await w.control.fsWrite("/scratch.txt", enc.encode("tmp"));
+    await w.control.fsWrite("/home/persisted.txt", enc.encode("home-data"));
+    await w.control.fsWrite("/mnt/persisted.txt", enc.encode("mnt-data"));
     await w.flush();
   });
 
@@ -67,15 +69,15 @@ test("writes to /home (OPFS) and /mnt (IndexedDB) survive a reload", async ({ pa
   await page.reload();
   await waitForBoot(page, errors);
 
-  const after = await page.evaluate(() => {
+  const after = await page.evaluate(async () => {
     const c = (window as unknown as { __wasmos: { control: any } }).__wasmos.control;
     const dec = new TextDecoder();
-    const read = (p: string) => { try { return dec.decode(c.fsRead(p)); } catch { return null; } };
+    const read = async (p: string) => { try { return dec.decode(await c.fsRead(p)); } catch { return null; } };
     return {
-      scratch: read("/scratch.txt"),
-      home: read("/home/persisted.txt"),
-      mnt: read("/mnt/persisted.txt"),
-      homeList: c.fsList("/home"),
+      scratch: await read("/scratch.txt"),
+      home: await read("/home/persisted.txt"),
+      mnt: await read("/mnt/persisted.txt"),
+      homeList: await c.fsList("/home"),
     };
   });
 
@@ -94,27 +96,28 @@ test("fsDelete unlinks across backends and the deletion persists across reload",
   await page.evaluate(async () => {
     const w = (window as unknown as { __wasmos: { control: any; flush: () => Promise<void> } }).__wasmos;
     const enc = new TextEncoder();
-    w.control.fsWrite("/home/del.txt", enc.encode("home-del"));
-    w.control.fsWrite("/mnt/del.txt", enc.encode("mnt-del"));
+    await w.control.fsWrite("/home/del.txt", enc.encode("home-del"));
+    await w.control.fsWrite("/mnt/del.txt", enc.encode("mnt-del"));
     await w.flush();
   });
 
   // Delete through the real kernel control verb, then assert in-session state:
-  // gone from read/list, and a second delete reports the WIT not-found variant.
+  // gone from read/list, and a second delete reports the WIT not-found variant
+  // (the async proxy attaches the fs-error tag to the rejected Error).
   const inSession = await page.evaluate(async () => {
     const w = (window as unknown as { __wasmos: { control: any; flush: () => Promise<void> } }).__wasmos;
     const dec = new TextDecoder();
-    w.control.fsDelete("/home/del.txt");
-    w.control.fsDelete("/mnt/del.txt");
+    await w.control.fsDelete("/home/del.txt");
+    await w.control.fsDelete("/mnt/del.txt");
     await w.flush();
-    const read = (p: string) => { try { return dec.decode(w.control.fsRead(p)); } catch { return null; } };
+    const read = async (p: string) => { try { return dec.decode(await w.control.fsRead(p)); } catch { return null; } };
     let secondDeleteTag: string | null = null;
-    try { w.control.fsDelete("/home/del.txt"); } catch (e: any) { secondDeleteTag = e?.payload?.tag ?? e?.tag ?? "threw"; }
+    try { await w.control.fsDelete("/home/del.txt"); } catch (e: any) { secondDeleteTag = e?.tag ?? e?.payload?.tag ?? "threw"; }
     return {
-      home: read("/home/del.txt"),
-      mnt: read("/mnt/del.txt"),
-      homeList: w.control.fsList("/home"),
-      mntList: w.control.fsList("/mnt"),
+      home: await read("/home/del.txt"),
+      mnt: await read("/mnt/del.txt"),
+      homeList: await w.control.fsList("/home"),
+      mntList: await w.control.fsList("/mnt"),
       secondDeleteTag,
     };
   });
@@ -129,11 +132,16 @@ test("fsDelete unlinks across backends and the deletion persists across reload",
   await page.reload();
   await waitForBoot(page, errors);
 
-  const afterReload = await page.evaluate(() => {
+  const afterReload = await page.evaluate(async () => {
     const c = (window as unknown as { __wasmos: { control: any } }).__wasmos.control;
     const dec = new TextDecoder();
-    const read = (p: string) => { try { return dec.decode(c.fsRead(p)); } catch { return null; } };
-    return { home: read("/home/del.txt"), mnt: read("/mnt/del.txt"), homeList: c.fsList("/home"), mntList: c.fsList("/mnt") };
+    const read = async (p: string) => { try { return dec.decode(await c.fsRead(p)); } catch { return null; } };
+    return {
+      home: await read("/home/del.txt"),
+      mnt: await read("/mnt/del.txt"),
+      homeList: await c.fsList("/home"),
+      mntList: await c.fsList("/mnt"),
+    };
   });
 
   expect(afterReload.home).toBeNull();                          // stayed deleted in OPFS
