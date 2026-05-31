@@ -317,7 +317,9 @@ fn fd_read(vfs: &mut Vfs, procs: &mut ProcTable, pid: u32, r: &mut Reader) -> Ve
                 Ok(c) => c,
                 Err(_) => return err(errno::NOENT),
             };
-            let offset = desc.offset as usize;
+            let Ok(offset) = usize::try_from(desc.offset) else {
+                return err(errno::INVAL);
+            };
             let start = offset.min(content.len());
             let end = (start + len as usize).min(content.len());
             let slice = &content[start..end];
