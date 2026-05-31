@@ -2,7 +2,7 @@ import { boot, type BootResult } from "./boot.js";
 import { attachTerminal, type TerminalSession } from "./term/terminal.js";
 
 /** Executables loaded into the VFS `/bin` at boot (tmpfs, repopulated each boot). */
-const BIN = ["sh", "echo", "cat", "grep", "ls", "wc"];
+const BIN = ["sh", "echo", "cat", "grep", "ls", "wc", "cp", "mv", "rm", "mkdir", "pwd", "head", "tail", "env"];
 const GUESTS = "/packages/host/guests";
 
 /** Boot result + cold-load timing + the running shell/terminal session. */

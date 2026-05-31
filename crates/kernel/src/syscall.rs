@@ -77,6 +77,12 @@ pub enum Op {
     RandomGet = 0x0E,
     ClockTimeGet = 0x0F,
     ProcExit = 0x10,
+    // FS mutation (M2 — mkdir/rm/mv coreutils).
+    PathCreateDirectory = 0x11,
+    PathUnlinkFile = 0x12,
+    PathRemoveDirectory = 0x13,
+    PathRename = 0x14,
+    PathFilestatGet = 0x15,
     // wasmos_kernel extension (guest process control, M2).
     KSpawn = 0x20,
     KPipe = 0x21,
@@ -102,6 +108,11 @@ impl Op {
             0x0E => Op::RandomGet,
             0x0F => Op::ClockTimeGet,
             0x10 => Op::ProcExit,
+            0x11 => Op::PathCreateDirectory,
+            0x12 => Op::PathUnlinkFile,
+            0x13 => Op::PathRemoveDirectory,
+            0x14 => Op::PathRename,
+            0x15 => Op::PathFilestatGet,
             0x20 => Op::KSpawn,
             0x21 => Op::KPipe,
             0x22 => Op::KWait,
@@ -121,6 +132,7 @@ pub mod errno {
     pub const NOENT: u16 = 44;
     pub const NOSYS: u16 = 52;
     pub const NOTDIR: u16 = 54;
+    pub const NOTEMPTY: u16 = 55;
     pub const PIPE: u16 = 64;
     pub const NOTCAPABLE: u16 = 76;
 }
@@ -330,6 +342,12 @@ pub fn dispatch(
             SyscallOutcome::ready(Writer::new().u16(errno::SUCCESS).u64(M1_CLOCK_NS).build())
         }
         Op::ProcExit => proc_exit(procs, pid, &mut r),
+        // FS mutation (M2).
+        Op::PathCreateDirectory => SyscallOutcome::ready(path_create_directory(vfs, procs, pid, &mut r)),
+        Op::PathUnlinkFile => SyscallOutcome::ready(path_unlink_file(vfs, procs, pid, &mut r)),
+        Op::PathRemoveDirectory => SyscallOutcome::ready(path_remove_directory(vfs, procs, pid, &mut r)),
+        Op::PathRename => SyscallOutcome::ready(path_rename(vfs, procs, pid, &mut r)),
+        Op::PathFilestatGet => SyscallOutcome::ready(path_filestat_get(vfs, procs, pid, &mut r)),
         // wasmos_kernel extension (guest process control).
         Op::KSpawn => k_spawn(vfs, procs, pipes, pid, &mut r),
         Op::KPipe => k_pipe(procs, pipes, pid, &mut r),
@@ -614,7 +632,9 @@ fn fd_readdir(vfs: &mut Vfs, procs: &mut ProcTable, pid: u32, r: &mut Reader) ->
         Ok(e) => e,
         Err(_) => return err(errno::NOTDIR),
     };
-    // WASI dirent: d_next:u64, d_ino:u64, d_namlen:u32, d_type:u8, then name.
+    // WASI `dirent` is a **24-byte** struct (8-byte aligned): d_next:u64,
+    // d_ino:u64, d_namlen:u32, d_type:u8, then 3 padding bytes, then the name.
+    // (The padding is essential — libc reads sizeof(dirent)=24 per header.)
     let mut out: Vec<u8> = Vec::new();
     let skip_count = usize::try_from(cookie).unwrap_or(usize::MAX);
     for (i, entry) in entries.iter().enumerate().skip(skip_count) {
@@ -623,7 +643,8 @@ fn fd_readdir(vfs: &mut Vfs, procs: &mut ProcTable, pid: u32, r: &mut Reader) ->
         ent.extend_from_slice(&((i as u64) + 1).to_le_bytes()); // d_next
         ent.extend_from_slice(&(i as u64).to_le_bytes()); // d_ino
         ent.extend_from_slice(&(entry.name.len() as u32).to_le_bytes()); // d_namlen
-        ent.push(d_type);
+        ent.push(d_type); // d_type
+        ent.extend_from_slice(&[0u8; 3]); // padding to 24 bytes
         ent.extend_from_slice(entry.name.as_bytes());
         if out.len() + ent.len() > buf_len as usize {
             break; // libc re-calls with an updated cookie
@@ -708,6 +729,109 @@ fn proc_exit(procs: &mut ProcTable, pid: u32, r: &mut Reader) -> SyscallOutcome 
     // Wake any parent parked in wait() on this child.
     let wakeups = procs.take_blocked_on(&WaitReason::Wait(pid));
     SyscallOutcome { reply: Some(err_only(errno::SUCCESS)), wakeups, term_output: Vec::new(), spawn: None }
+}
+
+// ---------------------------------------------------------------------------
+// FS mutation (M2 — mkdir/rm/mv coreutils)
+// ---------------------------------------------------------------------------
+
+/// Resolve a `(dirfd, path)` pair to an absolute path and enforce the process's
+/// FS capability (FR-31). Returns the errno on failure.
+fn resolve_for(
+    procs: &ProcTable,
+    pid: u32,
+    dirfd: u32,
+    path: &str,
+    rights: Rights,
+) -> Result<String, u16> {
+    let dir = match procs.fd(pid, dirfd).map(|d| d.kind.clone()) {
+        Some(DescKind::Dir { path }) => path,
+        Some(_) => return Err(errno::NOTDIR),
+        None => return Err(errno::BADF),
+    };
+    let full = resolve_path(&dir, path);
+    if !procs.has_cap(pid, &Capability::FsPath { subtree: full.clone(), rights }) {
+        return Err(errno::NOTCAPABLE);
+    }
+    Ok(full)
+}
+
+fn path_create_directory(vfs: &mut Vfs, procs: &mut ProcTable, pid: u32, r: &mut Reader) -> Vec<u8> {
+    let (Some(dirfd), Some(path)) = (r.u32(), r.string()) else { return err_only(errno::INVAL) };
+    let full = match resolve_for(procs, pid, dirfd, &path, Rights::RW) {
+        Ok(f) => f,
+        Err(e) => return err_only(e),
+    };
+    match vfs.mkdir(&full) {
+        Ok(()) => err_only(errno::SUCCESS),
+        Err(crate::vfs::FsError::Exists) => err_only(errno::EXIST),
+        Err(_) => err_only(errno::NOENT),
+    }
+}
+
+fn path_unlink_file(vfs: &mut Vfs, procs: &mut ProcTable, pid: u32, r: &mut Reader) -> Vec<u8> {
+    let (Some(dirfd), Some(path)) = (r.u32(), r.string()) else { return err_only(errno::INVAL) };
+    let full = match resolve_for(procs, pid, dirfd, &path, Rights::RW) {
+        Ok(f) => f,
+        Err(e) => return err_only(e),
+    };
+    match vfs.delete(&full) {
+        Ok(()) => err_only(errno::SUCCESS),
+        Err(crate::vfs::FsError::IsDir) => err_only(errno::ISDIR),
+        Err(_) => err_only(errno::NOENT),
+    }
+}
+
+fn path_remove_directory(vfs: &mut Vfs, procs: &mut ProcTable, pid: u32, r: &mut Reader) -> Vec<u8> {
+    let (Some(dirfd), Some(path)) = (r.u32(), r.string()) else { return err_only(errno::INVAL) };
+    let full = match resolve_for(procs, pid, dirfd, &path, Rights::RW) {
+        Ok(f) => f,
+        Err(e) => return err_only(e),
+    };
+    match vfs.rmdir(&full) {
+        Ok(()) => err_only(errno::SUCCESS),
+        Err(crate::vfs::FsError::NotEmpty) => err_only(errno::NOTEMPTY),
+        Err(_) => err_only(errno::NOENT),
+    }
+}
+
+/// `path_filestat_get` — stat a path (used by `read_dir` to type each entry).
+/// Returns `errno, filetype:u8, size:u64`.
+fn path_filestat_get(vfs: &mut Vfs, procs: &mut ProcTable, pid: u32, r: &mut Reader) -> Vec<u8> {
+    let out = |e: u16, ft: u8, size: u64| Writer::new().u16(e).u8(ft).u64(size).build();
+    let (Some(dirfd), Some(path)) = (r.u32(), r.string()) else { return out(errno::INVAL, 0, 0) };
+    let full = match resolve_for(procs, pid, dirfd, &path, Rights::R) {
+        Ok(f) => f,
+        Err(e) => return out(e, 0, 0),
+    };
+    if vfs.is_dir(&full) {
+        out(errno::SUCCESS, filetype::DIRECTORY, 0)
+    } else if let Ok(content) = vfs.read(&full) {
+        out(errno::SUCCESS, filetype::REGULAR_FILE, content.len() as u64)
+    } else {
+        out(errno::NOENT, 0, 0)
+    }
+}
+
+fn path_rename(vfs: &mut Vfs, procs: &mut ProcTable, pid: u32, r: &mut Reader) -> Vec<u8> {
+    let (Some(old_dirfd), Some(old_path), Some(new_dirfd), Some(new_path)) =
+        (r.u32(), r.string(), r.u32(), r.string())
+    else {
+        return err_only(errno::INVAL);
+    };
+    let from = match resolve_for(procs, pid, old_dirfd, &old_path, Rights::RW) {
+        Ok(f) => f,
+        Err(e) => return err_only(e),
+    };
+    let to = match resolve_for(procs, pid, new_dirfd, &new_path, Rights::RW) {
+        Ok(f) => f,
+        Err(e) => return err_only(e),
+    };
+    match vfs.rename(&from, &to) {
+        Ok(()) => err_only(errno::SUCCESS),
+        Err(crate::vfs::FsError::Exists) => err_only(errno::EXIST),
+        Err(_) => err_only(errno::NOENT),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1265,6 +1389,45 @@ mod tests {
         assert!(rfd >= 4 && wfd >= 4 && rfd != wfd);
         assert!(matches!(procs.fd(sh, rfd).unwrap().kind, DescKind::PipeRead { .. }));
         assert!(matches!(procs.fd(sh, wfd).unwrap().kind, DescKind::PipeWrite { .. }));
+    }
+
+    #[test]
+    fn fs_mutation_syscalls_mkdir_unlink_rmdir_rename() {
+        let (mut vfs, mut procs, mut pipes, pid) = setup(); // fd3 = Dir "/", caps "/" RWX
+        let p1 = |op: u8, path: &str| Writer::new().u8(op).u32(PREOPEN_FD).bytes(path.as_bytes()).build();
+        let p2 = |op: u8, a: &str, b: &str| {
+            Writer::new().u8(op).u32(PREOPEN_FD).bytes(a.as_bytes()).u32(PREOPEN_FD).bytes(b.as_bytes()).build()
+        };
+        // mkdir /mnt/d
+        assert_eq!(read_u16(&drive(&mut vfs, &mut procs, &mut pipes, pid, &p1(0x11, "/mnt/d"))), errno::SUCCESS);
+        assert!(vfs.is_dir("/mnt/d"));
+        // mkdir existing → EEXIST
+        assert_eq!(read_u16(&drive(&mut vfs, &mut procs, &mut pipes, pid, &p1(0x11, "/mnt/d"))), errno::EXIST);
+        // unlink a file
+        vfs.write("/mnt/f", b"x".to_vec()).unwrap();
+        assert_eq!(read_u16(&drive(&mut vfs, &mut procs, &mut pipes, pid, &p1(0x12, "/mnt/f"))), errno::SUCCESS);
+        assert_eq!(vfs.read("/mnt/f"), Err(crate::vfs::FsError::NotFound));
+        // rename a file
+        vfs.write("/mnt/a", b"1".to_vec()).unwrap();
+        assert_eq!(read_u16(&drive(&mut vfs, &mut procs, &mut pipes, pid, &p2(0x14, "/mnt/a", "/mnt/b"))), errno::SUCCESS);
+        assert_eq!(vfs.read("/mnt/b").unwrap(), b"1");
+        // rmdir the (empty) dir
+        assert_eq!(read_u16(&drive(&mut vfs, &mut procs, &mut pipes, pid, &p1(0x13, "/mnt/d"))), errno::SUCCESS);
+        assert!(!vfs.is_dir("/mnt/d"));
+    }
+
+    #[test]
+    fn fs_mutation_respects_capabilities() {
+        // pid granted only /home; mutating /mnt must be denied (default-deny).
+        let mut vfs = Vfs::new(Box::new(MemStore::default()), Box::new(MemStore::default()));
+        vfs.mount("/mnt", Backend::Idb).unwrap();
+        let mut procs = ProcTable::new();
+        let mut pipes = PipeTable::new();
+        let mut caps = CapabilitySet::default();
+        caps.grant(Capability::FsPath { subtree: "/home".into(), rights: Rights::RW });
+        let pid = procs.spawn("t", 5, caps);
+        let req = Writer::new().u8(0x11).u32(PREOPEN_FD).bytes(b"/mnt/x").build();
+        assert_eq!(read_u16(&drive(&mut vfs, &mut procs, &mut pipes, pid, &req)), errno::NOTCAPABLE);
     }
 
     #[test]

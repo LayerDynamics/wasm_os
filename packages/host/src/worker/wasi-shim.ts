@@ -162,6 +162,69 @@ export function makeWasiImports(getMemory: () => WebAssembly.Memory, ring: RingC
       return errno;
     },
 
+    path_filestat_get(
+      dirfd: number,
+      _flags: number,
+      pathPtr: number,
+      pathLen: number,
+      bufPtr: number,
+    ): number {
+      const path = td.decode(u8().subarray(pathPtr, pathPtr + pathLen));
+      const resp = new Reader(
+        ring.call(new Writer().u8(OP.PATH_FILESTAT_GET).u32(dirfd).bytes(te.encode(path)).build()),
+      );
+      const errno = resp.u16();
+      const filetype = resp.u8();
+      const size = resp.u64();
+      if (errno === ERRNO.SUCCESS) {
+        const view = dv();
+        for (let i = 0; i < 64; i++) view.setUint8(bufPtr + i, 0); // filestat is 64 bytes
+        view.setUint8(bufPtr + 16, filetype); // fs_filetype
+        view.setBigUint64(bufPtr + 24, 1n, true); // fs_nlink
+        view.setBigUint64(bufPtr + 32, size, true); // fs_size
+      }
+      return errno;
+    },
+
+    path_create_directory(dirfd: number, pathPtr: number, pathLen: number): number {
+      const path = td.decode(u8().subarray(pathPtr, pathPtr + pathLen));
+      const req = new Writer().u8(OP.PATH_CREATE_DIRECTORY).u32(dirfd).bytes(te.encode(path)).build();
+      return new Reader(ring.call(req)).u16();
+    },
+
+    path_unlink_file(dirfd: number, pathPtr: number, pathLen: number): number {
+      const path = td.decode(u8().subarray(pathPtr, pathPtr + pathLen));
+      const req = new Writer().u8(OP.PATH_UNLINK_FILE).u32(dirfd).bytes(te.encode(path)).build();
+      return new Reader(ring.call(req)).u16();
+    },
+
+    path_remove_directory(dirfd: number, pathPtr: number, pathLen: number): number {
+      const path = td.decode(u8().subarray(pathPtr, pathPtr + pathLen));
+      const req = new Writer().u8(OP.PATH_REMOVE_DIRECTORY).u32(dirfd).bytes(te.encode(path)).build();
+      return new Reader(ring.call(req)).u16();
+    },
+
+    path_rename(
+      oldDirfd: number,
+      oldPtr: number,
+      oldLen: number,
+      newDirfd: number,
+      newPtr: number,
+      newLen: number,
+    ): number {
+      const mem = u8();
+      const oldPath = td.decode(mem.subarray(oldPtr, oldPtr + oldLen));
+      const newPath = td.decode(mem.subarray(newPtr, newPtr + newLen));
+      const req = new Writer()
+        .u8(OP.PATH_RENAME)
+        .u32(oldDirfd)
+        .bytes(te.encode(oldPath))
+        .u32(newDirfd)
+        .bytes(te.encode(newPath))
+        .build();
+      return new Reader(ring.call(req)).u16();
+    },
+
     fd_readdir(fd: number, buf: number, bufLen: number, cookie: bigint, bufusedPtr: number): number {
       const resp = new Reader(
         ring.call(new Writer().u8(OP.FD_READDIR).u32(fd).u64(cookie).u32(bufLen).build()),

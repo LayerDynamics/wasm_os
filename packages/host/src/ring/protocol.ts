@@ -25,6 +25,11 @@ export const OP = {
   RANDOM_GET: 0x0e,
   CLOCK_TIME_GET: 0x0f,
   PROC_EXIT: 0x10,
+  PATH_CREATE_DIRECTORY: 0x11,
+  PATH_UNLINK_FILE: 0x12,
+  PATH_REMOVE_DIRECTORY: 0x13,
+  PATH_RENAME: 0x14,
+  PATH_FILESTAT_GET: 0x15,
 } as const;
 
 /** WASI Preview 1 errno values (subset) — must match `syscall::errno`. */
