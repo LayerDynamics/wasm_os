@@ -23,6 +23,9 @@ crates/kernel/src/bindings.rs
 **/*.wasm
 !wit/**/*.wasm
 
+# Zig compilation cache (build:guests:zig) — build output, not source
+.zig-cache
+
 # Test output
 /playwright-report
 /test-results

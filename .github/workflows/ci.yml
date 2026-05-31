@@ -16,6 +16,13 @@ jobs:
           components: clippy
       - name: Install component tooling
         run: cargo install cargo-component wasm-tools --locked
+      - name: Install Zig (FR-14 polyglot guest)
+        # Pinned stable release. echo.zig builds reproducibly here; the polyglot
+        # host test (test:host) runs it through node:wasi and byte-diffs it against
+        # the Rust echo, and the E2E runs it through the real kernel.
+        uses: mlugg/setup-zig@v1
+        with:
+          version: 0.14.1
       - uses: actions/setup-node@v4
         with:
           node-version: "24"
@@ -33,12 +40,13 @@ jobs:
         run: npm run lint
       - name: Rust tests
         run: npm run test:rust
+      - name: Build guest binaries (Rust wasm32-wasip1 + Zig wasm32-wasi)
+        # Real guests the E2E spawns (hello/crash/catfile/sh/coreutils) plus the
+        # Zig echo (FR-14). Built BEFORE host tests because the polyglot host test
+        # byte-diffs the installed echo.wasm vs echo.zig.wasm. A guest compile
+        # failure surfaces here as its own clear step.
+        run: npm run build:guests
       - name: Host tests
         run: npm run test:host
-      - name: Build guest binaries (wasm32-wasip1)
-        # Real Rust guests the M1 E2E spawns (hello/crash/catfile). Building here
-        # surfaces a guest compile failure as its own step (the E2E web server
-        # also builds them, but this fails fast and clearly).
-        run: npm run build:guests
       - name: E2E (real browser)
         run: npm run test:e2e

@@ -2,7 +2,9 @@ import { boot, type BootResult } from "./boot.js";
 import { attachTerminal, type TerminalSession } from "./term/terminal.js";
 
 /** Executables loaded into the VFS `/bin` at boot (tmpfs, repopulated each boot). */
-const BIN = ["sh", "echo", "cat", "grep", "ls", "wc", "cp", "mv", "rm", "mkdir", "pwd", "head", "tail", "env"];
+// "echo.zig" is the Zig-built sibling of "echo" (FR-14 polyglot proof): same WASI
+// ABI, observably identical output, runs through the exact same kernel process path.
+const BIN = ["sh", "echo", "cat", "grep", "ls", "wc", "cp", "mv", "rm", "mkdir", "pwd", "head", "tail", "env", "echo.zig"];
 const GUESTS = "/packages/host/guests";
 
 /** Boot result + cold-load timing + the running shell/terminal session. */
