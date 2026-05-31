@@ -4,7 +4,8 @@
 
 | Exit criterion | Verified by | Result |
 |----------------|-------------|--------|
-| Boots to `ready` < 1500 ms | `e2e/boot.spec.ts` test 1 (`bootMillis < 1500`) | ✅ PASS (boot well under budget; full test 248–278 ms incl. nav) |
+| Boots to `ready` < 1500 ms | `e2e/boot.spec.ts` test 1 (`bootMillis < 1500`) | ✅ PASS (boot well under budget; `bootMillis` measures kernel init from `boot()`, excludes script/wasm download) |
+| Cross-origin isolation (COOP/COEP) effective → tier A | `e2e/boot.spec.ts` test 1 (`crossOriginIsolated === true`, `tier === "A"`) | ✅ PASS |
 | Tri-backend VFS read/write/list (tmpfs `/`, OPFS `/home`, IDB `/mnt`) | `kernel` `vfs::tests` (4) + E2E test 2 | ✅ PASS |
 | `/home` (OPFS) + `/mnt` (IndexedDB) persist across reload; tmpfs volatile | `e2e/boot.spec.ts` test 2 (real Chromium, real OPFS/IDB) | ✅ PASS |
 | `npm run verify` all green | local (this machine) | ✅ PASS |

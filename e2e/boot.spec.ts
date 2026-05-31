@@ -22,11 +22,18 @@ test("boots to ready under 1.5s and reports a tier", async ({ page }) => {
   await waitForBoot(page, errors);
 
   const result = await page.evaluate(() => {
-    const w = (window as unknown as { __wasmos: { bootMillis: number; features: { tier: string; opfs: boolean } } }).__wasmos;
+    const w = (window as unknown as {
+      __wasmos: { bootMillis: number; features: { tier: string; opfs: boolean; crossOriginIsolated: boolean } };
+    }).__wasmos;
     return { bootMillis: w.bootMillis, features: w.features };
   });
+  // NOTE: bootMillis is measured from boot() invocation, not navigation start —
+  // it excludes script/wasm download. It bounds kernel init, not full cold load.
   expect(result.bootMillis).toBeLessThan(1500);
-  expect(["A", "B"]).toContain(result.features.tier);
+  // The dev/E2E server sets COOP/COEP, so isolation MUST hold and tier MUST be A.
+  // This verifies the headers actually take effect (not just that a tier is reported).
+  expect(result.features.crossOriginIsolated).toBe(true);
+  expect(result.features.tier).toBe("A");
   await expect(page.locator("#status")).toContainText("ready in");
 });
 
