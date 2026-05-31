@@ -4,8 +4,12 @@
 //! on the host with an in-memory blockstore.
 
 use crate::sched::Scheduler;
+use crate::syscall;
 use crate::types::{Backend, Capability, CapabilitySet, ProcInfo, ProcState, ProcTable, Rights};
 use crate::vfs::{Blockstore, FsError, Vfs};
+
+/// Default scheduling priority for user processes spawned at M1 (init is 10).
+const USER_PRIORITY: u8 = 5;
 
 pub struct KernelCore {
     vfs: Vfs,
@@ -85,6 +89,43 @@ impl KernelCore {
     pub fn check_cap(&self, pid: u32, cap: &Capability) -> bool {
         self.procs.has_cap(pid, cap)
     }
+
+    // --- Process lifecycle (M1, FR-5) ---
+
+    /// Allocate a process with a minimal capability set and make it `Ready`
+    /// (enqueued on the scheduler). `grant_fs` is an optional `(subtree, rights)`
+    /// FS grant; `grant_spawn` confers the right to spawn children. The kernel
+    /// **never** grants `Shm` here — there is no inter-process memory path at M1
+    /// (the structural half of the isolation guarantee, FR-6).
+    pub fn spawn(&mut self, name: &str, grant_fs: Option<(&str, Rights)>, grant_spawn: bool) -> u32 {
+        let mut caps = CapabilitySet::default();
+        if let Some((subtree, rights)) = grant_fs {
+            caps.grant(Capability::FsPath { subtree: subtree.to_string(), rights });
+        }
+        if grant_spawn {
+            caps.grant(Capability::Spawn);
+        }
+        let pid = self.procs.spawn(name, USER_PRIORITY, caps);
+        self.procs.set_state(pid, ProcState::Ready);
+        self.sched.enqueue(pid, USER_PRIORITY);
+        pid
+    }
+
+    /// Route one WASI Preview 1 syscall for `pid` (FR-4). The bytes are the
+    /// hand-rolled wire format decoded by [`crate::syscall::dispatch`].
+    pub fn service_syscall(&mut self, pid: u32, req: &[u8]) -> Vec<u8> {
+        syscall::dispatch(&mut self.vfs, &mut self.procs, pid, req)
+    }
+
+    /// The process's exit code, if it has exited (FR-5 `wait`).
+    pub fn exit_code(&self, pid: u32) -> Option<i32> {
+        self.procs.exit_code(pid)
+    }
+
+    /// Drain and return a process's captured `(stdout, stderr)`.
+    pub fn take_capture(&mut self, pid: u32) -> (Vec<u8>, Vec<u8>) {
+        self.procs.take_capture(pid)
+    }
 }
 
 #[cfg(test)]
@@ -144,5 +185,67 @@ mod tests {
         assert_eq!(k.read("/scratch").unwrap(), b"t");
         assert_eq!(k.read("/home/a").unwrap(), b"h");
         assert_eq!(k.read("/mnt/b").unwrap(), b"m");
+    }
+
+    // --- M1: process lifecycle (FR-5) ---
+
+    /// Encode a syscall request the way the host JS shim does (op byte + LE fields).
+    fn fd_write_req(fd: u32, data: &[u8]) -> Vec<u8> {
+        let mut v = vec![0x01u8]; // Op::FdWrite
+        v.extend_from_slice(&fd.to_le_bytes());
+        v.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        v.extend_from_slice(data);
+        v
+    }
+    fn proc_exit_req(code: u32) -> Vec<u8> {
+        let mut v = vec![0x10u8]; // Op::ProcExit
+        v.extend_from_slice(&code.to_le_bytes());
+        v
+    }
+
+    #[test]
+    fn spawn_then_service_fd_write_then_exit() {
+        let mut k = core();
+        k.boot();
+        let pid = k.spawn("hello", Some(("/", Rights::RW)), false);
+        assert!(pid > 1); // init is pid 1
+        // Process is Ready and enqueued.
+        assert!(k.ready_count() >= 1);
+        // Route an fd_write to stdout, then proc_exit(0).
+        let resp = k.service_syscall(pid, &fd_write_req(1, b"hi"));
+        assert_eq!(u16::from_le_bytes([resp[0], resp[1]]), 0); // SUCCESS
+        k.service_syscall(pid, &proc_exit_req(0));
+        let (out, _err) = k.take_capture(pid);
+        assert_eq!(out, b"hi");
+        assert_eq!(k.exit_code(pid), Some(0));
+    }
+
+    #[test]
+    fn two_spawns_have_isolated_fd_tables_and_no_shm_cap() {
+        let mut k = core();
+        k.boot();
+        let a = k.spawn("a", Some(("/home", Rights::RW)), false);
+        let b = k.spawn("b", Some(("/home", Rights::RW)), false);
+        assert_ne!(a, b);
+        // Neither holds Shm — there is no inter-process memory path (FR-6).
+        assert!(!k.check_cap(a, &Capability::Shm));
+        assert!(!k.check_cap(b, &Capability::Shm));
+        // Each has exactly the FS grant it asked for, nothing more.
+        assert!(k.check_cap(a, &Capability::FsPath { subtree: "/home/x".into(), rights: Rights::R }));
+        assert!(!k.check_cap(a, &Capability::FsPath { subtree: "/mnt".into(), rights: Rights::R }));
+    }
+
+    #[test]
+    fn spawn_grants_only_requested_caps() {
+        let mut k = core();
+        k.boot();
+        // No FS grant, no spawn grant → default-deny everything.
+        let pid = k.spawn("bare", None, false);
+        assert!(!k.check_cap(pid, &Capability::Spawn));
+        assert!(!k.check_cap(pid, &Capability::Shm));
+        assert!(!k.check_cap(pid, &Capability::FsPath { subtree: "/".into(), rights: Rights::R }));
+        // With spawn grant.
+        let p2 = k.spawn("launcher", None, true);
+        assert!(k.check_cap(p2, &Capability::Spawn));
     }
 }

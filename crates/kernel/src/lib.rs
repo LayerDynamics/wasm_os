@@ -8,6 +8,7 @@
 // `component` or by M1 callers are not miscounted as dead on the host build.
 pub mod kcore;
 pub mod sched;
+pub mod syscall;
 pub mod types;
 pub mod vfs;
 
@@ -25,13 +26,13 @@ mod bindings;
 mod component {
     use super::bindings;
     use super::kcore::KernelCore;
-    use super::types::Backend;
+    use super::types::{Backend, Rights};
     use super::vfs::{Blockstore, FsError};
     use std::cell::RefCell;
 
     use bindings::exports::wasmos::abi::control::{
         Backend as WBackend, BootStatus, FeatureReport, FsError as WFsError, Guest,
-        ProcInfo as WProcInfo,
+        ProcInfo as WProcInfo, SpawnSpec,
     };
     use bindings::wasmos::abi::{home_store, mnt_store};
 
@@ -123,6 +124,30 @@ mod component {
                     .map(|p| WProcInfo { pid: p.pid, name: p.name, state: p.state })
                     .collect()
             })
+        }
+
+        // --- Process lifecycle (M1, FR-5) ---
+
+        fn spawn(spec: SpawnSpec) -> u32 {
+            // An empty subtree means "no FS grant"; otherwise grant read+write.
+            let grant_fs = if spec.grant_fs_subtree.is_empty() {
+                None
+            } else {
+                Some((spec.grant_fs_subtree.as_str(), Rights::RW))
+            };
+            KERNEL.with(|k| k.borrow_mut().spawn(&spec.name, grant_fs, spec.grant_spawn))
+        }
+
+        fn service_syscall(pid: u32, request: Vec<u8>) -> Vec<u8> {
+            KERNEL.with(|k| k.borrow_mut().service_syscall(pid, &request))
+        }
+
+        fn exit_code(pid: u32) -> Option<i32> {
+            KERNEL.with(|k| k.borrow().exit_code(pid))
+        }
+
+        fn take_capture(pid: u32) -> (Vec<u8>, Vec<u8>) {
+            KERNEL.with(|k| k.borrow_mut().take_capture(pid))
         }
     }
 
