@@ -1,0 +1,31 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - name: Install component tooling
+        run: cargo install cargo-component wasm-tools --locked
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - name: Build kernel + generate bindings
+        run: npm run build
+      - name: Binder drift gate
+        run: npm run binder:check
+      - name: Rust tests
+        run: npm run test:rust
+      - name: Host tests
+        run: npm run test:host
+      - name: E2E (real browser)
+        run: npm run test:e2e
