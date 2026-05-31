@@ -11,6 +11,7 @@ members = [
     "crates/coreutils",
     "crates/gfxspike",
     "crates/apps/filemanager",
+    "crates/apps/paint",
 ]
 
 [workspace.package]

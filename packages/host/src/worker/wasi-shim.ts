@@ -12,6 +12,16 @@
  */
 import type { RingClient } from "../ring/guest.js";
 import { OP, ERRNO, Reader, Writer } from "../ring/protocol.js";
+import { REQ_CAP, RESP_CAP } from "../ring/layout.js";
+
+/**
+ * Max bytes moved through the SAB ring in one fd_read/fd_write. The ring request
+ * and response buffers are bounded (REQ_CAP/RESP_CAP), so a single syscall caps
+ * its payload and reports a SHORT read/write; libc's `read`/`write_all` then loop
+ * for the remainder. Without this, a large write (e.g. saving a framebuffer)
+ * overflows the ring and silently writes nothing.
+ */
+const MAX_IO_BYTES = Math.min(REQ_CAP, RESP_CAP) - 64;
 
 /** Thrown to unwind the guest when it calls `proc_exit`. */
 export class ProcExit extends Error {
@@ -51,11 +61,15 @@ export function makeWasiImports(getMemory: () => WebAssembly.Memory, ring: RingC
       const iovs = readIovs(iovsPtr, iovsLen);
       const mem = u8();
       const total = iovs.reduce((n, v) => n + v.len, 0);
-      const data = new Uint8Array(total);
+      // Send at most one ring-payload worth; report a short write so libc loops.
+      const cap = Math.min(total, MAX_IO_BYTES);
+      const data = new Uint8Array(cap);
       let off = 0;
       for (const v of iovs) {
-        data.set(mem.subarray(v.buf, v.buf + v.len), off);
-        off += v.len;
+        if (off >= cap) break;
+        const take = Math.min(v.len, cap - off);
+        data.set(mem.subarray(v.buf, v.buf + take), off);
+        off += take;
       }
       const resp = new Reader(ring.call(new Writer().u8(OP.FD_WRITE).u32(fd).bytes(data).build()));
       const errno = resp.u16();
@@ -67,7 +81,10 @@ export function makeWasiImports(getMemory: () => WebAssembly.Memory, ring: RingC
     fd_read(fd: number, iovsPtr: number, iovsLen: number, nreadPtr: number): number {
       const iovs = readIovs(iovsPtr, iovsLen);
       const total = iovs.reduce((n, v) => n + v.len, 0);
-      const resp = new Reader(ring.call(new Writer().u8(OP.FD_READ).u32(fd).u32(total).build()));
+      // Request at most one ring-payload worth; a short read makes libc loop for a
+      // large file rather than overflow the response ring.
+      const want = Math.min(total, MAX_IO_BYTES);
+      const resp = new Reader(ring.call(new Writer().u8(OP.FD_READ).u32(fd).u32(want).build()));
       const errno = resp.u16();
       const data = resp.bytes();
       const mem = u8();

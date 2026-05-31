@@ -47,6 +47,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "paint"
+version = "0.0.0"
+dependencies = [
+ "wasmgfx",
+ "wasmos-sys",
+]
+
+[[package]]
 name = "sh"
 version = "0.0.0"
 dependencies = [

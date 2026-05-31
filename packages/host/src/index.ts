@@ -14,7 +14,7 @@ const BIN = [
   "sh", "echo", "cat", "grep", "ls", "wc", "cp", "mv", "rm", "mkdir", "pwd", "head", "tail", "env",
   "echo.zig", "crash",
   // M3 graphical apps (canvas surfaces); launchable from the file manager.
-  "gfxspike", "filemanager",
+  "gfxspike", "filemanager", "paint",
 ];
 const GUESTS = "/packages/host/guests";
 
