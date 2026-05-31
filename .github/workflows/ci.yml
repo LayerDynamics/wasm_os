@@ -19,14 +19,14 @@ jobs:
           node-version: "24"
       - run: npm ci
       - run: npx playwright install --with-deps chromium
-      - name: Build kernel + regenerate bindings from wit/
-        run: npm run build
-      - name: Binder drift gate — committed bindings must match regenerated
-        # `npm run build` rebuilds the kernel from wit/ and re-runs `binder gen`,
-        # overwriting packages/abi/generated. If the committed bindings were stale
-        # (wit/ or kernel changed without regenerating), git now sees a diff and
-        # this fails. This is the SOUND gate: compare against git, not fresh-vs-fresh.
-        run: git diff --exit-code -- packages/abi/generated
+      - name: Binder drift gate — rebuild from wit/ + git-diff committed bindings
+        # `npm run drift` = build kernel from wit/ + binder gen (overwrites
+        # packages/abi/generated) + `git diff --exit-code`. If the committed
+        # bindings were stale (wit/ or kernel changed without regenerating), or
+        # if Linux produces different output than the committed (mac) bindings,
+        # this fails. SOUND gate: compares against git, not fresh-vs-fresh — and
+        # doubles as the cross-platform determinism check.
+        run: npm run drift
       - name: Rust tests
         run: npm run test:rust
       - name: Host tests
