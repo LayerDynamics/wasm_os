@@ -43,7 +43,8 @@ export function attachTerminal(
   // Terminal → kernel (local echo, then deliver to the shell's stdin).
   term.onData((data) => {
     write(data === "\r" ? "\r\n" : data);
-    void control.stdin(shellPid, enc.encode(data));
+    const toSend = data === "\r" ? "\n" : data;
+    void control.stdin(shellPid, enc.encode(toSend));
   });
 
   return { term, log: () => logText };
