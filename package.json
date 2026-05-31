@@ -12,7 +12,7 @@
     "binder:kernel-check": "node tools/binder/binder.mjs kernel-check",
     "build:kernel": "cargo component build --release -p kernel --target wasm32-unknown-unknown",
     "build:guests": "cargo build -p hello -p crash -p catfile -p sh -p coreutils -p gfxspike -p filemanager -p paint -p editor --target wasm32-wasip1 --release && mkdir -p packages/host/guests && for b in hello crash catfile sh echo cat grep ls wc cp mv rm mkdir pwd head tail env gfxspike filemanager paint editor; do cp target/wasm32-wasip1/release/$b.wasm packages/host/guests/; done && npm run build:guests:zig",
-    "build:guests:zig": "zig build-exe guests/zig/echo.zig -target wasm32-wasi -O ReleaseSmall -femit-bin=packages/host/guests/echo.zig.wasm",
+    "build:guests:zig": "zig build-exe guests/zig/echo.zig -target wasm32-wasi -O ReleaseSmall -femit-bin=packages/host/guests/echo.zig.wasm && zig build-exe guests/zig/mandelbrot.zig -target wasm32-wasi -O ReleaseFast -femit-bin=packages/host/guests/mandelbrot.wasm",
     "build": "npm run build:kernel && npm run binder gen",
     "bundle": "esbuild packages/host/src/index.ts packages/host/src/worker/kernel-worker.ts packages/host/src/worker/process-worker.ts --bundle --format=esm --outdir=dist",
     "bundle:harness": "esbuild packages/host/src/test-harness.ts --bundle --format=esm --outfile=dist/test-harness.js",
