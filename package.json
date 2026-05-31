@@ -18,7 +18,7 @@
     "bundle:harness": "esbuild packages/host/src/test-harness.ts --bundle --format=esm --outfile=dist/test-harness.js",
     "typecheck": "tsc -p packages/host/tsconfig.json --noEmit",
     "lint": "cargo clippy --workspace --all-targets -- -D warnings && cargo clippy -p kernel --target wasm32-unknown-unknown --release -- -D warnings",
-    "test:rust": "cargo test -p kernel",
+    "test:rust": "cargo test -p kernel -p wasmgfx",
     "test:host": "vitest run",
     "test:e2e": "playwright test",
     "verify": "npm run build && npm run build:guests && npm run binder:kernel-check && npm run lint && npm run typecheck && npm run test:rust && npm run test:host && npm run test:e2e"
