@@ -31,6 +31,8 @@ const WIN_SURFACE: u8 = 0x23;
 /// never reaches the kernel ring. The opcode is the marker the shim matches on.
 const WIN_PRESENT: u8 = 0x24;
 const WIN_READ_INPUT: u8 = 0x25;
+const PROC_LIST: u8 = 0x30;
+const SET_PRIORITY: u8 = 0x31;
 
 /// File open mode for a stdio redirect.
 pub const FILE_READ: u8 = 0; // `<`
@@ -96,6 +98,11 @@ fn rd_u16(b: &[u8], at: usize) -> u16 {
 }
 fn rd_u32(b: &[u8], at: usize) -> u32 {
     u32::from_le_bytes([b[at], b[at + 1], b[at + 2], b[at + 3]])
+}
+fn rd_u64(b: &[u8], at: usize) -> u64 {
+    let mut v = [0u8; 8];
+    v.copy_from_slice(&b[at..at + 8]);
+    u64::from_le_bytes(v)
 }
 
 /// Spawn a child process from a VFS image with argv and stdio wiring. Returns
@@ -270,4 +277,100 @@ pub fn win_read_input() -> Result<Vec<InputEvent>, u16> {
         off += INPUT_EVENT_SIZE;
     }
     Ok(events)
+}
+
+// --- M4: process introspection + control (ps/top, FR-33; renice, FR-8) ---
+
+/// Process state as reported by `proc_list`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ProcState {
+    New,
+    Ready,
+    Running,
+    Blocked,
+    Zombie,
+    Unknown,
+}
+
+impl ProcState {
+    /// A short label for `ps`/`top` output.
+    pub fn label(self) -> &'static str {
+        match self {
+            ProcState::New => "new",
+            ProcState::Ready => "ready",
+            ProcState::Running => "run",
+            ProcState::Blocked => "blocked",
+            ProcState::Zombie => "zombie",
+            ProcState::Unknown => "?",
+        }
+    }
+}
+
+/// A live process-table entry (M4 `ps`/`top`).
+#[derive(Clone, Debug)]
+pub struct ProcInfo {
+    pub pid: u32,
+    pub name: String,
+    pub state: ProcState,
+    pub priority: u8,
+    /// Scheduler ticks accounted (one per serviced syscall) — kernel activity.
+    pub cpu_ticks: u64,
+    pub mem_bytes: u32,
+    /// Parent pid, or 0 for a host-spawned root.
+    pub parent: u32,
+}
+
+/// `proc_list()` — snapshot the live process table (FR-33). Returns every process
+/// with its state, priority, CPU-activity ticks, memory, and parent.
+pub fn proc_list() -> Vec<ProcInfo> {
+    // The table can be large (many processes); use a generous response buffer.
+    let req = [PROC_LIST];
+    let mut resp = vec![0u8; 16 * 1024];
+    let n = unsafe { syscall(req.as_ptr(), req.len(), resp.as_mut_ptr(), resp.len()) };
+    resp.truncate(n.min(resp.len()));
+    if resp.len() < 6 || rd_u16(&resp, 0) != 0 {
+        return Vec::new();
+    }
+    let count = rd_u32(&resp, 2) as usize;
+    let mut out = Vec::with_capacity(count);
+    let mut off = 6usize;
+    for _ in 0..count {
+        if off + 8 > resp.len() {
+            break;
+        }
+        let pid = rd_u32(&resp, off);
+        let nlen = rd_u32(&resp, off + 4) as usize;
+        off += 8;
+        if off + nlen + 18 > resp.len() {
+            break;
+        }
+        let name = String::from_utf8_lossy(&resp[off..off + nlen]).into_owned();
+        off += nlen;
+        let state = match resp[off] {
+            0 => ProcState::New,
+            1 => ProcState::Ready,
+            2 => ProcState::Running,
+            3 => ProcState::Blocked,
+            4 => ProcState::Zombie,
+            _ => ProcState::Unknown,
+        };
+        let priority = resp[off + 1];
+        let cpu_ticks = rd_u64(&resp, off + 2);
+        let mem_bytes = rd_u32(&resp, off + 10);
+        let parent = rd_u32(&resp, off + 14);
+        off += 18;
+        out.push(ProcInfo { pid, name, state, priority, cpu_ticks, mem_bytes, parent });
+    }
+    out
+}
+
+/// `set_priority(pid, priority)` — renice a process (FR-8). Reniceing another
+/// process requires the Signal capability; reniceing self is always allowed.
+/// Returns the kernel errno (0 = success).
+pub fn set_priority(pid: u32, priority: u8) -> u16 {
+    let mut w = W::new();
+    w.u8(SET_PRIORITY);
+    w.u32(pid);
+    w.u8(priority);
+    rd_u16(&call(&w.0), 0)
 }

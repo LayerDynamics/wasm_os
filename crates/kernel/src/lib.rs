@@ -128,7 +128,15 @@ mod component {
                 k.borrow()
                     .list_procs()
                     .into_iter()
-                    .map(|p| WProcInfo { pid: p.pid, name: p.name, state: p.state })
+                    .map(|p| WProcInfo {
+                        pid: p.pid,
+                        name: p.name,
+                        state: p.state,
+                        priority: p.priority,
+                        cpu_ticks: p.cpu_ticks,
+                        mem_bytes: p.mem_bytes,
+                        parent: p.parent,
+                    })
                     .collect()
             })
         }
@@ -168,6 +176,14 @@ mod component {
 
         fn bind_terminal(pid: u32) {
             KERNEL.with(|k| k.borrow_mut().bind_terminal(pid));
+        }
+
+        fn set_proc_mem(pid: u32, bytes: u32) {
+            KERNEL.with(|k| k.borrow_mut().set_proc_mem(pid, bytes));
+        }
+
+        fn set_priority(pid: u32, priority: u8) {
+            KERNEL.with(|k| k.borrow_mut().set_priority(pid, priority));
         }
 
         fn exit_code(pid: u32) -> Option<i32> {

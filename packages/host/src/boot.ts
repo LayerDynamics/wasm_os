@@ -10,6 +10,12 @@ export interface ProcInfo {
   pid: number;
   name: string;
   state: string;
+  priority: number;
+  /** Scheduler ticks (one per serviced syscall) — kernel-activity metric (M4). */
+  cpuTicks: bigint;
+  memBytes: number;
+  /** Parent pid, or 0 for a host-spawned root. */
+  parent: number;
 }
 export interface SpawnOptions {
   name?: string;

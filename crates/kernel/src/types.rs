@@ -206,6 +206,13 @@ pub struct Process {
     /// Command-line arguments (argv) surfaced via `args_get` (M2). argv[0] is
     /// the program name.
     pub argv: Vec<String>,
+    /// Spawning process (M4 `ps`/`top`); `None` for host-spawned roots.
+    pub parent: Option<u32>,
+    /// Reported guest `WebAssembly.Memory` size in bytes (M4 `top`); 0 until the
+    /// process worker reports it after instantiation.
+    pub mem_bytes: u32,
+    /// Pending signals delivered but not yet consumed via `sig_pending` (M4-T5).
+    pub pending_signals: VecDeque<u8>,
 }
 
 /// Build the standard descriptor table for a fresh process: stdin/stdout/stderr
@@ -223,11 +230,17 @@ fn std_fds() -> BTreeMap<u32, Descriptor> {
 }
 
 /// WIT-facing projection of a process (matches wit/control.wit `proc-info`).
+/// `cpu_ticks` is filled by the kernel core from the scheduler (M4 `ps`/`top`).
 #[derive(Clone, Debug)]
 pub struct ProcInfo {
     pub pid: u32,
     pub name: String,
     pub state: String,
+    pub priority: u8,
+    pub cpu_ticks: u64,
+    pub mem_bytes: u32,
+    /// Parent pid, or 0 for a host-spawned root.
+    pub parent: u32,
 }
 
 // ---------------------------------------------------------------------------
@@ -302,6 +315,9 @@ impl ProcTable {
             input: VecDeque::new(),
             blocked_on: None,
             argv: vec![name.to_string()],
+            parent: None,
+            mem_bytes: 0,
+            pending_signals: VecDeque::new(),
         });
         pid
     }
@@ -510,8 +526,49 @@ impl ProcTable {
     pub fn list(&self) -> Vec<ProcInfo> {
         self.procs
             .iter()
-            .map(|p| ProcInfo { pid: p.pid, name: p.name.clone(), state: p.state.as_str().to_string() })
+            .map(|p| ProcInfo {
+                pid: p.pid,
+                name: p.name.clone(),
+                state: p.state.as_str().to_string(),
+                priority: p.priority,
+                cpu_ticks: 0, // filled by KernelCore from the scheduler
+                mem_bytes: p.mem_bytes,
+                parent: p.parent.unwrap_or(0),
+            })
             .collect()
+    }
+
+    /// Record a process's reported memory size (M4 `top`).
+    pub fn set_mem(&mut self, pid: u32, bytes: u32) -> bool {
+        self.get_mut(pid).map(|p| p.mem_bytes = bytes).is_some()
+    }
+
+    /// Record a process's parent (M4 `ps` tree). Set by guest spawn (k_spawn).
+    pub fn set_parent(&mut self, pid: u32, parent: u32) -> bool {
+        self.get_mut(pid).map(|p| p.parent = Some(parent)).is_some()
+    }
+
+    /// Change a process's scheduling priority (FR-8). Returns the old priority so
+    /// the caller can re-bucket it in the scheduler if it is ready.
+    pub fn set_priority(&mut self, pid: u32, priority: u8) -> Option<u8> {
+        self.get_mut(pid).map(|p| {
+            let old = p.priority;
+            p.priority = priority;
+            old
+        })
+    }
+
+    /// Push a pending signal for a process; returns false if the pid is unknown.
+    pub fn push_signal(&mut self, pid: u32, sig: u8) -> bool {
+        self.get_mut(pid).map(|p| p.pending_signals.push_back(sig)).is_some()
+    }
+
+    /// Drain and return a process's pending signals (consumed by `sig_pending`).
+    pub fn take_signals(&mut self, pid: u32) -> Vec<u8> {
+        match self.get_mut(pid) {
+            Some(p) => p.pending_signals.drain(..).collect(),
+            None => Vec::new(),
+        }
     }
 }
 

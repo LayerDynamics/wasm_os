@@ -32,6 +32,23 @@ interface process {
 
   /// Wait for a child to exit; returns its exit code (blocks until it exits).
   wait: func(pid: u32) -> result<s32, u16>;
+
+  /// A live process-table entry (M4 `ps`/`top`, FR-33).
+  record proc-info {
+    pid: u32,
+    name: string,
+    state: u8,
+    priority: u8,
+    cpu-ticks: u64,
+    mem-bytes: u32,
+    parent: u32,
+  }
+
+  /// Snapshot the live process table (FR-33).
+  proc-list: func() -> list<proc-info>;
+
+  /// Renice a process (FR-8); reniceing another requires the Signal capability.
+  set-priority: func(pid: u32, priority: u8) -> u16;
 }
 
 /// The wasmos_kernel compositor extension (M3) — the guest surface + input

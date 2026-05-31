@@ -82,7 +82,25 @@ impl KernelCore {
 
     // --- Process/scheduler/capability surface ---
     pub fn list_procs(&self) -> Vec<ProcInfo> {
-        self.procs.list()
+        // Enrich the process table projection with scheduler CPU accounting (M4).
+        let mut infos = self.procs.list();
+        for i in infos.iter_mut() {
+            i.cpu_ticks = self.sched.time_of(i.pid);
+        }
+        infos
+    }
+
+    /// Record a process's reported guest memory size (M4 `top`).
+    pub fn set_proc_mem(&mut self, pid: u32, bytes: u32) {
+        self.procs.set_mem(pid, bytes);
+    }
+
+    /// Change a process's scheduling priority at runtime (FR-8). Re-buckets it in
+    /// the scheduler if it is currently ready.
+    pub fn set_priority(&mut self, pid: u32, priority: u8) {
+        if self.procs.set_priority(pid, priority).is_some() {
+            self.sched.reprioritize(pid, priority);
+        }
     }
     pub fn proc_count(&self) -> usize {
         self.procs.count()
@@ -133,7 +151,60 @@ impl KernelCore {
     /// Route one syscall for `pid` (FR-4). Returns a [`syscall::SyscallOutcome`]
     /// — a ready reply, or a park (M2) the kworker defers until a wakeup.
     pub fn service_syscall(&mut self, pid: u32, req: &[u8]) -> syscall::SyscallOutcome {
-        syscall::dispatch(&mut self.vfs, &mut self.procs, &mut self.pipes, pid, req)
+        // Account one scheduler tick per serviced syscall — a deterministic
+        // kernel-activity metric powering `ps`/`top` (FR-3 time accounting, FR-33).
+        self.sched.account(pid, 1);
+        // proc_list / set_priority need the scheduler (cpu accounting, re-bucketing)
+        // so they are serviced here rather than in the (scheduler-free) router.
+        match req.first().copied() {
+            Some(0x30) => syscall::SyscallOutcome::ready(self.encode_proc_list()),
+            Some(0x31) => self.set_priority_syscall(pid, req),
+            _ => syscall::dispatch(&mut self.vfs, &mut self.procs, &mut self.pipes, pid, req),
+        }
+    }
+
+    /// `proc_list()` (M4 `ps`/`top`, FR-33). Reply: `[errno u16][count u32]` then,
+    /// per process: `pid u32, name(len-prefixed), state u8, priority u8,
+    /// cpu_ticks u64, mem_bytes u32, parent u32`.
+    fn encode_proc_list(&self) -> Vec<u8> {
+        let infos = self.list_procs();
+        let mut b = Vec::new();
+        b.extend_from_slice(&syscall::errno::SUCCESS.to_le_bytes());
+        b.extend_from_slice(&(infos.len() as u32).to_le_bytes());
+        for i in &infos {
+            b.extend_from_slice(&i.pid.to_le_bytes());
+            let name = i.name.as_bytes();
+            b.extend_from_slice(&(name.len() as u32).to_le_bytes());
+            b.extend_from_slice(name);
+            b.push(match i.state.as_str() {
+                "new" => 0,
+                "ready" => 1,
+                "running" => 2,
+                "blocked" => 3,
+                _ => 4, // zombie
+            });
+            b.push(i.priority);
+            b.extend_from_slice(&i.cpu_ticks.to_le_bytes());
+            b.extend_from_slice(&i.mem_bytes.to_le_bytes());
+            b.extend_from_slice(&i.parent.to_le_bytes());
+        }
+        b
+    }
+
+    /// `set_priority(target, prio)` (FR-8). A process may renice itself freely;
+    /// renicing another requires the Signal (process-control) capability.
+    fn set_priority_syscall(&mut self, pid: u32, req: &[u8]) -> syscall::SyscallOutcome {
+        let err = |e: u16| syscall::SyscallOutcome::ready(e.to_le_bytes().to_vec());
+        if req.len() < 6 {
+            return err(syscall::errno::INVAL);
+        }
+        let target = u32::from_le_bytes([req[1], req[2], req[3], req[4]]);
+        let prio = req[5];
+        if target != pid && !self.procs.has_cap(pid, &Capability::Signal) {
+            return err(syscall::errno::NOTCAPABLE);
+        }
+        self.set_priority(target, prio);
+        err(syscall::errno::SUCCESS)
     }
 
     /// Bind a process's stdout + stderr (fd 1/2) to the interactive terminal so
@@ -380,5 +451,42 @@ mod tests {
         let req = vec![0x25u8, 120, 0, 0, 0];
         assert!(k.service_syscall(with, &req).reply.is_none());
         assert_eq!(k.deliver_input(with, &[0u8; 12]), vec![with]);
+    }
+
+    // --- M4: process metrics + proc_list + runtime priority ---
+
+    #[test]
+    fn proc_list_carries_metrics_and_priority_is_capability_gated() {
+        let mut k = core();
+        k.boot();
+        let pid = k.spawn("worker", Some(("/", Rights::RW)), false, false, false);
+        k.set_proc_mem(pid, 1_114_112); // a worker reports its memory size
+
+        // A serviced syscall accounts a CPU tick; list_procs surfaces the metrics.
+        k.service_syscall(pid, &fd_write_req(1, b"x"));
+        let infos = k.list_procs();
+        let me = infos.iter().find(|i| i.pid == pid).unwrap();
+        assert!(me.cpu_ticks >= 1);
+        assert_eq!(me.priority, USER_PRIORITY);
+        assert_eq!(me.mem_bytes, 1_114_112);
+
+        // proc_list() syscall returns [errno][count] + the encoded table.
+        let resp = k.service_syscall(pid, &[0x30]).reply.unwrap();
+        assert_eq!(read_u16(&resp), 0); // SUCCESS
+        let count = u32::from_le_bytes([resp[2], resp[3], resp[4], resp[5]]);
+        assert!(count >= 2); // init + worker
+
+        // set_priority on SELF is allowed and re-buckets.
+        let mut self_req = vec![0x31u8];
+        self_req.extend_from_slice(&pid.to_le_bytes());
+        self_req.push(9);
+        assert_eq!(read_u16(&k.service_syscall(pid, &self_req).reply.unwrap()), 0);
+        assert_eq!(k.list_procs().iter().find(|i| i.pid == pid).unwrap().priority, 9);
+
+        // Renicing ANOTHER process without the Signal capability is denied.
+        let mut other_req = vec![0x31u8];
+        other_req.extend_from_slice(&1u32.to_le_bytes()); // init
+        other_req.push(3);
+        assert_eq!(read_u16(&k.service_syscall(pid, &other_req).reply.unwrap()), 76); // NOTCAPABLE
     }
 }

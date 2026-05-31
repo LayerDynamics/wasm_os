@@ -8,6 +8,15 @@ interface control {
     pid: u32,
     name: string,
     state: string,
+    /// Scheduling priority (FR-8) and accounting for `ps`/`top` (FR-33).
+    priority: u8,
+    /// Scheduler ticks accounted (one per serviced syscall) — a deterministic
+    /// kernel-activity metric (not literal CPU%).
+    cpu-ticks: u64,
+    /// Reported guest memory size in bytes (0 until the worker reports it).
+    mem-bytes: u32,
+    /// Parent pid, or 0 for a host-spawned root.
+    parent: u32,
   }
 
   record feature-report {
@@ -103,6 +112,12 @@ interface control {
   /// Bind a process's stdout/stderr to the interactive terminal: subsequent
   /// writes stream out as `syscall-outcome.term-output` (M2).
   bind-terminal: func(pid: u32);
+
+  /// Record a process's reported guest memory size (M4 `top`), from the worker.
+  set-proc-mem: func(pid: u32, bytes: u32);
+
+  /// Change a process's scheduling priority at runtime (FR-8).
+  set-priority: func(pid: u32, priority: u8);
 
   /// Has the process exited? Returns the exit code if it is a zombie.
   exit-code: func(pid: u32) -> option<s32>;

@@ -68,6 +68,8 @@ ctx.onmessage = async (ev: MessageEvent) => {
     instance = result.instance;
     const mem = instance.exports.memory as WebAssembly.Memory;
     sharedMemory = mem.buffer instanceof SharedArrayBuffer;
+    // Report the instantiated guest memory size for `ps`/`top` (M4).
+    ctx.postMessage({ type: "mem", pid, bytes: mem.buffer.byteLength });
 
     const start = instance.exports._start as () => void;
     start();

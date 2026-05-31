@@ -45,6 +45,7 @@ interface KernelControl {
   serviceSyscall(pid: number, request: Uint8Array): SyscallOutcome;
   deliverStdin(pid: number, bytes: Uint8Array): Uint32Array;
   deliverInput(pid: number, bytes: Uint8Array): Uint32Array;
+  setProcMem(pid: number, bytes: number): void;
   bindTerminal(pid: number): void;
   exitCode(pid: number): number | undefined;
   takeCapture(pid: number): [Uint8Array, Uint8Array];
@@ -274,7 +275,13 @@ function instantiateProcess(pid: number, wasmBytes: ArrayBuffer | Uint8Array): v
       width?: number;
       height?: number;
       sab?: SharedArrayBuffer;
+      bytes?: number;
     };
+    // M4 ps/top: the worker reported its guest memory size.
+    if (d.type === "mem" && d.bytes !== undefined) {
+      requireControl().setProcMem(pid, d.bytes);
+      return;
+    }
     // M3 compositor surfaces: a process worker created a surface or published a
     // frame. Track ownership (surface_id -> pid) and relay to the main thread,
     // which drives the canvas window + blits the shared framebuffer.

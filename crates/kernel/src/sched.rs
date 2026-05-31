@@ -58,6 +58,22 @@ impl Scheduler {
         self.ready.retain(|_, q| !q.is_empty());
     }
 
+    /// Move a ready process to a new priority level (FR-8 live renice). No-op if
+    /// the pid is not currently in the ready set (running/blocked procs re-enqueue
+    /// at their stored priority when they next become ready).
+    pub fn reprioritize(&mut self, pid: u32, new_priority: u8) {
+        let mut was_ready = false;
+        for q in self.ready.values_mut() {
+            let before = q.len();
+            q.retain(|&p| p != pid);
+            was_ready |= q.len() != before;
+        }
+        self.ready.retain(|_, q| !q.is_empty());
+        if was_ready {
+            self.enqueue(pid, new_priority);
+        }
+    }
+
     /// Charge `ticks` of CPU time to a process.
     pub fn account(&mut self, pid: u32, ticks: u64) {
         *self.time.entry(pid).or_insert(0) += ticks;
