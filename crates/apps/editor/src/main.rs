@@ -36,7 +36,10 @@ struct Editor {
 impl Editor {
     fn load(path: String) -> Editor {
         let text = std::fs::read_to_string(&path).unwrap_or_default();
-        let mut lines: Vec<String> = text.split('\n').map(|s| s.to_string()).collect();
+        let mut lines: Vec<String> = text
+            .split('\n')
+            .map(|s| s.chars().filter(|c| (' '..='~').contains(c)).collect())
+            .collect();
         if lines.is_empty() {
             lines.push(String::new());
         }
