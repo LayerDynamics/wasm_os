@@ -10,7 +10,12 @@ import { InputRouter } from "./compositor/input.js";
 // "crash" is the fault-injection guest (FR-34): it traps on purpose so the
 // crash-containment path (a trapped process must not take down the shell) is
 // exercisable from the terminal.
-const BIN = ["sh", "echo", "cat", "grep", "ls", "wc", "cp", "mv", "rm", "mkdir", "pwd", "head", "tail", "env", "echo.zig", "crash"];
+const BIN = [
+  "sh", "echo", "cat", "grep", "ls", "wc", "cp", "mv", "rm", "mkdir", "pwd", "head", "tail", "env",
+  "echo.zig", "crash",
+  // M3 graphical apps (canvas surfaces); launchable from the file manager.
+  "gfxspike", "filemanager",
+];
 const GUESTS = "/packages/host/guests";
 
 /** Boot result + cold-load timing + the running shell/terminal session. */

@@ -100,7 +100,14 @@ fn rd_u32(b: &[u8], at: usize) -> u32 {
 
 /// Spawn a child process from a VFS image with argv and stdio wiring. Returns
 /// the child PID, or the kernel errno on failure.
-pub fn spawn(path: &str, argv: &[&str], stdio: &[Stdio; 3], cwd: &str) -> Result<u32, u16> {
+pub fn spawn(
+    path: &str,
+    argv: &[&str],
+    stdio: &[Stdio; 3],
+    cwd: &str,
+    grant_gpu: bool,
+    grant_input: bool,
+) -> Result<u32, u16> {
     let mut w = W::new();
     w.u8(KSPAWN);
     w.bytes(path.as_bytes());
@@ -112,6 +119,10 @@ pub fn spawn(path: &str, argv: &[&str], stdio: &[Stdio; 3], cwd: &str) -> Result
         w.stdio(s);
     }
     w.bytes(cwd.as_bytes());
+    // Capability delegation (M3): ask the kernel to also grant the child Gpu/Input
+    // (only honoured if THIS process holds them). Coreutils pass false/false.
+    w.u8(grant_gpu as u8);
+    w.u8(grant_input as u8);
     let resp = call(&w.0);
     let errno = rd_u16(&resp, 0);
     if errno != 0 {

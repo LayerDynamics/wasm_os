@@ -21,6 +21,14 @@ name = "crash"
 version = "0.0.0"
 
 [[package]]
+name = "filemanager"
+version = "0.0.0"
+dependencies = [
+ "wasmgfx",
+ "wasmos-sys",
+]
+
+[[package]]
 name = "gfxspike"
 version = "0.0.0"
 dependencies = [

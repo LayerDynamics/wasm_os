@@ -141,7 +141,8 @@ fn run_pipeline(stages: &[Stage], cwd: &str) -> i32 {
             Stdio::Terminal
         };
 
-        match spawn(&path, &stage.argv, &[stdin, stdout, Stdio::Terminal], cwd) {
+        // Coreutils don't draw: no Gpu/Input delegation.
+        match spawn(&path, &stage.argv, &[stdin, stdout, Stdio::Terminal], cwd, false, false) {
             Ok(pid) => pids.push(Some(pid)),
             Err(_) => {
                 eprintln!("{prog}: command not found");

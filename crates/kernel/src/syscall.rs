@@ -941,11 +941,22 @@ fn k_spawn(
     }
     // Working directory for the child (its preopen / relative-path base).
     let cwd = r.string().unwrap_or_else(|| "/".to_string());
+    // Capability delegation (M3): the parent may grant the child Gpu/Input, but
+    // ONLY caps it holds itself (a process cannot hand out authority it lacks).
+    // Older callers omit these bytes → default 0 (no grant).
+    let want_gpu = r.u8().unwrap_or(0) != 0;
+    let want_input = r.u8().unwrap_or(0) != 0;
 
     // The child inherits a broad FS grant (the shell's children operate on the
-    // user's files); never Shm, never Spawn (only the shell spawns).
+    // user's files); never Shm, never Spawn (only the shell/file-manager spawns).
     let mut caps = CapabilitySet::default();
     caps.grant(Capability::FsPath { subtree: "/".into(), rights: Rights::RWX });
+    if want_gpu && procs.has_cap(pid, &Capability::Gpu) {
+        caps.grant(Capability::Gpu);
+    }
+    if want_input && procs.has_cap(pid, &Capability::Input) {
+        caps.grant(Capability::Input);
+    }
     let name = path.rsplit('/').next().unwrap_or(&path).to_string();
     let child = procs.spawn(&name, SPAWN_PRIORITY, caps);
     let argv = if argv.is_empty() { vec![name] } else { argv };
@@ -1693,5 +1704,69 @@ mod tests {
         let resp = drive(&mut vfs, &mut procs, &mut pipes, pid, &req_win_read_input(120));
         assert_eq!(read_u16(&resp), errno::SUCCESS);
         assert_eq!(resp_bytes(&resp), &ev);
+    }
+
+    // --- M3: capability delegation on spawn (file manager launches apps) ---
+
+    fn req_kspawn_grant(path: &str, argv: &[&str], gpu: bool, input: bool) -> Vec<u8> {
+        let mut w = Writer::new();
+        w.u8(Op::KSpawn as u8).bytes(path.as_bytes()).u32(argv.len() as u32);
+        for a in argv {
+            w.bytes(a.as_bytes());
+        }
+        for _ in 0..3 {
+            w.u8(0); // terminal stdio
+        }
+        w.bytes(b"/"); // cwd
+        w.u8(gpu as u8).u8(input as u8);
+        w.build()
+    }
+    fn spawner(procs: &mut ProcTable, gpu: bool, input: bool) -> u32 {
+        let mut caps = CapabilitySet::default();
+        caps.grant(Capability::Spawn);
+        if gpu {
+            caps.grant(Capability::Gpu);
+        }
+        if input {
+            caps.grant(Capability::Input);
+        }
+        let pid = procs.spawn("launcher", 5, caps);
+        procs.set_state(pid, ProcState::Running);
+        pid
+    }
+
+    #[test]
+    fn kspawn_delegates_gpu_input_only_from_a_holder() {
+        let (mut vfs, mut procs, mut pipes, _t) = setup();
+        // A spawner WITHOUT Gpu/Input cannot delegate them, even if it asks.
+        let a = spawner(&mut procs, false, false);
+        let ca = read_u32_at(
+            &dispatch(&mut vfs, &mut procs, &mut pipes, a, &req_kspawn_grant("/bin/x", &["x"], true, true))
+                .reply
+                .unwrap(),
+            2,
+        );
+        assert!(!procs.has_cap(ca, &Capability::Gpu));
+        assert!(!procs.has_cap(ca, &Capability::Input));
+
+        // A spawner holding Gpu+Input delegates exactly what is requested.
+        let b = spawner(&mut procs, true, true);
+        let granted = read_u32_at(
+            &dispatch(&mut vfs, &mut procs, &mut pipes, b, &req_kspawn_grant("/bin/x", &["x"], true, true))
+                .reply
+                .unwrap(),
+            2,
+        );
+        assert!(procs.has_cap(granted, &Capability::Gpu));
+        assert!(procs.has_cap(granted, &Capability::Input));
+        // Not requested → not granted (least privilege).
+        let plain = read_u32_at(
+            &dispatch(&mut vfs, &mut procs, &mut pipes, b, &req_kspawn_grant("/bin/x", &["x"], false, false))
+                .reply
+                .unwrap(),
+            2,
+        );
+        assert!(!procs.has_cap(plain, &Capability::Gpu));
+        assert!(!procs.has_cap(plain, &Capability::Input));
     }
 }

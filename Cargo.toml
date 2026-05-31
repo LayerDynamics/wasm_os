@@ -10,6 +10,7 @@ members = [
     "crates/sh",
     "crates/coreutils",
     "crates/gfxspike",
+    "crates/apps/filemanager",
 ]
 
 [workspace.package]

@@ -1,0 +1,17 @@
+[package]
+name = "filemanager"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+# Graphical file manager (L3 / M3, FR-24): a real wasm32-wasip1 process. It draws
+# a canvas surface (wasmgfx), browses the VFS with std::fs, and launches files as
+# processes via the wasmos_kernel spawn extension (delegating Gpu/Input to
+# graphical apps). Navigation is via brokered pointer + keyboard input.
+[[bin]]
+name = "filemanager"
+path = "src/main.rs"
+
+[dependencies]
+wasmos-sys = { path = "../../wasmos-sys" }
+wasmgfx = { path = "../../wasmgfx" }
