@@ -87,6 +87,13 @@ pub enum Op {
     KSpawn = 0x20,
     KPipe = 0x21,
     KWait = 0x22,
+    // wasmos_kernel compositor extension (M3). win_surface allocates a surface
+    // id under the Gpu capability; win_present is handled host-side in the
+    // process worker (pixels never enter the ring), so it is NOT an opcode here.
+    WinSurface = 0x23,
+    // win_read_input drains brokered keyboard/mouse events (Input capability),
+    // parking until the compositor delivers some (M3-T3).
+    WinReadInput = 0x25,
 }
 
 impl Op {
@@ -116,6 +123,8 @@ impl Op {
             0x20 => Op::KSpawn,
             0x21 => Op::KPipe,
             0x22 => Op::KWait,
+            0x23 => Op::WinSurface,
+            0x25 => Op::WinReadInput,
             _ => return None,
         })
     }
@@ -352,6 +361,9 @@ pub fn dispatch(
         Op::KSpawn => k_spawn(vfs, procs, pipes, pid, &mut r),
         Op::KPipe => k_pipe(procs, pipes, pid, &mut r),
         Op::KWait => k_wait(procs, pid, &mut r),
+        // wasmos_kernel compositor extension (M3).
+        Op::WinSurface => win_surface(procs, pid, &mut r),
+        Op::WinReadInput => win_read_input(procs, pid, &mut r),
     }
 }
 
@@ -727,6 +739,11 @@ fn proc_exit(procs: &mut ProcTable, pipes: &mut PipeTable, pid: u32, r: &mut Rea
     procs.set_exit(pid, code);
     procs.set_state(pid, ProcState::Zombie);
 
+    // Release the kernel-side ownership of any compositor surfaces (M3). The host
+    // tears down their windows when the worker dies (M3-T9); here we just keep the
+    // surface-id authority's map clean so ids don't leak.
+    procs.free_surfaces_of(pid);
+
     // Release every pipe end the dying process still holds, exactly as fd_close
     // would. This is what lets a pipeline terminate (and contains a crash inside
     // one, FR-34): closing the last writer gives a parked reader EOF; closing the
@@ -924,11 +941,22 @@ fn k_spawn(
     }
     // Working directory for the child (its preopen / relative-path base).
     let cwd = r.string().unwrap_or_else(|| "/".to_string());
+    // Capability delegation (M3): the parent may grant the child Gpu/Input, but
+    // ONLY caps it holds itself (a process cannot hand out authority it lacks).
+    // Older callers omit these bytes → default 0 (no grant).
+    let want_gpu = r.u8().unwrap_or(0) != 0;
+    let want_input = r.u8().unwrap_or(0) != 0;
 
     // The child inherits a broad FS grant (the shell's children operate on the
-    // user's files); never Shm, never Spawn (only the shell spawns).
+    // user's files); never Shm, never Spawn (only the shell/file-manager spawns).
     let mut caps = CapabilitySet::default();
     caps.grant(Capability::FsPath { subtree: "/".into(), rights: Rights::RWX });
+    if want_gpu && procs.has_cap(pid, &Capability::Gpu) {
+        caps.grant(Capability::Gpu);
+    }
+    if want_input && procs.has_cap(pid, &Capability::Input) {
+        caps.grant(Capability::Input);
+    }
     let name = path.rsplit('/').next().unwrap_or(&path).to_string();
     let child = procs.spawn(&name, SPAWN_PRIORITY, caps);
     let argv = if argv.is_empty() { vec![name] } else { argv };
@@ -997,6 +1025,52 @@ fn k_pipe(procs: &mut ProcTable, pipes: &mut PipeTable, pid: u32, _r: &mut Reade
     // Return the caller's fds (to close after spawning) AND the pipe id (to pass
     // as a child's stdio spec).
     SyscallOutcome::ready(Writer::new().u16(errno::SUCCESS).u32(rfd).u32(wfd).u32(id).build())
+}
+
+/// Largest surface dimension the kernel will allocate (guards host SAB OOM).
+const MAX_SURFACE_DIM: u32 = 4096;
+
+/// `wasmos_kernel.win_surface(width, height)` — allocate a compositor surface
+/// (M3, FR-23). Requires the Gpu capability (default-deny, FR-31). The kernel is
+/// the surface-id authority; the owning process worker allocates the framebuffer
+/// SAB and the compositor blits it (pixels never enter the kernel ring). Request:
+/// `[0x23][w u32][h u32]`. Reply: `[errno u16][surface_id u32]`.
+fn win_surface(procs: &mut ProcTable, pid: u32, r: &mut Reader) -> SyscallOutcome {
+    let resp = |e: u16, id: u32| Writer::new().u16(e).u32(id).build();
+    if !procs.has_cap(pid, &Capability::Gpu) {
+        return SyscallOutcome::ready(resp(errno::NOTCAPABLE, 0));
+    }
+    let (Some(w), Some(h)) = (r.u32(), r.u32()) else {
+        return SyscallOutcome::ready(resp(errno::INVAL, 0));
+    };
+    if w == 0 || h == 0 || w > MAX_SURFACE_DIM || h > MAX_SURFACE_DIM {
+        return SyscallOutcome::ready(resp(errno::INVAL, 0));
+    }
+    let id = procs.alloc_surface(pid);
+    SyscallOutcome::ready(resp(errno::SUCCESS, id))
+}
+
+/// One brokered input event is a fixed-size record (see `INPUT_EVENT_SIZE` in the
+/// compositor + `wasmos_sys::InputEvent`). Reads drain whole records only.
+const INPUT_EVENT_SIZE: usize = 12;
+
+/// `wasmos_kernel.win_read_input(max)` — drain queued keyboard/mouse events for
+/// this process (M3-T3, FR-25). Requires the Input capability (default-deny). If
+/// nothing is queued, PARKS on `WaitReason::Input`; a later `deliver_input`
+/// re-drives it. Reply: `[errno u16][len u32][event bytes]` (whole records).
+fn win_read_input(procs: &mut ProcTable, pid: u32, r: &mut Reader) -> SyscallOutcome {
+    if !procs.has_cap(pid, &Capability::Input) {
+        return SyscallOutcome::ready(err_only(errno::NOTCAPABLE));
+    }
+    // Drain whole records only (floor the cap to a multiple of the record size).
+    let cap = (r.u32().unwrap_or(0) as usize / INPUT_EVENT_SIZE) * INPUT_EVENT_SIZE;
+    if procs.input_len(pid) > 0 {
+        let data = procs.read_input(pid, cap.max(INPUT_EVENT_SIZE));
+        SyscallOutcome::ready(Writer::new().u16(errno::SUCCESS).bytes(&data).build())
+    } else {
+        procs.set_blocked(pid, WaitReason::Input);
+        SyscallOutcome::parked()
+    }
 }
 
 /// `wasmos_kernel.wait(pid)` — return a child's exit code, parking until it exits.
@@ -1539,5 +1613,160 @@ mod tests {
         let resp = drive(&mut vfs, &mut procs, &mut pipes, sh, &req_kwait(child));
         assert_eq!(read_u16(&resp), errno::SUCCESS);
         assert_eq!(read_u32_at(&resp, 2), 0); // exit code
+    }
+
+    // --- M3: compositor surfaces (win_surface) ---
+
+    fn gpu_proc(procs: &mut ProcTable) -> u32 {
+        let mut caps = CapabilitySet::default();
+        caps.grant(Capability::Gpu);
+        let pid = procs.spawn("gfx", 5, caps);
+        procs.set_state(pid, ProcState::Running);
+        pid
+    }
+    fn req_win_surface(w: u32, h: u32) -> Vec<u8> {
+        Writer::new().u8(Op::WinSurface as u8).u32(w).u32(h).build()
+    }
+
+    #[test]
+    fn win_surface_requires_gpu_capability() {
+        // The default setup() process holds no Gpu cap → default-deny (FR-31).
+        let (mut vfs, mut procs, mut pipes, pid) = setup();
+        let resp = drive(&mut vfs, &mut procs, &mut pipes, pid, &req_win_surface(64, 48));
+        assert_eq!(read_u16(&resp), errno::NOTCAPABLE);
+        assert_eq!(read_u32_at(&resp, 2), 0); // no surface id handed out
+    }
+
+    #[test]
+    fn win_surface_with_gpu_allocates_unique_ids_and_validates_dims() {
+        let (mut vfs, mut procs, mut pipes, _t) = setup();
+        let pid = gpu_proc(&mut procs);
+        // Valid request → SUCCESS + a nonzero surface id.
+        let r1 = drive(&mut vfs, &mut procs, &mut pipes, pid, &req_win_surface(64, 48));
+        assert_eq!(read_u16(&r1), errno::SUCCESS);
+        let id1 = read_u32_at(&r1, 2);
+        assert!(id1 >= 1);
+        // A second surface gets a distinct id.
+        let r2 = drive(&mut vfs, &mut procs, &mut pipes, pid, &req_win_surface(10, 10));
+        assert_ne!(id1, read_u32_at(&r2, 2));
+        // Zero and oversized dimensions are rejected (host SAB OOM guard).
+        assert_eq!(read_u16(&drive(&mut vfs, &mut procs, &mut pipes, pid, &req_win_surface(0, 10))), errno::INVAL);
+        assert_eq!(
+            read_u16(&drive(&mut vfs, &mut procs, &mut pipes, pid, &req_win_surface(99999, 10))),
+            errno::INVAL
+        );
+    }
+
+    #[test]
+    fn proc_exit_frees_owned_surfaces() {
+        let (mut vfs, mut procs, mut pipes, _t) = setup();
+        let pid = gpu_proc(&mut procs);
+        drive(&mut vfs, &mut procs, &mut pipes, pid, &req_win_surface(8, 8));
+        drive(&mut vfs, &mut procs, &mut pipes, pid, &req_win_surface(8, 8));
+        // proc_exit releases kernel-side surface ownership.
+        drive(&mut vfs, &mut procs, &mut pipes, pid, &req_proc_exit(0));
+        assert!(procs.free_surfaces_of(pid).is_empty());
+    }
+
+    // --- M3: brokered input (win_read_input / deliver_input, FR-25) ---
+
+    fn input_proc(procs: &mut ProcTable) -> u32 {
+        let mut caps = CapabilitySet::default();
+        caps.grant(Capability::Input);
+        let pid = procs.spawn("inp", 5, caps);
+        procs.set_state(pid, ProcState::Running);
+        pid
+    }
+    fn req_win_read_input(cap: u32) -> Vec<u8> {
+        Writer::new().u8(Op::WinReadInput as u8).u32(cap).build()
+    }
+
+    #[test]
+    fn win_read_input_requires_input_capability() {
+        let (mut vfs, mut procs, mut pipes, pid) = setup(); // no Input cap
+        let resp = drive(&mut vfs, &mut procs, &mut pipes, pid, &req_win_read_input(120));
+        assert_eq!(read_u16(&resp), errno::NOTCAPABLE);
+    }
+
+    #[test]
+    fn win_read_input_parks_on_empty_then_returns_delivered_events() {
+        let (mut vfs, mut procs, mut pipes, _t) = setup();
+        let pid = input_proc(&mut procs);
+        // Empty queue → parks on Input.
+        let out = dispatch(&mut vfs, &mut procs, &mut pipes, pid, &req_win_read_input(120));
+        assert!(out.reply.is_none());
+        assert_eq!(procs.blocked_on(pid), Some(WaitReason::Input));
+        // A 12-byte event is delivered; the parked reader becomes runnable.
+        let ev: [u8; 12] = [1, 0, 5, 0, 7, 0, 0, 0, 0, 0, 0, 0];
+        procs.push_input(pid, &ev);
+        assert_eq!(procs.take_blocked_on(&WaitReason::Input), vec![pid]);
+        // Re-driving the read now returns exactly the event bytes.
+        let resp = drive(&mut vfs, &mut procs, &mut pipes, pid, &req_win_read_input(120));
+        assert_eq!(read_u16(&resp), errno::SUCCESS);
+        assert_eq!(resp_bytes(&resp), &ev);
+    }
+
+    // --- M3: capability delegation on spawn (file manager launches apps) ---
+
+    fn req_kspawn_grant(path: &str, argv: &[&str], gpu: bool, input: bool) -> Vec<u8> {
+        let mut w = Writer::new();
+        w.u8(Op::KSpawn as u8).bytes(path.as_bytes()).u32(argv.len() as u32);
+        for a in argv {
+            w.bytes(a.as_bytes());
+        }
+        for _ in 0..3 {
+            w.u8(0); // terminal stdio
+        }
+        w.bytes(b"/"); // cwd
+        w.u8(gpu as u8).u8(input as u8);
+        w.build()
+    }
+    fn spawner(procs: &mut ProcTable, gpu: bool, input: bool) -> u32 {
+        let mut caps = CapabilitySet::default();
+        caps.grant(Capability::Spawn);
+        if gpu {
+            caps.grant(Capability::Gpu);
+        }
+        if input {
+            caps.grant(Capability::Input);
+        }
+        let pid = procs.spawn("launcher", 5, caps);
+        procs.set_state(pid, ProcState::Running);
+        pid
+    }
+
+    #[test]
+    fn kspawn_delegates_gpu_input_only_from_a_holder() {
+        let (mut vfs, mut procs, mut pipes, _t) = setup();
+        // A spawner WITHOUT Gpu/Input cannot delegate them, even if it asks.
+        let a = spawner(&mut procs, false, false);
+        let ca = read_u32_at(
+            &dispatch(&mut vfs, &mut procs, &mut pipes, a, &req_kspawn_grant("/bin/x", &["x"], true, true))
+                .reply
+                .unwrap(),
+            2,
+        );
+        assert!(!procs.has_cap(ca, &Capability::Gpu));
+        assert!(!procs.has_cap(ca, &Capability::Input));
+
+        // A spawner holding Gpu+Input delegates exactly what is requested.
+        let b = spawner(&mut procs, true, true);
+        let granted = read_u32_at(
+            &dispatch(&mut vfs, &mut procs, &mut pipes, b, &req_kspawn_grant("/bin/x", &["x"], true, true))
+                .reply
+                .unwrap(),
+            2,
+        );
+        assert!(procs.has_cap(granted, &Capability::Gpu));
+        assert!(procs.has_cap(granted, &Capability::Input));
+        // Not requested → not granted (least privilege).
+        let plain = read_u32_at(
+            &dispatch(&mut vfs, &mut procs, &mut pipes, b, &req_kspawn_grant("/bin/x", &["x"], false, false))
+                .reply
+                .unwrap(),
+            2,
+        );
+        assert!(!procs.has_cap(plain, &Capability::Gpu));
+        assert!(!procs.has_cap(plain, &Capability::Input));
     }
 }

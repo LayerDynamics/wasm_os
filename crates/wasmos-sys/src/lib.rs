@@ -25,6 +25,12 @@ const FD_CLOSE: u8 = 0x04;
 const KSPAWN: u8 = 0x20;
 const KPIPE: u8 = 0x21;
 const KWAIT: u8 = 0x22;
+const WIN_SURFACE: u8 = 0x23;
+/// `win_present` is intercepted by the host process worker (it copies the guest
+/// framebuffer into the surface's shared SAB and notifies the compositor); it
+/// never reaches the kernel ring. The opcode is the marker the shim matches on.
+const WIN_PRESENT: u8 = 0x24;
+const WIN_READ_INPUT: u8 = 0x25;
 
 /// File open mode for a stdio redirect.
 pub const FILE_READ: u8 = 0; // `<`
@@ -94,7 +100,14 @@ fn rd_u32(b: &[u8], at: usize) -> u32 {
 
 /// Spawn a child process from a VFS image with argv and stdio wiring. Returns
 /// the child PID, or the kernel errno on failure.
-pub fn spawn(path: &str, argv: &[&str], stdio: &[Stdio; 3], cwd: &str) -> Result<u32, u16> {
+pub fn spawn(
+    path: &str,
+    argv: &[&str],
+    stdio: &[Stdio; 3],
+    cwd: &str,
+    grant_gpu: bool,
+    grant_input: bool,
+) -> Result<u32, u16> {
     let mut w = W::new();
     w.u8(KSPAWN);
     w.bytes(path.as_bytes());
@@ -106,6 +119,10 @@ pub fn spawn(path: &str, argv: &[&str], stdio: &[Stdio; 3], cwd: &str) -> Result
         w.stdio(s);
     }
     w.bytes(cwd.as_bytes());
+    // Capability delegation (M3): ask the kernel to also grant the child Gpu/Input
+    // (only honoured if THIS process holds them). Coreutils pass false/false.
+    w.u8(grant_gpu as u8);
+    w.u8(grant_input as u8);
     let resp = call(&w.0);
     let errno = rd_u16(&resp, 0);
     if errno != 0 {
@@ -146,4 +163,111 @@ pub fn wait(pid: u32) -> Result<i32, u16> {
         return Err(errno);
     }
     Ok(rd_u32(&resp, 2) as i32)
+}
+
+/// `win_surface(width, height)` — request a compositor canvas surface (M3, FR-23).
+/// Requires the `Gpu` capability. Returns the kernel-allocated `surface_id`; the
+/// host allocates a `width*height*4` RGBA framebuffer shared with the compositor.
+/// Present pixels with [`win_present`].
+pub fn win_surface(width: u32, height: u32) -> Result<u32, u16> {
+    let mut w = W::new();
+    w.u8(WIN_SURFACE);
+    w.u32(width);
+    w.u32(height);
+    let resp = call(&w.0);
+    let errno = rd_u16(&resp, 0);
+    if errno != 0 {
+        return Err(errno);
+    }
+    Ok(rd_u32(&resp, 2))
+}
+
+/// `win_present(surface_id, framebuffer)` — publish a frame. `framebuffer` is
+/// `width*height*4` RGBA bytes in guest memory; the host process worker copies it
+/// into the surface's shared buffer and the compositor blits it to the canvas on
+/// the next animation frame. The pixel bytes never enter the kernel ring.
+pub fn win_present(surface_id: u32, framebuffer: &[u8]) {
+    let mut w = W::new();
+    w.u8(WIN_PRESENT);
+    w.u32(surface_id);
+    w.u32(framebuffer.as_ptr() as usize as u32); // guest linear-memory address
+    w.u32(framebuffer.len() as u32);
+    let _ = call(&w.0);
+}
+
+/// Size of one brokered input record on the wire (must match the compositor's
+/// encoder and `crates/kernel` `INPUT_EVENT_SIZE`).
+pub const INPUT_EVENT_SIZE: usize = 12;
+
+/// Brokered input event kinds (M3-T3, FR-25).
+pub const EV_POINTER_MOVE: u8 = 1;
+pub const EV_POINTER_DOWN: u8 = 2;
+pub const EV_POINTER_UP: u8 = 3;
+pub const EV_KEY_DOWN: u8 = 4;
+pub const EV_KEY_UP: u8 = 5;
+
+/// Named-key codes in the `InputEvent::key` field. A printable key carries its
+/// actual character code (`key < 0x100`); these are the non-printable keys.
+pub const KEY_ENTER: u32 = 0x100;
+pub const KEY_BACKSPACE: u32 = 0x101;
+pub const KEY_LEFT: u32 = 0x102;
+pub const KEY_RIGHT: u32 = 0x103;
+pub const KEY_UP: u32 = 0x104;
+pub const KEY_DOWN: u32 = 0x105;
+pub const KEY_TAB: u32 = 0x106;
+pub const KEY_ESCAPE: u32 = 0x107;
+pub const KEY_DELETE: u32 = 0x108;
+pub const KEY_HOME: u32 = 0x109;
+pub const KEY_END: u32 = 0x10a;
+
+/// A decoded keyboard/mouse event delivered to a process's focused window.
+#[derive(Clone, Copy, Debug)]
+pub struct InputEvent {
+    /// One of the `EV_*` constants.
+    pub kind: u8,
+    /// Pointer button (0 = primary) for pointer events.
+    pub button: u8,
+    /// Surface-local pointer position (pixels).
+    pub x: u16,
+    pub y: u16,
+    /// Key code for key events (a `KeyboardEvent.keyCode`-class value).
+    pub key: u32,
+    /// Modifier bitfield: 1=Shift, 2=Ctrl, 4=Alt, 8=Meta.
+    pub mods: u8,
+}
+
+impl InputEvent {
+    fn decode(b: &[u8]) -> InputEvent {
+        InputEvent {
+            kind: b[0],
+            button: b[1],
+            x: u16::from_le_bytes([b[2], b[3]]),
+            y: u16::from_le_bytes([b[4], b[5]]),
+            key: u32::from_le_bytes([b[6], b[7], b[8], b[9]]),
+            mods: b[10],
+        }
+    }
+}
+
+/// `win_read_input()` — drain queued keyboard/mouse events for the focused window
+/// (M3-T3, FR-25). **Blocks** (parks) until at least one event is available.
+/// Returns `Err(errno)` if the process lacks the Input capability — callers
+/// without input should not poll this in a loop.
+pub fn win_read_input() -> Result<Vec<InputEvent>, u16> {
+    let mut w = W::new();
+    w.u8(WIN_READ_INPUT);
+    w.u32((INPUT_EVENT_SIZE * 20) as u32); // up to 20 events per call
+    let resp = call(&w.0);
+    let errno = rd_u16(&resp, 0);
+    if errno != 0 {
+        return Err(errno);
+    }
+    let len = rd_u32(&resp, 2) as usize;
+    let mut events = Vec::with_capacity(len / INPUT_EVENT_SIZE);
+    let mut off = 6;
+    while off + INPUT_EVENT_SIZE <= 6 + len && off + INPUT_EVENT_SIZE <= resp.len() {
+        events.push(InputEvent::decode(&resp[off..off + INPUT_EVENT_SIZE]));
+        off += INPUT_EVENT_SIZE;
+    }
+    Ok(events)
 }

@@ -1,0 +1,14 @@
+[package]
+name = "wasmgfx"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+# Guest-side graphics SDK (M3): a software RGBA framebuffer with primitives and an
+# 8x8 bitmap font, shared by the canvas apps (file manager, paint, editor). It
+# pairs with wasmos-sys (win_surface/win_present/win_read_input) but has no I/O of
+# its own, so it builds + unit-tests on the host too.
+[lib]
+path = "src/lib.rs"
+
+[dependencies]

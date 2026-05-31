@@ -34,6 +34,40 @@ interface process {
   wait: func(pid: u32) -> result<s32, u16>;
 }
 
+/// The wasmos_kernel compositor extension (M3) — the guest surface + input
+/// surface used by canvas apps (file manager, paint, editor, mandelbrot). Like
+/// `process`, these are transported over the SAB syscall ring; `win-present` is
+/// serviced host-side in the process worker (pixels never enter the ring). The
+/// guest stubs live in crates/wasmos-sys/src/lib.rs; `binder kernel-check`
+/// verifies a matching stub exists for each (FR-36).
+interface compositor {
+  /// A decoded brokered input event (12-byte wire record).
+  record input-event {
+    kind: u8,
+    button: u8,
+    x: u16,
+    y: u16,
+    key: u32,
+    mods: u8,
+  }
+
+  /// Request a `width*height` RGBA canvas surface; returns its surface id. Needs
+  /// the Gpu capability (default-deny).
+  win-surface: func(width: u32, height: u32) -> result<u32, u16>;
+
+  /// Publish a frame: `framebuffer` is `width*height*4` RGBA bytes in guest
+  /// memory, copied into the surface's shared buffer and blitted by the host.
+  win-present: func(surface-id: u32, framebuffer: list<u8>);
+
+  /// Drain queued keyboard/mouse events for the focused window (blocks until some
+  /// arrive). Needs the Input capability (default-deny).
+  win-read-input: func() -> result<list<input-event>, u16>;
+}
+
 world shell-guest {
   import process;
+}
+
+world canvas-guest {
+  import compositor;
 }

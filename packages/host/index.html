@@ -5,14 +5,17 @@
     <title>WASM_OS</title>
     <link rel="stylesheet" href="/dist/index.css" />
     <style>
-      body { margin: 0; background: #000; color: #eee; font-family: monospace; }
-      #status { padding: 4px 8px; margin: 0; font-size: 12px; color: #8f8; }
-      #terminal { height: calc(100vh - 26px); }
+      html, body { margin: 0; height: 100%; background: #000; color: #eee; font-family: system-ui, monospace; overflow: hidden; }
+      /* Boot/status overlay — a small corner readout above the desktop. */
+      #status { position: absolute; top: 6px; right: 8px; z-index: 9999; margin: 0;
+                padding: 2px 8px; font-size: 11px; color: #8f8; background: rgba(0,0,0,0.5);
+                border-radius: 4px; pointer-events: none; }
     </style>
   </head>
   <body>
+    <div id="desktop"></div>
+    <div id="taskbar"></div>
     <pre id="status">booting…</pre>
-    <div id="terminal"></div>
     <script type="module" src="/dist/index.js"></script>
   </body>
 </html>

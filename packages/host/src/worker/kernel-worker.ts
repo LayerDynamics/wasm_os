@@ -28,6 +28,8 @@ interface SpawnSpec {
   name: string;
   grantFsSubtree: string;
   grantSpawn: boolean;
+  grantGpu: boolean;
+  grantInput: boolean;
 }
 
 /** Synchronous kernel control surface (jco-generated export shape). */
@@ -42,6 +44,7 @@ interface KernelControl {
   spawn(spec: SpawnSpec): number;
   serviceSyscall(pid: number, request: Uint8Array): SyscallOutcome;
   deliverStdin(pid: number, bytes: Uint8Array): Uint32Array;
+  deliverInput(pid: number, bytes: Uint8Array): Uint32Array;
   bindTerminal(pid: number): void;
   exitCode(pid: number): number | undefined;
   takeCapture(pid: number): [Uint8Array, Uint8Array];
@@ -92,6 +95,9 @@ const procs = new Map<number, ProcRuntime>();
  * the guest stays blocked in `Atomics.wait`; a wakeup re-drives the request.
  */
 const parked = new Map<number, Uint8Array>();
+
+/** M3 compositor surfaces: `surface_id -> owning pid` (present authorization). */
+const surfaceOwners = new Map<number, number>();
 
 /** Drive one syscall: complete it now, or park it; then process its wakeups. */
 function driveSyscall(pid: number, request: Uint8Array): void {
@@ -217,6 +223,20 @@ function onProcExit(pid: number, msg: ExitMessage): void {
 
   for (const resolve of rt.waiters) resolve(rt.exitCode);
   rt.waiters = [];
+
+  // Drop this process's surface ownership and tell the main thread so the
+  // compositor closes any windows it owned (crash containment, FR-34).
+  for (const [sid, owner] of surfaceOwners) if (owner === pid) surfaceOwners.delete(sid);
+  ctx.postMessage({ type: "exit", pid });
+}
+
+/** Host-initiated kill (M3): close a window → reap its process. Records the exit
+ * (zombifies + releases pipes/surfaces + wakes waiters) then tears the worker
+ * down via onProcExit. A no-op if the process already exited. */
+function killProcess(pid: number): void {
+  const rt = procs.get(pid);
+  if (!rt || rt.exited) return;
+  onProcExit(pid, { pid, exit: { kind: "exit", code: 137 }, sharedMemory: rt.sharedMemory });
 }
 
 /**
@@ -247,7 +267,31 @@ function instantiateProcess(pid: number, wasmBytes: ArrayBuffer | Uint8Array): v
   );
 
   const worker = new Worker(PROCESS_WORKER_URL, { type: "module" });
-  worker.onmessage = (e: MessageEvent) => onProcExit(pid, e.data as ExitMessage);
+  worker.onmessage = (e: MessageEvent) => {
+    const d = e.data as {
+      type?: string;
+      surfaceId?: number;
+      width?: number;
+      height?: number;
+      sab?: SharedArrayBuffer;
+    };
+    // M3 compositor surfaces: a process worker created a surface or published a
+    // frame. Track ownership (surface_id -> pid) and relay to the main thread,
+    // which drives the canvas window + blits the shared framebuffer.
+    if (d.type === "surface" && d.surfaceId !== undefined) {
+      surfaceOwners.set(d.surfaceId, pid);
+      ctx.postMessage({ type: "surface", pid, surfaceId: d.surfaceId, width: d.width, height: d.height, sab: d.sab });
+      return;
+    }
+    if (d.type === "present" && d.surfaceId !== undefined) {
+      // Only the owning process may present its surface.
+      if (surfaceOwners.get(d.surfaceId) === pid) {
+        ctx.postMessage({ type: "present", surfaceId: d.surfaceId });
+      }
+      return;
+    }
+    onProcExit(pid, e.data as ExitMessage);
+  };
   worker.postMessage({ wasmBytes, pid, ringSab });
   procs.get(pid)!.worker = worker;
 }
@@ -330,8 +374,20 @@ ctx.onmessage = async (ev: MessageEvent) => {
         result = undefined;
         break;
       }
+      case "deliverInput": {
+        // Deliver brokered keyboard/mouse to the focused window's process (M3-T3);
+        // wake any parked win_read_input.
+        const wakeups = requireControl().deliverInput(args.pid as number, args.bytes as Uint8Array);
+        processWakeups(wakeups);
+        result = undefined;
+        break;
+      }
       case "bindTerminal":
         requireControl().bindTerminal(args.pid as number);
+        result = undefined;
+        break;
+      case "kill":
+        killProcess(args.pid as number);
         result = undefined;
         break;
       case "flush":

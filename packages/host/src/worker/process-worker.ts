@@ -41,7 +41,23 @@ ctx.onmessage = async (ev: MessageEvent) => {
   let instance: WebAssembly.Instance | undefined;
   const getMemory = () => instance!.exports.memory as WebAssembly.Memory;
   const wasi = makeWasiImports(getMemory, ring);
-  const wasmosKernel = makeKernelImports(getMemory, ring);
+  // M3 compositor surfaces: this worker owns each surface's framebuffer SAB and
+  // relays surface/present notifications to the kworker (→ compositor). Pixels are
+  // copied guest-memory → SAB here; they never enter the kernel ring.
+  const surfaces = new Map<number, Uint8Array>(); // surfaceId -> framebuffer SAB view
+  const wasmosKernel = makeKernelImports(getMemory, ring, {
+    onSurface(surfaceId: number, width: number, height: number): void {
+      const sab = new SharedArrayBuffer(width * height * 4);
+      surfaces.set(surfaceId, new Uint8Array(sab));
+      ctx.postMessage({ type: "surface", pid, surfaceId, width, height, sab });
+    },
+    onPresent(surfaceId: number, src: Uint8Array): void {
+      const view = surfaces.get(surfaceId);
+      if (!view) return;
+      view.set(src.subarray(0, view.length));
+      ctx.postMessage({ type: "present", pid, surfaceId });
+    },
+  });
   let sharedMemory = false;
 
   try {

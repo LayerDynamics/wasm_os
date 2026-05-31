@@ -6,8 +6,13 @@ members = [
     "crates/crash",
     "crates/catfile",
     "crates/wasmos-sys",
+    "crates/wasmgfx",
     "crates/sh",
     "crates/coreutils",
+    "crates/gfxspike",
+    "crates/apps/filemanager",
+    "crates/apps/paint",
+    "crates/apps/editor",
 ]
 
 [workspace.package]

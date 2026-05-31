@@ -142,7 +142,10 @@ mod component {
             } else {
                 Some((spec.grant_fs_subtree.as_str(), Rights::RW))
             };
-            KERNEL.with(|k| k.borrow_mut().spawn(&spec.name, grant_fs, spec.grant_spawn))
+            KERNEL.with(|k| {
+                k.borrow_mut()
+                    .spawn(&spec.name, grant_fs, spec.grant_spawn, spec.grant_gpu, spec.grant_input)
+            })
         }
 
         fn service_syscall(pid: u32, request: Vec<u8>) -> WSyscallOutcome {
@@ -157,6 +160,10 @@ mod component {
 
         fn deliver_stdin(pid: u32, bytes: Vec<u8>) -> Vec<u32> {
             KERNEL.with(|k| k.borrow_mut().deliver_stdin(pid, &bytes))
+        }
+
+        fn deliver_input(pid: u32, bytes: Vec<u8>) -> Vec<u32> {
+            KERNEL.with(|k| k.borrow_mut().deliver_input(pid, &bytes))
         }
 
         fn bind_terminal(pid: u32) {

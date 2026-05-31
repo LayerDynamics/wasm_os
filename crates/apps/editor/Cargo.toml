@@ -1,0 +1,16 @@
+[package]
+name = "editor"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+# Text editor (L3 / M3, FR-24 association target): a real wasm32-wasip1 canvas
+# app. Opens the file named in argv[1] (or /home/untitled.txt), renders it with
+# the wasmgfx font, edits via brokered keyboard input, and saves with Ctrl+S.
+[[bin]]
+name = "editor"
+path = "src/main.rs"
+
+[dependencies]
+wasmos-sys = { path = "../../wasmos-sys" }
+wasmgfx = { path = "../../wasmgfx" }

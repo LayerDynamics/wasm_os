@@ -102,13 +102,27 @@ impl KernelCore {
     /// FS grant; `grant_spawn` confers the right to spawn children. The kernel
     /// **never** grants `Shm` here — there is no inter-process memory path at M1
     /// (the structural half of the isolation guarantee, FR-6).
-    pub fn spawn(&mut self, name: &str, grant_fs: Option<(&str, Rights)>, grant_spawn: bool) -> u32 {
+    pub fn spawn(
+        &mut self,
+        name: &str,
+        grant_fs: Option<(&str, Rights)>,
+        grant_spawn: bool,
+        grant_gpu: bool,
+        grant_input: bool,
+    ) -> u32 {
         let mut caps = CapabilitySet::default();
         if let Some((subtree, rights)) = grant_fs {
             caps.grant(Capability::FsPath { subtree: subtree.to_string(), rights });
         }
         if grant_spawn {
             caps.grant(Capability::Spawn);
+        }
+        // Gpu gates win_surface (M3); Input gates brokered keyboard/mouse (M3-T3).
+        if grant_gpu {
+            caps.grant(Capability::Gpu);
+        }
+        if grant_input {
+            caps.grant(Capability::Input);
         }
         let pid = self.procs.spawn(name, USER_PRIORITY, caps);
         self.procs.set_state(pid, ProcState::Ready);
@@ -138,6 +152,22 @@ impl KernelCore {
     pub fn deliver_stdin(&mut self, pid: u32, bytes: &[u8]) -> Vec<u32> {
         self.procs.push_stdin(pid, bytes);
         if self.procs.blocked_on(pid) == Some(crate::types::WaitReason::Stdin) {
+            self.procs.clear_blocked(pid);
+            vec![pid]
+        } else {
+            vec![]
+        }
+    }
+
+    /// Deliver brokered input events to a process's focused window (M3-T3, FR-25).
+    /// Default-deny: only a process holding the Input capability receives events.
+    /// Returns the pids whose parked `win_read_input` calls are now runnable.
+    pub fn deliver_input(&mut self, pid: u32, bytes: &[u8]) -> Vec<u32> {
+        if !self.procs.has_cap(pid, &Capability::Input) {
+            return vec![];
+        }
+        self.procs.push_input(pid, bytes);
+        if self.procs.blocked_on(pid) == Some(crate::types::WaitReason::Input) {
             self.procs.clear_blocked(pid);
             vec![pid]
         } else {
@@ -241,7 +271,7 @@ mod tests {
     fn spawn_then_service_fd_write_then_exit() {
         let mut k = core();
         k.boot();
-        let pid = k.spawn("hello", Some(("/", Rights::RW)), false);
+        let pid = k.spawn("hello", Some(("/", Rights::RW)), false, false, false);
         assert!(pid > 1); // init is pid 1
         // Process is Ready and enqueued.
         assert!(k.ready_count() >= 1);
@@ -258,7 +288,7 @@ mod tests {
     fn stdin_read_parks_then_deliver_wakes_and_redrives() {
         let mut k = core();
         k.boot();
-        let pid = k.spawn("reader", Some(("/", Rights::RW)), false);
+        let pid = k.spawn("reader", Some(("/", Rights::RW)), false, false, false);
         let req = fd_read_req(0, 16); // read stdin (fd 0)
 
         // No input yet → the syscall PARKS (no reply).
@@ -281,7 +311,7 @@ mod tests {
     fn bind_terminal_streams_writes_as_term_output() {
         let mut k = core();
         k.boot();
-        let pid = k.spawn("shell", Some(("/", Rights::RW)), false);
+        let pid = k.spawn("shell", Some(("/", Rights::RW)), false, false, false);
         k.bind_terminal(pid);
         // A write to fd 1 (now Terminal) streams out as term_output (→ xterm),
         // and is NOT accumulated in the at-exit capture buffer.
@@ -300,8 +330,8 @@ mod tests {
     fn two_spawns_have_isolated_fd_tables_and_no_shm_cap() {
         let mut k = core();
         k.boot();
-        let a = k.spawn("a", Some(("/home", Rights::RW)), false);
-        let b = k.spawn("b", Some(("/home", Rights::RW)), false);
+        let a = k.spawn("a", Some(("/home", Rights::RW)), false, false, false);
+        let b = k.spawn("b", Some(("/home", Rights::RW)), false, false, false);
         assert_ne!(a, b);
         // Neither holds Shm — there is no inter-process memory path (FR-6).
         assert!(!k.check_cap(a, &Capability::Shm));
@@ -316,12 +346,39 @@ mod tests {
         let mut k = core();
         k.boot();
         // No FS grant, no spawn grant → default-deny everything.
-        let pid = k.spawn("bare", None, false);
+        let pid = k.spawn("bare", None, false, false, false);
         assert!(!k.check_cap(pid, &Capability::Spawn));
         assert!(!k.check_cap(pid, &Capability::Shm));
         assert!(!k.check_cap(pid, &Capability::FsPath { subtree: "/".into(), rights: Rights::R }));
         // With spawn grant.
-        let p2 = k.spawn("launcher", None, true);
+        let p2 = k.spawn("launcher", None, true, false, false);
         assert!(k.check_cap(p2, &Capability::Spawn));
+    }
+
+    #[test]
+    fn spawn_grants_gpu_and_input_when_requested() {
+        let mut k = core();
+        k.boot();
+        let plain = k.spawn("plain", None, false, false, false);
+        assert!(!k.check_cap(plain, &Capability::Gpu));
+        assert!(!k.check_cap(plain, &Capability::Input));
+        let gfx = k.spawn("gfx", None, false, true, true);
+        assert!(k.check_cap(gfx, &Capability::Gpu));
+        assert!(k.check_cap(gfx, &Capability::Input));
+    }
+
+    #[test]
+    fn deliver_input_is_capability_gated_and_wakes_a_parked_reader() {
+        let mut k = core();
+        k.boot();
+        let with = k.spawn("g", None, false, false, true); // Input granted
+        let without = k.spawn("n", None, false, false, false); // no Input
+        // Default-deny: a process without Input receives nothing (no wakeups).
+        assert!(k.deliver_input(without, &[0u8; 12]).is_empty());
+        // Park `with` on win_read_input (opcode 0x25, cap=120) with an empty queue,
+        // then a delivery wakes exactly that pid.
+        let req = vec![0x25u8, 120, 0, 0, 0];
+        assert!(k.service_syscall(with, &req).reply.is_none());
+        assert_eq!(k.deliver_input(with, &[0u8; 12]), vec![with]);
     }
 }

@@ -21,6 +21,29 @@ name = "crash"
 version = "0.0.0"
 
 [[package]]
+name = "editor"
+version = "0.0.0"
+dependencies = [
+ "wasmgfx",
+ "wasmos-sys",
+]
+
+[[package]]
+name = "filemanager"
+version = "0.0.0"
+dependencies = [
+ "wasmgfx",
+ "wasmos-sys",
+]
+
+[[package]]
+name = "gfxspike"
+version = "0.0.0"
+dependencies = [
+ "wasmos-sys",
+]
+
+[[package]]
 name = "hello"
 version = "0.0.0"
 
@@ -32,11 +55,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "paint"
+version = "0.0.0"
+dependencies = [
+ "wasmgfx",
+ "wasmos-sys",
+]
+
+[[package]]
 name = "sh"
 version = "0.0.0"
 dependencies = [
  "wasmos-sys",
 ]
+
+[[package]]
+name = "wasmgfx"
+version = "0.0.0"
 
 [[package]]
 name = "wasmos-sys"

@@ -1,0 +1,186 @@
+/* Compositor / desktop styling (L3 / M3). */
+
+#desktop {
+  position: absolute;
+  inset: 0 0 30px 0; /* leave 30px for the taskbar */
+  overflow: hidden;
+  background: #1a1d23;
+}
+
+#taskbar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 30px;
+}
+
+.wasmos-taskbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 6px;
+  background: #0d0f13;
+  border-top: 1px solid #2c313a;
+  font: 12px/1 system-ui, sans-serif;
+  color: #d6d9df;
+  box-sizing: border-box;
+}
+
+.wasmos-launcher {
+  background: #2b6cb0;
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  padding: 5px 10px;
+  cursor: pointer;
+  font: inherit;
+}
+.wasmos-launcher:hover { background: #3b7ec0; }
+
+.wasmos-launcher-menu {
+  position: absolute;
+  bottom: 34px;
+  left: 6px;
+  min-width: 160px;
+  background: #14171c;
+  border: 1px solid #2c313a;
+  border-radius: 6px;
+  box-shadow: 0 -6px 24px rgba(0, 0, 0, 0.5);
+  padding: 4px;
+  z-index: 100000;
+}
+.wasmos-launch-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  color: #d6d9df;
+  border: none;
+  border-radius: 4px;
+  padding: 7px 10px;
+  cursor: pointer;
+  font: 13px/1 system-ui, sans-serif;
+}
+.wasmos-launch-item:hover { background: #2b6cb0; color: #fff; }
+
+.wasmos-tasks { display: flex; gap: 4px; flex: 1; overflow: hidden; }
+
+.wasmos-task {
+  background: #20242c;
+  color: #c8ccd4;
+  border: 1px solid #2c313a;
+  border-radius: 4px;
+  padding: 4px 10px;
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+  font: inherit;
+}
+.wasmos-task-active { background: #2c3340; border-color: #3b82f6; color: #fff; }
+.wasmos-task-min { opacity: 0.6; font-style: italic; }
+
+.wasmos-clock { margin-left: auto; font-variant-numeric: tabular-nums; color: #9aa3b2; }
+
+/* --- settings (theme + wallpaper) --- */
+.wasmos-settings {
+  background: #20242c; color: #d6d9df; border: 1px solid #2c313a; border-radius: 4px;
+  width: 26px; height: 22px; cursor: pointer; font: 13px/1 system-ui;
+}
+.wasmos-settings:hover { background: #2c3340; }
+.wasmos-settings-menu {
+  position: absolute; bottom: 34px; right: 6px; min-width: 180px;
+  background: #14171c; border: 1px solid #2c313a; border-radius: 6px;
+  box-shadow: 0 -6px 24px rgba(0,0,0,0.5); padding: 8px; z-index: 100000;
+}
+.wasmos-settings-label { font: 11px/1 system-ui; color: #9aa3b2; margin: 2px 2px 6px; }
+.wasmos-wallpaper-row { display: flex; gap: 6px; margin-bottom: 8px; }
+.wasmos-wallpaper { width: 36px; height: 26px; border: 2px solid #2c313a; border-radius: 4px; cursor: pointer; }
+.wasmos-wallpaper:hover { border-color: #3b82f6; }
+.wasmos-theme-toggle {
+  display: block; width: 100%; text-align: left; background: #20242c; color: #d6d9df;
+  border: 1px solid #2c313a; border-radius: 4px; padding: 7px 10px; cursor: pointer; font: 13px/1 system-ui;
+}
+.wasmos-theme-toggle:hover { background: #2b6cb0; color: #fff; }
+
+/* Light theme: brighten the chrome (the wallpaper is set inline per choice). */
+body[data-theme="light"] .wasmos-taskbar { background: #e8eaed; border-top-color: #c4c8cf; color: #21242b; }
+body[data-theme="light"] .wasmos-titlebar { background: #d6dae1; }
+body[data-theme="light"] .wasmos-window-active .wasmos-titlebar { background: #c2cad6; }
+body[data-theme="light"] .wasmos-title { color: #21242b; }
+body[data-theme="light"] .wasmos-clock { color: #4a5160; }
+
+/* --- windows --- */
+.wasmos-window {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  min-width: 160px;
+  min-height: 96px;
+  background: #15181d;
+  border: 1px solid #2c313a;
+  border-radius: 6px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  overflow: hidden;
+}
+.wasmos-window-active { border-color: #3b82f6; box-shadow: 0 10px 30px rgba(0, 0, 0, 0.6); }
+.wasmos-window-max { border-radius: 0; }
+
+.wasmos-titlebar {
+  display: flex;
+  align-items: center;
+  height: 28px;
+  padding: 0 4px 0 10px;
+  background: #20242c;
+  cursor: move;
+  user-select: none;
+  flex: 0 0 28px;
+}
+.wasmos-window-active .wasmos-titlebar { background: #283041; }
+
+.wasmos-title {
+  flex: 1;
+  font: 12px/28px system-ui, sans-serif;
+  color: #d6d9df;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wasmos-winbtns { display: flex; gap: 2px; }
+.wasmos-winbtn {
+  width: 22px;
+  height: 20px;
+  border: none;
+  border-radius: 3px;
+  background: transparent;
+  color: #aeb4bf;
+  cursor: pointer;
+  font: 12px/1 system-ui, sans-serif;
+}
+.wasmos-winbtn:hover { background: #3a4150; color: #fff; }
+.wasmos-winbtn-close:hover { background: #c0392b; color: #fff; }
+
+.wasmos-content {
+  flex: 1;
+  position: relative;
+  overflow: hidden;
+  background: #000;
+}
+/* The terminal content host fills its window. */
+.wasmos-content > #terminal { width: 100%; height: 100%; }
+.wasmos-content > canvas { display: block; width: 100%; height: 100%; image-rendering: pixelated; }
+
+/* --- resize handles --- */
+.wasmos-resize { position: absolute; }
+.wasmos-resize-n { top: -3px; left: 8px; right: 8px; height: 6px; cursor: ns-resize; }
+.wasmos-resize-s { bottom: -3px; left: 8px; right: 8px; height: 6px; cursor: ns-resize; }
+.wasmos-resize-e { right: -3px; top: 8px; bottom: 8px; width: 6px; cursor: ew-resize; }
+.wasmos-resize-w { left: -3px; top: 8px; bottom: 8px; width: 6px; cursor: ew-resize; }
+.wasmos-resize-ne { top: -3px; right: -3px; width: 12px; height: 12px; cursor: nesw-resize; }
+.wasmos-resize-nw { top: -3px; left: -3px; width: 12px; height: 12px; cursor: nwse-resize; }
+.wasmos-resize-se { bottom: -3px; right: -3px; width: 12px; height: 12px; cursor: nwse-resize; }
+.wasmos-resize-sw { bottom: -3px; left: -3px; width: 12px; height: 12px; cursor: nesw-resize; }

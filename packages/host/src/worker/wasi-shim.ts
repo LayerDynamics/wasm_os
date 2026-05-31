@@ -12,6 +12,16 @@
  */
 import type { RingClient } from "../ring/guest.js";
 import { OP, ERRNO, Reader, Writer } from "../ring/protocol.js";
+import { REQ_CAP, RESP_CAP } from "../ring/layout.js";
+
+/**
+ * Max bytes moved through the SAB ring in one fd_read/fd_write. The ring request
+ * and response buffers are bounded (REQ_CAP/RESP_CAP), so a single syscall caps
+ * its payload and reports a SHORT read/write; libc's `read`/`write_all` then loop
+ * for the remainder. Without this, a large write (e.g. saving a framebuffer)
+ * overflows the ring and silently writes nothing.
+ */
+const MAX_IO_BYTES = Math.min(REQ_CAP, RESP_CAP) - 64;
 
 /** Thrown to unwind the guest when it calls `proc_exit`. */
 export class ProcExit extends Error {
@@ -51,11 +61,15 @@ export function makeWasiImports(getMemory: () => WebAssembly.Memory, ring: RingC
       const iovs = readIovs(iovsPtr, iovsLen);
       const mem = u8();
       const total = iovs.reduce((n, v) => n + v.len, 0);
-      const data = new Uint8Array(total);
+      // Send at most one ring-payload worth; report a short write so libc loops.
+      const cap = Math.min(total, MAX_IO_BYTES);
+      const data = new Uint8Array(cap);
       let off = 0;
       for (const v of iovs) {
-        data.set(mem.subarray(v.buf, v.buf + v.len), off);
-        off += v.len;
+        if (off >= cap) break;
+        const take = Math.min(v.len, cap - off);
+        data.set(mem.subarray(v.buf, v.buf + take), off);
+        off += take;
       }
       const resp = new Reader(ring.call(new Writer().u8(OP.FD_WRITE).u32(fd).bytes(data).build()));
       const errno = resp.u16();
@@ -67,7 +81,10 @@ export function makeWasiImports(getMemory: () => WebAssembly.Memory, ring: RingC
     fd_read(fd: number, iovsPtr: number, iovsLen: number, nreadPtr: number): number {
       const iovs = readIovs(iovsPtr, iovsLen);
       const total = iovs.reduce((n, v) => n + v.len, 0);
-      const resp = new Reader(ring.call(new Writer().u8(OP.FD_READ).u32(fd).u32(total).build()));
+      // Request at most one ring-payload worth; a short read makes libc loop for a
+      // large file rather than overflow the response ring.
+      const want = Math.min(total, MAX_IO_BYTES);
+      const resp = new Reader(ring.call(new Writer().u8(OP.FD_READ).u32(fd).u32(want).build()));
       const errno = resp.u16();
       const data = resp.bytes();
       const mem = u8();
@@ -339,19 +356,65 @@ export function makeWasiImports(getMemory: () => WebAssembly.Memory, ring: RingC
   }) as Wasi;
 }
 
+const OP_WIN_SURFACE = 0x23;
+const OP_WIN_PRESENT = 0x24;
+
 /**
- * Build the `wasmos_kernel` import object — the process-control extension used
- * by the shell (spawn/pipe/wait). It is a single passthrough: the guest builds
- * a request (KSPAWN/KPIPE/KWAIT + fields), `syscall` forwards it through the
- * SAME ring (the kernel router dispatches by opcode), and the response bytes are
- * written back into a guest-provided buffer. Returns the response length.
+ * Host hooks for the M3 compositor surface path. Implemented by the process
+ * worker: it allocates the per-surface framebuffer SAB and relays surface/present
+ * notifications up to the compositor (pixels never traverse the kernel ring).
  */
-export function makeKernelImports(getMemory: () => WebAssembly.Memory, ring: RingClient): Wasi {
+export interface SurfaceHost {
+  /** The kernel allocated `surfaceId`; allocate a `width*height*4` framebuffer. */
+  onSurface(surfaceId: number, width: number, height: number): void;
+  /** Copy the guest framebuffer `src` into the surface's SAB and signal a frame. */
+  onPresent(surfaceId: number, src: Uint8Array): void;
+}
+
+/**
+ * Build the `wasmos_kernel` import object — the process-control + compositor
+ * extension. Most calls (KSPAWN/KPIPE/KWAIT, win_surface) are forwarded through
+ * the ring (the kernel router dispatches by opcode); `win_surface` success is
+ * post-processed to allocate the host framebuffer, and `win_present` is handled
+ * entirely here (the guest framebuffer is copied straight into the surface SAB,
+ * so per-frame pixels never enter the ring).
+ */
+export function makeKernelImports(
+  getMemory: () => WebAssembly.Memory,
+  ring: RingClient,
+  surfaces: SurfaceHost,
+): Wasi {
   return {
     syscall(reqPtr: number, reqLen: number, respPtr: number, respCap: number): number {
-      const mem = new Uint8Array(getMemory().buffer);
-      const req = mem.slice(reqPtr, reqPtr + reqLen);
+      const req = new Uint8Array(getMemory().buffer).slice(reqPtr, reqPtr + reqLen);
+      const op = req[0];
+      const reqView = new DataView(req.buffer, req.byteOffset, req.byteLength);
+
+      // win_present: copy the guest framebuffer into the surface SAB + notify the
+      // compositor. Never touches the kernel ring. Request: [0x24][id][ptr][len].
+      if (op === OP_WIN_PRESENT) {
+        const surfaceId = reqView.getUint32(1, true);
+        const ptr = reqView.getUint32(5, true);
+        const len = reqView.getUint32(9, true);
+        const src = new Uint8Array(getMemory().buffer, ptr, len);
+        surfaces.onPresent(surfaceId, src);
+        const ok = new Uint8Array([ERRNO.SUCCESS & 0xff, (ERRNO.SUCCESS >> 8) & 0xff]);
+        new Uint8Array(getMemory().buffer).set(ok.subarray(0, Math.min(ok.length, respCap)), respPtr);
+        return ok.length;
+      }
+
       const resp = ring.call(req);
+
+      // win_surface success → the kernel allocated the id; allocate the host
+      // framebuffer for it. Request: [0x23][w][h]. Reply: [errno u16][id u32].
+      if (op === OP_WIN_SURFACE && resp.length >= 6) {
+        const respView = new DataView(resp.buffer, resp.byteOffset, resp.byteLength);
+        if (respView.getUint16(0, true) === ERRNO.SUCCESS) {
+          const surfaceId = respView.getUint32(2, true);
+          surfaces.onSurface(surfaceId, reqView.getUint32(1, true), reqView.getUint32(5, true));
+        }
+      }
+
       const n = Math.min(resp.length, respCap);
       new Uint8Array(getMemory().buffer).set(resp.subarray(0, n), respPtr);
       return resp.length; // actual length (so the guest can detect truncation)

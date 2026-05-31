@@ -48,6 +48,12 @@ interface control {
     /// string grants no FS capability. M1 has no shm/net/signal grants.
     grant-fs-subtree: string,
     grant-spawn: bool,
+    /// Grant the Gpu capability — required to request a compositor surface
+    /// (`win_surface`, M3). Default-deny: a process without it cannot draw.
+    grant-gpu: bool,
+    /// Grant the Input capability — required to receive brokered keyboard/mouse
+    /// for its focused window (M3-T3). Default-deny.
+    grant-input: bool,
   }
 
   /// Allocate a process: PID + per-process fd table (0/1/2 preopened) + capset.
@@ -87,6 +93,12 @@ interface control {
   /// Deliver input bytes to a process's stdin (terminal keystrokes). Returns the
   /// pids whose parked stdin reads are now runnable.
   deliver-stdin: func(pid: u32, bytes: list<u8>) -> list<u32>;
+
+  /// Deliver brokered input events (keyboard/mouse, fixed-size records) to the
+  /// process owning the focused window (M3-T3, FR-25). Returns the pids whose
+  /// parked `win_read_input` calls are now runnable. Default-deny: events for a
+  /// process without the Input capability are dropped.
+  deliver-input: func(pid: u32, bytes: list<u8>) -> list<u32>;
 
   /// Bind a process's stdout/stderr to the interactive terminal: subsequent
   /// writes stream out as `syscall-outcome.term-output` (M2).
