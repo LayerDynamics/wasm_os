@@ -40,9 +40,17 @@ interface KernelControl {
   fsDelete(path: string): void;
   listProcs(): Array<{ pid: number; name: string; state: string }>;
   spawn(spec: SpawnSpec): number;
-  serviceSyscall(pid: number, request: Uint8Array): Uint8Array;
+  serviceSyscall(pid: number, request: Uint8Array): SyscallOutcome;
+  deliverStdin(pid: number, bytes: Uint8Array): Uint32Array;
   exitCode(pid: number): number | undefined;
   takeCapture(pid: number): [Uint8Array, Uint8Array];
+}
+
+/** M2 park/resume outcome (jco maps `option<list<u8>>` → `Uint8Array | undefined`). */
+interface SyscallOutcome {
+  reply: Uint8Array | undefined;
+  wakeups: Uint32Array;
+  termOutput: Uint8Array;
 }
 
 interface KernelModule {
@@ -67,6 +75,7 @@ let mnt: CachedStore | undefined;
 interface ProcRuntime {
   worker: Worker;
   ringSab: SharedArrayBuffer;
+  server: RingServer;
   abort: AbortController;
   exited: boolean;
   exitCode: number;
@@ -74,6 +83,65 @@ interface ProcRuntime {
   waiters: Array<(exitCode: number) => void>;
 }
 const procs = new Map<number, ProcRuntime>();
+
+/**
+ * Parked syscalls (M2): a pid → the request bytes it parked on. While parked,
+ * the guest stays blocked in `Atomics.wait`; a wakeup re-drives the request.
+ */
+const parked = new Map<number, Uint8Array>();
+
+/** Drive one syscall: complete it now, or park it; then process its wakeups. */
+function driveSyscall(pid: number, request: Uint8Array): void {
+  const rt = procs.get(pid);
+  if (!rt) return;
+  const outcome = requireControl().serviceSyscall(pid, request);
+  if (outcome.termOutput.length > 0) {
+    ctx.postMessage({ type: "output", pid, bytes: outcome.termOutput });
+  }
+  if (outcome.reply === undefined) {
+    parked.set(pid, request); // park — do NOT complete the ring
+  } else {
+    rt.server.complete(outcome.reply);
+  }
+  processWakeups(outcome.wakeups);
+}
+
+/**
+ * Re-drive parked pids made runnable by an event. **Iterative, de-duplicated
+ * work-queue** (NOT recursion): a pid removed from the stash the instant it is
+ * scheduled, so a duplicate wakeup is a no-op and a guest's `RESP_SEQ` is
+ * bumped exactly once per `Atomics.wait`.
+ */
+function processWakeups(wakeups: Uint32Array | number[]): void {
+  const queue: number[] = [...new Set(Array.from(wakeups))];
+  while (queue.length > 0) {
+    const w = queue.shift() as number;
+    const request = parked.get(w);
+    if (request === undefined) continue; // not parked / already handled (dedup)
+    parked.delete(w); // remove BEFORE re-drive so a duplicate wakeup no-ops
+    const rt = procs.get(w);
+    if (!rt) continue;
+    const outcome = requireControl().serviceSyscall(w, request);
+    if (outcome.termOutput.length > 0) {
+      ctx.postMessage({ type: "output", pid: w, bytes: outcome.termOutput });
+    }
+    if (outcome.reply === undefined) {
+      parked.set(w, request); // parked again (e.g. wait on a not-yet-exited child)
+    } else {
+      rt.server.complete(outcome.reply);
+    }
+    for (const nw of outcome.wakeups) if (!queue.includes(nw)) queue.push(nw);
+  }
+}
+
+/** Pump a process's ring: read each request and drive it (may park). */
+async function pump(pid: number, server: RingServer, signal: AbortSignal): Promise<void> {
+  for (;;) {
+    const req = await server.nextRequest({ signal });
+    if (req === null) return;
+    driveSyscall(pid, req);
+  }
+}
 
 function encodeProcExit(code: number): Uint8Array {
   return new Writer().u8(OP.PROC_EXIT).u32(code >>> 0).build();
@@ -126,14 +194,17 @@ function onProcExit(pid: number, msg: ExitMessage): void {
 
   if (msg.exit.kind === "trap") {
     // A trapping guest never reached proc_exit; record the exit in the kernel
-    // so the process zombifies and `wait` resolves (FR-34 containment).
-    requireControl().serviceSyscall(pid, encodeProcExit(msg.exit.code));
+    // so the process zombifies and `wait` resolves (FR-34 containment). Process
+    // any wakeups (e.g. a parent parked in wait() on this child — M2-T5).
+    const outcome = requireControl().serviceSyscall(pid, encodeProcExit(msg.exit.code));
+    processWakeups(outcome.wakeups);
   }
   rt.exited = true;
   rt.exitCode = msg.exit.code;
   rt.sharedMemory = msg.sharedMemory;
 
-  // Tear down the worker + ring servicing loop.
+  // Tear down the worker + ring pump; drop any stashed parked request.
+  parked.delete(pid);
   rt.abort.abort();
   wakeRing(rt.ringSab);
   rt.worker.terminate();
@@ -149,24 +220,29 @@ function spawn(spec: SpawnSpec, wasmBytes: ArrayBuffer): number {
   const ringSab = createRing();
   const abort = new AbortController();
   const server = new RingServer(ringSab);
-  // Service this ring until the process exits (loop re-arms per syscall).
-  void server
-    .serve((req) => ctl.serviceSyscall(pid, req), { signal: abort.signal })
-    .catch((e) => console.error(`ring serve error for pid ${pid}:`, e));
 
-  const worker = new Worker(PROCESS_WORKER_URL, { type: "module" });
-  worker.onmessage = (e: MessageEvent) => onProcExit(pid, e.data as ExitMessage);
-  worker.postMessage({ wasmBytes, pid, ringSab });
-
+  // Register the runtime BEFORE pumping so driveSyscall can find it.
   procs.set(pid, {
-    worker,
+    worker: undefined as unknown as Worker, // set below
     ringSab,
+    server,
     abort,
     exited: false,
     exitCode: 0,
     sharedMemory: false,
     waiters: [],
   });
+
+  // Pump this process's ring until it exits — each request is driven (may park).
+  void pump(pid, server, abort.signal).catch((e) =>
+    console.error(`ring pump error for pid ${pid}:`, e),
+  );
+
+  const worker = new Worker(PROCESS_WORKER_URL, { type: "module" });
+  worker.onmessage = (e: MessageEvent) => onProcExit(pid, e.data as ExitMessage);
+  worker.postMessage({ wasmBytes, pid, ringSab });
+  procs.get(pid)!.worker = worker;
+
   return pid;
 }
 
@@ -224,6 +300,13 @@ ctx.onmessage = async (ev: MessageEvent) => {
       case "wait":
         result = await waitFor(args.pid as number);
         break;
+      case "stdin": {
+        // Deliver terminal keystrokes to a process's stdin; wake parked readers.
+        const wakeups = requireControl().deliverStdin(args.pid as number, args.bytes as Uint8Array);
+        processWakeups(wakeups);
+        result = undefined;
+        break;
+      }
       case "flush":
         await Promise.all([home?.flush(), mnt?.flush()]);
         result = undefined;

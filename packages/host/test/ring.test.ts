@@ -89,4 +89,33 @@ describe("SAB syscall ring", () => {
       [30, 3],
     ]);
   });
+
+  // The M2 spine: a syscall can PARK — received now, completed later — while the
+  // guest stays genuinely blocked in Atomics.wait. This is the deferred-response
+  // capability stdin/pipes/wait all depend on.
+  it("completes a PARKED request later (deferred fulfilment) across the real ring", async () => {
+    const sab = createRing();
+    const server = new RingServer(sab);
+
+    // Client issues the request and blocks in Atomics.wait.
+    const resultPromise = runClient(sab, [[7, 8, 9]]);
+
+    // Server receives the request but does NOT complete it yet (park).
+    const req = await server.nextRequest();
+    expect(req).not.toBeNull();
+    expect(Array.from(req as Uint8Array)).toEqual([7, 8, 9]);
+
+    // Prove the client is still blocked: it cannot have produced a result while
+    // the response doorbell has not been rung. Complete only after a real delay.
+    let resolvedEarly = false;
+    void resultPromise.then(() => {
+      resolvedEarly = true;
+    });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(resolvedEarly).toBe(false); // still parked in Atomics.wait
+
+    server.complete(Uint8Array.from([42, 43]));
+    const [result] = await resultPromise;
+    expect(result).toEqual([42, 43]); // the deferred reply reached the guest
+  });
 });

@@ -14,8 +14,31 @@
 //! in full, zero-filled on error, so the shim can decode uniformly). A `bytes`
 //! field is `len:u32` followed by the raw bytes; a `string` is a UTF-8 `bytes`.
 
-use crate::types::{DescKind, Descriptor, ProcState, ProcTable, Rights, PREOPEN_FD};
+use crate::types::{DescKind, Descriptor, ProcState, ProcTable, Rights, WaitReason, PREOPEN_FD};
 use crate::vfs::Vfs;
+
+/// Outcome of routing one syscall (M2 park/resume). Most syscalls complete
+/// immediately (`reply = Some`); a blocking read with no data yet **parks**
+/// (`reply = None`) and is re-driven later when an event wakes it.
+pub struct SyscallOutcome {
+    /// `None` => parked (no response yet); `Some` => reply bytes for the ring.
+    pub reply: Option<Vec<u8>>,
+    /// pids whose parked syscalls are now runnable (the kworker re-drives them).
+    pub wakeups: Vec<u32>,
+    /// bytes a terminal-bound fd produced during this syscall (M2-T4 streams it).
+    pub term_output: Vec<u8>,
+}
+
+impl SyscallOutcome {
+    /// A completed syscall with its reply bytes.
+    pub fn ready(bytes: Vec<u8>) -> Self {
+        Self { reply: Some(bytes), wakeups: Vec::new(), term_output: Vec::new() }
+    }
+    /// A parked syscall (no reply yet).
+    pub fn parked() -> Self {
+        Self { reply: None, wakeups: Vec::new(), term_output: Vec::new() }
+    }
+}
 
 /// Syscall opcodes (request byte 0).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -203,56 +226,43 @@ fn resolve_path(dir: &str, path: &str) -> String {
     }
 }
 
-/// Immediate child names directly under `dir` (one path segment), de-duplicated.
-/// Synthesized from the flat-key VFS listing (provisional until M2 introduces a
-/// real hierarchical directory tree + `fd_readdir`).
-fn child_names(vfs: &Vfs, dir: &str) -> Vec<String> {
-    let entries = vfs.list(dir).unwrap_or_default();
-    let base = format!("{}/", dir.trim_end_matches('/'));
-    let mut seen: Vec<String> = Vec::new();
-    for full in entries {
-        if let Some(rest) = full.strip_prefix(&base) {
-            let name = rest.split('/').next().unwrap_or(rest);
-            if !name.is_empty() && !seen.iter().any(|s| s == name) {
-                seen.push(name.to_string());
-            }
-        }
-    }
-    seen
-}
-
 // ---------------------------------------------------------------------------
 // Dispatch
 // ---------------------------------------------------------------------------
 
-/// Route one WASI Preview 1 syscall for `pid`. Returns the binary response.
-pub fn dispatch(vfs: &mut Vfs, procs: &mut ProcTable, pid: u32, req: &[u8]) -> Vec<u8> {
+/// Route one syscall for `pid`. Returns a [`SyscallOutcome`] — usually a ready
+/// reply, but a blocking read with no data parks (the kworker defers the ring).
+pub fn dispatch(vfs: &mut Vfs, procs: &mut ProcTable, pid: u32, req: &[u8]) -> SyscallOutcome {
     let mut r = Reader::new(req);
     let op = match r.u8().and_then(Op::from_u8) {
         Some(op) => op,
-        None => return err_only(errno::NOSYS),
+        None => return SyscallOutcome::ready(err_only(errno::NOSYS)),
     };
 
     match op {
-        Op::FdWrite => fd_write(vfs, procs, pid, &mut r),
+        // fd_read can park (empty stdin) — it returns the outcome directly.
         Op::FdRead => fd_read(vfs, procs, pid, &mut r),
-        Op::FdSeek => fd_seek(vfs, procs, pid, &mut r),
-        Op::FdClose => fd_close(procs, pid, &mut r),
-        Op::PathOpen => path_open(vfs, procs, pid, &mut r),
-        Op::FdReaddir => fd_readdir(vfs, procs, pid, &mut r),
-        Op::FdPrestatGet => fd_prestat_get(procs, pid, &mut r),
-        Op::FdPrestatDirName => fd_prestat_dir_name(procs, pid, &mut r),
-        Op::FdFdstatGet => fd_fdstat_get(procs, pid, &mut r),
+        // Every other syscall completes immediately; wrap its reply bytes.
+        Op::FdWrite => SyscallOutcome::ready(fd_write(vfs, procs, pid, &mut r)),
+        Op::FdSeek => SyscallOutcome::ready(fd_seek(vfs, procs, pid, &mut r)),
+        Op::FdClose => SyscallOutcome::ready(fd_close(procs, pid, &mut r)),
+        Op::PathOpen => SyscallOutcome::ready(path_open(vfs, procs, pid, &mut r)),
+        Op::FdReaddir => SyscallOutcome::ready(fd_readdir(vfs, procs, pid, &mut r)),
+        Op::FdPrestatGet => SyscallOutcome::ready(fd_prestat_get(procs, pid, &mut r)),
+        Op::FdPrestatDirName => SyscallOutcome::ready(fd_prestat_dir_name(procs, pid, &mut r)),
+        Op::FdFdstatGet => SyscallOutcome::ready(fd_fdstat_get(procs, pid, &mut r)),
         Op::EnvironSizesGet | Op::ArgsSizesGet => {
             // M1 guests get empty args/env.
-            Writer::new().u16(errno::SUCCESS).u32(0).u32(0).build()
+            SyscallOutcome::ready(Writer::new().u16(errno::SUCCESS).u32(0).u32(0).build())
         }
         Op::EnvironGet | Op::ArgsGet => {
-            Writer::new().u16(errno::SUCCESS).bytes(&[]).build()
+            SyscallOutcome::ready(Writer::new().u16(errno::SUCCESS).bytes(&[]).build())
         }
-        Op::RandomGet => random_get(&mut r),
-        Op::ClockTimeGet => Writer::new().u16(errno::SUCCESS).u64(M1_CLOCK_NS).build(),
-        Op::ProcExit => proc_exit(procs, pid, &mut r),
+        Op::RandomGet => SyscallOutcome::ready(random_get(&mut r)),
+        Op::ClockTimeGet => {
+            SyscallOutcome::ready(Writer::new().u16(errno::SUCCESS).u64(M1_CLOCK_NS).build())
+        }
+        Op::ProcExit => SyscallOutcome::ready(proc_exit(procs, pid, &mut r)),
     }
 }
 
@@ -302,23 +312,37 @@ fn fd_write(vfs: &mut Vfs, procs: &mut ProcTable, pid: u32, r: &mut Reader) -> V
     }
 }
 
-fn fd_read(vfs: &mut Vfs, procs: &mut ProcTable, pid: u32, r: &mut Reader) -> Vec<u8> {
+fn fd_read(vfs: &mut Vfs, procs: &mut ProcTable, pid: u32, r: &mut Reader) -> SyscallOutcome {
     let (Some(fd), Some(len)) = (r.u32(), r.u32()) else {
-        return Writer::new().u16(errno::INVAL).bytes(&[]).build();
+        return SyscallOutcome::ready(Writer::new().u16(errno::INVAL).bytes(&[]).build());
     };
     let ok = |data: &[u8]| Writer::new().u16(errno::SUCCESS).bytes(data).build();
     let err = |e: u16| Writer::new().u16(e).bytes(&[]).build();
 
-    let Some(desc) = procs.fd(pid, fd) else { return err(errno::BADF) };
+    let Some(desc) = procs.fd(pid, fd) else {
+        return SyscallOutcome::ready(err(errno::BADF));
+    };
     match desc.kind.clone() {
-        DescKind::Stdin => ok(&[]), // EOF at M1 (no stdin source yet)
+        DescKind::Stdin => {
+            if procs.stdin_len(pid) > 0 {
+                // Data buffered — return up to `len` bytes immediately.
+                let data = procs.read_stdin(pid, len as usize);
+                SyscallOutcome::ready(ok(&data))
+            } else if procs.stdin_is_eof(pid) {
+                SyscallOutcome::ready(ok(&[])) // closed → EOF
+            } else {
+                // No data and open — PARK; a later `deliver_stdin` re-drives this.
+                procs.set_blocked(pid, WaitReason::Stdin);
+                SyscallOutcome::parked()
+            }
+        }
         DescKind::File { path } => {
             let content = match vfs.read(&path) {
                 Ok(c) => c,
-                Err(_) => return err(errno::NOENT),
+                Err(_) => return SyscallOutcome::ready(err(errno::NOENT)),
             };
             let Ok(offset) = usize::try_from(desc.offset) else {
-                return err(errno::INVAL);
+                return SyscallOutcome::ready(err(errno::INVAL));
             };
             let start = offset.min(content.len());
             let end = (start + len as usize).min(content.len());
@@ -326,9 +350,11 @@ fn fd_read(vfs: &mut Vfs, procs: &mut ProcTable, pid: u32, r: &mut Reader) -> Ve
             if let Some(d) = procs.fd_mut(pid, fd) {
                 d.offset = end as u64;
             }
-            ok(slice)
+            SyscallOutcome::ready(ok(slice))
         }
-        DescKind::Stdout | DescKind::Stderr | DescKind::Dir { .. } => err(errno::BADF),
+        DescKind::Stdout | DescKind::Stderr | DescKind::Dir { .. } => {
+            SyscallOutcome::ready(err(errno::BADF))
+        }
     }
 }
 
@@ -432,17 +458,22 @@ fn fd_readdir(vfs: &mut Vfs, procs: &mut ProcTable, pid: u32, r: &mut Reader) ->
         None => return err(errno::BADF),
     };
 
-    let names = child_names(vfs, &dir_path);
+    // Real immediate children from the hierarchical VFS (M2).
+    let entries = match vfs.readdir(&dir_path) {
+        Ok(e) => e,
+        Err(_) => return err(errno::NOTDIR),
+    };
     // WASI dirent: d_next:u64, d_ino:u64, d_namlen:u32, d_type:u8, then name.
     let mut out: Vec<u8> = Vec::new();
     let skip_count = usize::try_from(cookie).unwrap_or(usize::MAX);
-    for (i, name) in names.iter().enumerate().skip(skip_count) {
+    for (i, entry) in entries.iter().enumerate().skip(skip_count) {
+        let d_type = if entry.is_dir { filetype::DIRECTORY } else { filetype::REGULAR_FILE };
         let mut ent = Vec::new();
         ent.extend_from_slice(&((i as u64) + 1).to_le_bytes()); // d_next
         ent.extend_from_slice(&(i as u64).to_le_bytes()); // d_ino
-        ent.extend_from_slice(&(name.len() as u32).to_le_bytes()); // d_namlen
-        ent.push(filetype::REGULAR_FILE); // d_type (flat keys → files)
-        ent.extend_from_slice(name.as_bytes());
+        ent.extend_from_slice(&(entry.name.len() as u32).to_le_bytes()); // d_namlen
+        ent.push(d_type);
+        ent.extend_from_slice(entry.name.as_bytes());
         if out.len() + ent.len() > buf_len as usize {
             break; // libc re-calls with an updated cookie
         }
@@ -558,6 +589,11 @@ mod tests {
         (vfs, procs, pid)
     }
 
+    /// Drive a syscall expected to complete immediately; unwrap its reply bytes.
+    fn drive(vfs: &mut Vfs, procs: &mut ProcTable, pid: u32, req: &[u8]) -> Vec<u8> {
+        dispatch(vfs, procs, pid, req).reply.expect("syscall unexpectedly parked")
+    }
+
     // --- request encoders (mirror the host JS shim) ---
     fn req_fd_write(fd: u32, data: &[u8]) -> Vec<u8> {
         Writer::new().u8(Op::FdWrite as u8).u32(fd).bytes(data).build()
@@ -599,11 +635,11 @@ mod tests {
     #[test]
     fn fd_write_to_stdout_and_stderr_is_captured() {
         let (mut vfs, mut procs, pid) = setup();
-        let resp = dispatch(&mut vfs, &mut procs, pid, &req_fd_write(1, b"hello "));
+        let resp = drive(&mut vfs, &mut procs, pid, &req_fd_write(1, b"hello "));
         assert_eq!(read_u16(&resp), errno::SUCCESS);
         assert_eq!(read_u32_at(&resp, 2), 6); // nwritten
-        dispatch(&mut vfs, &mut procs, pid, &req_fd_write(1, b"world"));
-        dispatch(&mut vfs, &mut procs, pid, &req_fd_write(2, b"warn"));
+        drive(&mut vfs, &mut procs, pid, &req_fd_write(1, b"world"));
+        drive(&mut vfs, &mut procs, pid, &req_fd_write(2, b"warn"));
         let (out, err) = procs.take_capture(pid);
         assert_eq!(out, b"hello world");
         assert_eq!(err, b"warn");
@@ -613,7 +649,7 @@ mod tests {
     fn proc_exit_records_code_and_zombifies() {
         let (mut vfs, mut procs, pid) = setup();
         let req = Writer::new().u8(Op::ProcExit as u8).u32(0).build();
-        let resp = dispatch(&mut vfs, &mut procs, pid, &req);
+        let resp = drive(&mut vfs, &mut procs, pid, &req);
         assert_eq!(read_u16(&resp), errno::SUCCESS);
         assert_eq!(procs.exit_code(pid), Some(0));
         assert_eq!(procs.get(pid).unwrap().state, ProcState::Zombie);
@@ -623,11 +659,11 @@ mod tests {
     fn path_open_then_fd_read_returns_vfs_bytes() {
         let (mut vfs, mut procs, pid) = setup();
         vfs.write("/mnt/in.txt", b"payload".to_vec()).unwrap();
-        let resp = dispatch(&mut vfs, &mut procs, pid, &req_path_open(PREOPEN_FD, "/mnt/in.txt", 0));
+        let resp = drive(&mut vfs, &mut procs, pid, &req_path_open(PREOPEN_FD, "/mnt/in.txt", 0));
         assert_eq!(read_u16(&resp), errno::SUCCESS);
         let fd = read_u32_at(&resp, 2);
         assert!(fd >= 4);
-        let resp = dispatch(&mut vfs, &mut procs, pid, &req_fd_read(fd, 1024));
+        let resp = drive(&mut vfs, &mut procs, pid, &req_fd_read(fd, 1024));
         assert_eq!(read_u16(&resp), errno::SUCCESS);
         assert_eq!(resp_bytes(&resp), b"payload");
     }
@@ -636,16 +672,16 @@ mod tests {
     fn fd_seek_moves_cursor_and_partial_reads_work() {
         let (mut vfs, mut procs, pid) = setup();
         vfs.write("/mnt/f", b"abcdef".to_vec()).unwrap();
-        let resp = dispatch(&mut vfs, &mut procs, pid, &req_path_open(PREOPEN_FD, "/mnt/f", 0));
+        let resp = drive(&mut vfs, &mut procs, pid, &req_path_open(PREOPEN_FD, "/mnt/f", 0));
         let fd = read_u32_at(&resp, 2);
         // seek to 2 (SET)
-        let resp = dispatch(&mut vfs, &mut procs, pid, &req_fd_seek(fd, 2, whence::SET));
+        let resp = drive(&mut vfs, &mut procs, pid, &req_fd_seek(fd, 2, whence::SET));
         assert_eq!(read_u16(&resp), errno::SUCCESS);
         // read 3 → "cde"
-        let resp = dispatch(&mut vfs, &mut procs, pid, &req_fd_read(fd, 3));
+        let resp = drive(&mut vfs, &mut procs, pid, &req_fd_read(fd, 3));
         assert_eq!(resp_bytes(&resp), b"cde");
         // cursor now at 5; read 10 → "f"
-        let resp = dispatch(&mut vfs, &mut procs, pid, &req_fd_read(fd, 10));
+        let resp = drive(&mut vfs, &mut procs, pid, &req_fd_read(fd, 10));
         assert_eq!(resp_bytes(&resp), b"f");
     }
 
@@ -653,10 +689,10 @@ mod tests {
     fn fd_close_then_use_is_badf() {
         let (mut vfs, mut procs, pid) = setup();
         vfs.write("/mnt/f", b"x".to_vec()).unwrap();
-        let resp = dispatch(&mut vfs, &mut procs, pid, &req_path_open(PREOPEN_FD, "/mnt/f", 0));
+        let resp = drive(&mut vfs, &mut procs, pid, &req_path_open(PREOPEN_FD, "/mnt/f", 0));
         let fd = read_u32_at(&resp, 2);
-        assert_eq!(read_u16(&dispatch(&mut vfs, &mut procs, pid, &req_fd_close(fd))), errno::SUCCESS);
-        let resp = dispatch(&mut vfs, &mut procs, pid, &req_fd_read(fd, 1));
+        assert_eq!(read_u16(&drive(&mut vfs, &mut procs, pid, &req_fd_close(fd))), errno::SUCCESS);
+        let resp = drive(&mut vfs, &mut procs, pid, &req_fd_read(fd, 1));
         assert_eq!(read_u16(&resp), errno::BADF);
     }
 
@@ -670,7 +706,7 @@ mod tests {
         let mut caps = CapabilitySet::default();
         caps.grant(Capability::FsPath { subtree: "/home".into(), rights: Rights::RW });
         let pid = procs.spawn("t", 5, caps);
-        let resp = dispatch(&mut vfs, &mut procs, pid, &req_path_open(PREOPEN_FD, "/mnt/secret", 0));
+        let resp = drive(&mut vfs, &mut procs, pid, &req_path_open(PREOPEN_FD, "/mnt/secret", 0));
         assert_eq!(read_u16(&resp), errno::NOTCAPABLE);
         assert_eq!(read_u32_at(&resp, 2), 0); // no fd handed out
     }
@@ -679,13 +715,13 @@ mod tests {
     fn args_and_environ_sizes_then_get_roundtrip() {
         let (mut vfs, mut procs, pid) = setup();
         for op in [Op::ArgsSizesGet, Op::EnvironSizesGet] {
-            let resp = dispatch(&mut vfs, &mut procs, pid, &req_simple(op));
+            let resp = drive(&mut vfs, &mut procs, pid, &req_simple(op));
             assert_eq!(read_u16(&resp), errno::SUCCESS);
             assert_eq!(read_u32_at(&resp, 2), 0); // count
             assert_eq!(read_u32_at(&resp, 6), 0); // buf_size
         }
         for op in [Op::ArgsGet, Op::EnvironGet] {
-            let resp = dispatch(&mut vfs, &mut procs, pid, &req_simple(op));
+            let resp = drive(&mut vfs, &mut procs, pid, &req_simple(op));
             assert_eq!(read_u16(&resp), errno::SUCCESS);
             assert!(resp_bytes(&resp).is_empty());
         }
@@ -696,15 +732,15 @@ mod tests {
         let (mut vfs, mut procs, pid) = setup();
         // fd 3 (preopen "/") → SUCCESS with name_len 1.
         let req3 = Writer::new().u8(Op::FdPrestatGet as u8).u32(3).build();
-        let resp = dispatch(&mut vfs, &mut procs, pid, &req3);
+        let resp = drive(&mut vfs, &mut procs, pid, &req3);
         assert_eq!(read_u16(&resp), errno::SUCCESS);
         assert_eq!(read_u32_at(&resp, 2), 1); // "/".len()
         // fd 4 → BADF (ends the libc scan).
         let req4 = Writer::new().u8(Op::FdPrestatGet as u8).u32(4).build();
-        assert_eq!(read_u16(&dispatch(&mut vfs, &mut procs, pid, &req4)), errno::BADF);
+        assert_eq!(read_u16(&drive(&mut vfs, &mut procs, pid, &req4)), errno::BADF);
         // dir name of fd 3 is "/".
         let reqn = Writer::new().u8(Op::FdPrestatDirName as u8).u32(3).u32(16).build();
-        let resp = dispatch(&mut vfs, &mut procs, pid, &reqn);
+        let resp = drive(&mut vfs, &mut procs, pid, &reqn);
         assert_eq!(resp_bytes(&resp), b"/");
     }
 
@@ -712,7 +748,7 @@ mod tests {
     fn random_get_fills_len_bytes() {
         let (mut vfs, mut procs, pid) = setup();
         let req = Writer::new().u8(Op::RandomGet as u8).u32(16).build();
-        let resp = dispatch(&mut vfs, &mut procs, pid, &req);
+        let resp = drive(&mut vfs, &mut procs, pid, &req);
         assert_eq!(read_u16(&resp), errno::SUCCESS);
         assert_eq!(resp_bytes(&resp).len(), 16);
     }
@@ -721,7 +757,7 @@ mod tests {
     fn clock_time_get_is_nonzero_deterministic() {
         let (mut vfs, mut procs, pid) = setup();
         let req = Writer::new().u8(Op::ClockTimeGet as u8).u32(0).u64(0).build();
-        let resp = dispatch(&mut vfs, &mut procs, pid, &req);
+        let resp = drive(&mut vfs, &mut procs, pid, &req);
         assert_eq!(read_u16(&resp), errno::SUCCESS);
         let t = u64::from_le_bytes([resp[2], resp[3], resp[4], resp[5], resp[6], resp[7], resp[8], resp[9]]);
         assert_eq!(t, M1_CLOCK_NS);
@@ -729,16 +765,16 @@ mod tests {
     }
 
     #[test]
-    fn fd_readdir_synthesizes_entries_from_flat_list() {
+    fn fd_readdir_lists_directory_entries() {
         let (mut vfs, mut procs, pid) = setup();
         vfs.write("/mnt/a.txt", b"1".to_vec()).unwrap();
         vfs.write("/mnt/b.txt", b"2".to_vec()).unwrap();
         // Open /mnt as a directory.
-        let resp = dispatch(&mut vfs, &mut procs, pid, &req_path_open(PREOPEN_FD, "/mnt", oflags::DIRECTORY));
+        let resp = drive(&mut vfs, &mut procs, pid, &req_path_open(PREOPEN_FD, "/mnt", oflags::DIRECTORY));
         assert_eq!(read_u16(&resp), errno::SUCCESS);
         let dirfd = read_u32_at(&resp, 2);
         let req = Writer::new().u8(Op::FdReaddir as u8).u32(dirfd).u64(0).u32(4096).build();
-        let resp = dispatch(&mut vfs, &mut procs, pid, &req);
+        let resp = drive(&mut vfs, &mut procs, pid, &req);
         assert_eq!(read_u16(&resp), errno::SUCCESS);
         let entries = resp_bytes(&resp);
         // Two dirents present; their names appear in the buffer.
@@ -751,7 +787,32 @@ mod tests {
     #[test]
     fn unknown_opcode_is_nosys() {
         let (mut vfs, mut procs, pid) = setup();
-        let resp = dispatch(&mut vfs, &mut procs, pid, &[0xFF]);
+        let resp = drive(&mut vfs, &mut procs, pid, &[0xFF]);
         assert_eq!(read_u16(&resp), errno::NOSYS);
+    }
+
+    // --- M2: stdin park/resume ---
+
+    #[test]
+    fn fd_read_on_empty_open_stdin_parks() {
+        let (mut vfs, mut procs, pid) = setup();
+        let out = dispatch(&mut vfs, &mut procs, pid, &req_fd_read(0, 64));
+        assert!(out.reply.is_none()); // PARKED — no response yet
+        assert_eq!(procs.blocked_on(pid), Some(crate::types::WaitReason::Stdin));
+    }
+
+    #[test]
+    fn fd_read_stdin_returns_buffered_then_parks_then_eof() {
+        let (mut vfs, mut procs, pid) = setup();
+        procs.push_stdin(pid, b"hello");
+        // Buffered data returns immediately, up to the requested length.
+        assert_eq!(resp_bytes(&drive(&mut vfs, &mut procs, pid, &req_fd_read(0, 3))), b"hel");
+        assert_eq!(resp_bytes(&drive(&mut vfs, &mut procs, pid, &req_fd_read(0, 10))), b"lo");
+        // Drained + still open → parks.
+        assert!(dispatch(&mut vfs, &mut procs, pid, &req_fd_read(0, 10)).reply.is_none());
+        // Closed stdin → EOF (empty read), not a park.
+        procs.clear_blocked(pid);
+        procs.close_stdin(pid);
+        assert_eq!(resp_bytes(&drive(&mut vfs, &mut procs, pid, &req_fd_read(0, 10))), b"");
     }
 }

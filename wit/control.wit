@@ -55,11 +55,29 @@ interface control {
   /// the guest, then drives syscalls in via service-syscall.
   spawn: func(spec: spawn-spec) -> u32;
 
-  /// Route one WASI Preview 1 syscall for `pid`. `request` is the binary wire
-  /// format (see crates/kernel/src/syscall.rs). Returns the binary response.
-  /// All guest-memory marshalling has ALREADY been done host-side; this sees
-  /// only resolved values. proc-exit is encoded here and transitions the proc.
-  service-syscall: func(pid: u32, request: list<u8>) -> list<u8>;
+  /// Outcome of routing one syscall (M2 park/resume).
+  record syscall-outcome {
+    /// `none` => the syscall PARKED: the kworker keeps the request bytes and
+    /// does NOT complete the ring; the guest stays blocked until a later wakeup
+    /// re-drives it. `some(bytes)` => the binary response to write to the ring.
+    reply: option<list<u8>>,
+    /// pids whose parked syscalls are now runnable; the kworker re-drives each
+    /// (iterative, de-duplicated) with its stashed request.
+    wakeups: list<u32>,
+    /// bytes a terminal-bound fd produced during this syscall, streamed to the
+    /// terminal by the kworker (empty until a process binds a terminal fd).
+    term-output: list<u8>,
+  }
+
+  /// Route one WASI Preview 1 (or wasmos_kernel) syscall for `pid`. `request`
+  /// is the binary wire format (see crates/kernel/src/syscall.rs). All
+  /// guest-memory marshalling has ALREADY been done host-side; this sees only
+  /// resolved values. proc-exit is encoded here and transitions the proc.
+  service-syscall: func(pid: u32, request: list<u8>) -> syscall-outcome;
+
+  /// Deliver input bytes to a process's stdin (terminal keystrokes). Returns the
+  /// pids whose parked stdin reads are now runnable.
+  deliver-stdin: func(pid: u32, bytes: list<u8>) -> list<u32>;
 
   /// Has the process exited? Returns the exit code if it is a zombie.
   exit-code: func(pid: u32) -> option<s32>;

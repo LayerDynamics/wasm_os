@@ -4,7 +4,7 @@
 //! registers its own `init` process through them at boot, and M1 attaches real
 //! WASM instances that drive the fd table through the WASI syscall router.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 
 // ---------------------------------------------------------------------------
 // Backends
@@ -160,6 +160,16 @@ impl ProcState {
     }
 }
 
+/// Why a process is parked on a blocking syscall (M2 park/resume). A parked
+/// process stays blocked in `Atomics.wait` while the kworker services others;
+/// the matching event returns it in a wakeup list so its syscall is re-driven.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum WaitReason {
+    /// Blocked reading its own stdin with no buffered data (terminal input).
+    Stdin,
+    // M2-T3 adds PipeRead(u32)/PipeWrite(u32); M2-T5 adds Wait(u32) on a child.
+}
+
 /// A process table entry. `caps` is the owning capability set (FR-2); `fds` is
 /// the per-process descriptor table (FR-4) — isolated from every other process.
 #[derive(Clone, Debug)]
@@ -174,6 +184,12 @@ pub struct Process {
     pub stdout: Vec<u8>,
     pub stderr: Vec<u8>,
     pub exit_code: Option<i32>,
+    /// Buffered stdin bytes not yet consumed by a `fd_read` (M2).
+    pub stdin: VecDeque<u8>,
+    /// True once stdin is closed (reads then return EOF instead of parking).
+    pub stdin_eof: bool,
+    /// Set while the process is parked on a blocking syscall (M2 park/resume).
+    pub blocked_on: Option<WaitReason>,
 }
 
 /// Build the standard descriptor table for a fresh process: stdin/stdout/stderr
@@ -238,6 +254,9 @@ impl ProcTable {
             stdout: Vec::new(),
             stderr: Vec::new(),
             exit_code: None,
+            stdin: VecDeque::new(),
+            stdin_eof: false,
+            blocked_on: None,
         });
         pid
     }
@@ -300,6 +319,65 @@ impl ProcTable {
 
     pub fn exit_code(&self, pid: u32) -> Option<i32> {
         self.get(pid).and_then(|p| p.exit_code)
+    }
+
+    // --- Stdin buffer + park/resume state (M2) ---
+
+    /// Append input bytes to a process's stdin buffer (terminal keystrokes).
+    pub fn push_stdin(&mut self, pid: u32, bytes: &[u8]) -> bool {
+        self.get_mut(pid).map(|p| p.stdin.extend(bytes.iter().copied())).is_some()
+    }
+
+    /// Mark a process's stdin as closed (subsequent empty reads return EOF).
+    pub fn close_stdin(&mut self, pid: u32) -> bool {
+        self.get_mut(pid).map(|p| p.stdin_eof = true).is_some()
+    }
+
+    /// Drain up to `max` bytes from the front of a process's stdin buffer.
+    pub fn read_stdin(&mut self, pid: u32, max: usize) -> Vec<u8> {
+        match self.get_mut(pid) {
+            Some(p) => {
+                let n = max.min(p.stdin.len());
+                p.stdin.drain(..n).collect()
+            }
+            None => Vec::new(),
+        }
+    }
+
+    pub fn stdin_len(&self, pid: u32) -> usize {
+        self.get(pid).map(|p| p.stdin.len()).unwrap_or(0)
+    }
+
+    pub fn stdin_is_eof(&self, pid: u32) -> bool {
+        self.get(pid).map(|p| p.stdin_eof).unwrap_or(true)
+    }
+
+    /// Park a process on a blocking syscall (records why; sets state `Blocked`).
+    pub fn set_blocked(&mut self, pid: u32, reason: WaitReason) -> bool {
+        if let Some(p) = self.get_mut(pid) {
+            p.blocked_on = Some(reason);
+            p.state = ProcState::Blocked;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Clear a process's parked state (it is runnable again).
+    pub fn clear_blocked(&mut self, pid: u32) -> bool {
+        if let Some(p) = self.get_mut(pid) {
+            p.blocked_on = None;
+            if p.state == ProcState::Blocked {
+                p.state = ProcState::Running;
+            }
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn blocked_on(&self, pid: u32) -> Option<WaitReason> {
+        self.get(pid).and_then(|p| p.blocked_on.clone())
     }
 
     pub fn set_state(&mut self, pid: u32, state: ProcState) -> bool {

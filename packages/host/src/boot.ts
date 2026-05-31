@@ -40,6 +40,8 @@ export interface AsyncKernelControl {
   spawn(wasmBytes: ArrayBuffer, opts?: SpawnOptions): Promise<number>;
   /** Resolve when the process exits, with its exit code + isolation proof. */
   wait(pid: number): Promise<ProcExit>;
+  /** Deliver input bytes to a process's stdin (terminal keystrokes, M2). */
+  stdin(pid: number, bytes: Uint8Array): Promise<void>;
   /** Await durability of all OPFS/IndexedDB writes (used before reload). */
   flush(): Promise<void>;
 }
@@ -118,6 +120,7 @@ export async function boot(): Promise<BootResult> {
         },
       }),
     wait: (pid) => call("wait", { pid }),
+    stdin: (pid, bytes) => call("stdin", { pid, bytes }),
     flush: () => call("flush"),
   };
 
