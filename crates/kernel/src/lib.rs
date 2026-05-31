@@ -33,7 +33,8 @@ mod component {
 
     use bindings::exports::wasmos::abi::control::{
         Backend as WBackend, BootStatus, FeatureReport, FsError as WFsError, Guest,
-        ProcInfo as WProcInfo, SpawnSpec, SyscallOutcome as WSyscallOutcome,
+        ProcInfo as WProcInfo, SpawnRequest as WSpawnRequest, SpawnSpec,
+        SyscallOutcome as WSyscallOutcome,
     };
     use bindings::wasmos::abi::{home_store, mnt_store};
 
@@ -146,7 +147,12 @@ mod component {
 
         fn service_syscall(pid: u32, request: Vec<u8>) -> WSyscallOutcome {
             let out = KERNEL.with(|k| k.borrow_mut().service_syscall(pid, &request));
-            WSyscallOutcome { reply: out.reply, wakeups: out.wakeups, term_output: out.term_output }
+            WSyscallOutcome {
+                reply: out.reply,
+                wakeups: out.wakeups,
+                term_output: out.term_output,
+                spawn: out.spawn.map(|s| WSpawnRequest { pid: s.pid, image_path: s.image_path }),
+            }
         }
 
         fn deliver_stdin(pid: u32, bytes: Vec<u8>) -> Vec<u32> {

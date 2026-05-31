@@ -201,9 +201,24 @@ export function makeWasiImports(getMemory: () => WebAssembly.Memory, ring: RingC
       return errno;
     },
 
-    args_get(_argvPtr: number, _bufPtr: number): number {
-      // M1 guests have no argv; nothing to lay out.
-      return new Reader(ring.call(new Writer().u8(OP.ARGS_GET).build())).u16();
+    args_get(argvPtr: number, bufPtr: number): number {
+      // The kernel returns argv as a NUL-terminated, NUL-joined blob; lay out the
+      // bytes at `bufPtr` and a pointer to each arg at `argvPtr[i]` (M2).
+      const resp = new Reader(ring.call(new Writer().u8(OP.ARGS_GET).build()));
+      const errno = resp.u16();
+      const blob = resp.bytes();
+      u8().set(blob, bufPtr);
+      const view = dv();
+      let ai = 0;
+      let start = 0;
+      for (let i = 0; i < blob.length; i++) {
+        if (blob[i] === 0) {
+          view.setUint32(argvPtr + ai * 4, bufPtr + start, true);
+          ai += 1;
+          start = i + 1;
+        }
+      }
+      return errno;
     },
 
     random_get(buf: number, bufLen: number): number {
@@ -259,4 +274,24 @@ export function makeWasiImports(getMemory: () => WebAssembly.Memory, ring: RingC
       return (..._args: never[]): number => ERRNO.NOSYS;
     },
   }) as Wasi;
+}
+
+/**
+ * Build the `wasmos_kernel` import object — the process-control extension used
+ * by the shell (spawn/pipe/wait). It is a single passthrough: the guest builds
+ * a request (KSPAWN/KPIPE/KWAIT + fields), `syscall` forwards it through the
+ * SAME ring (the kernel router dispatches by opcode), and the response bytes are
+ * written back into a guest-provided buffer. Returns the response length.
+ */
+export function makeKernelImports(getMemory: () => WebAssembly.Memory, ring: RingClient): Wasi {
+  return {
+    syscall(reqPtr: number, reqLen: number, respPtr: number, respCap: number): number {
+      const mem = new Uint8Array(getMemory().buffer);
+      const req = mem.slice(reqPtr, reqPtr + reqLen);
+      const resp = ring.call(req);
+      const n = Math.min(resp.length, respCap);
+      new Uint8Array(getMemory().buffer).set(resp.subarray(0, n), respPtr);
+      return resp.length; // actual length (so the guest can detect truncation)
+    },
+  };
 }

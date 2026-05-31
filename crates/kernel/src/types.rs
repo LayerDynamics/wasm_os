@@ -174,7 +174,8 @@ pub enum WaitReason {
     PipeRead(u32),
     /// Blocked writing a full pipe (id) whose read end is still open.
     PipeWrite(u32),
-    // M2-T5 adds Wait(u32) on a child process exit.
+    /// Blocked in `wait()` on a child process (pid) that has not yet exited.
+    Wait(u32),
 }
 
 /// A process table entry. `caps` is the owning capability set (FR-2); `fds` is
@@ -197,6 +198,9 @@ pub struct Process {
     pub stdin_eof: bool,
     /// Set while the process is parked on a blocking syscall (M2 park/resume).
     pub blocked_on: Option<WaitReason>,
+    /// Command-line arguments (argv) surfaced via `args_get` (M2). argv[0] is
+    /// the program name.
+    pub argv: Vec<String>,
 }
 
 /// Build the standard descriptor table for a fresh process: stdin/stdout/stderr
@@ -264,6 +268,7 @@ impl ProcTable {
             stdin: VecDeque::new(),
             stdin_eof: false,
             blocked_on: None,
+            argv: vec![name.to_string()],
         });
         pid
     }
@@ -286,6 +291,20 @@ impl ProcTable {
         p.next_fd += 1;
         p.fds.insert(fd, desc);
         Some(fd)
+    }
+
+    /// Install a descriptor at a specific fd number (used to configure a child's
+    /// stdio 0/1/2 at spawn). Replaces any existing descriptor at that fd.
+    pub fn set_fd(&mut self, pid: u32, fd: u32, desc: Descriptor) -> bool {
+        self.get_mut(pid).map(|p| { p.fds.insert(fd, desc); }).is_some()
+    }
+
+    pub fn set_argv(&mut self, pid: u32, argv: Vec<String>) -> bool {
+        self.get_mut(pid).map(|p| p.argv = argv).is_some()
+    }
+
+    pub fn argv(&self, pid: u32) -> Vec<String> {
+        self.get(pid).map(|p| p.argv.clone()).unwrap_or_default()
     }
 
     pub fn fd(&self, pid: u32, fd: u32) -> Option<&Descriptor> {

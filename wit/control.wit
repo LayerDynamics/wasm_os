@@ -55,6 +55,13 @@ interface control {
   /// the guest, then drives syscalls in via service-syscall.
   spawn: func(spec: spawn-spec) -> u32;
 
+  /// A child the kernel registered (via guest spawn) that the kworker must now
+  /// instantiate: load `image-path` from the VFS and create its worker + ring.
+  record spawn-request {
+    pid: u32,
+    image-path: string,
+  }
+
   /// Outcome of routing one syscall (M2 park/resume).
   record syscall-outcome {
     /// `none` => the syscall PARKED: the kworker keeps the request bytes and
@@ -67,6 +74,8 @@ interface control {
     /// bytes a terminal-bound fd produced during this syscall, streamed to the
     /// terminal by the kworker (empty until a process binds a terminal fd).
     term-output: list<u8>,
+    /// set when a guest spawned a child — the kworker brings it to life.
+    spawn: option<spawn-request>,
   }
 
   /// Route one WASI Preview 1 (or wasmos_kernel) syscall for `pid`. `request`

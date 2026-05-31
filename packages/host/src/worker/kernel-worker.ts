@@ -52,6 +52,8 @@ interface SyscallOutcome {
   reply: Uint8Array | undefined;
   wakeups: Uint32Array;
   termOutput: Uint8Array;
+  /** Set when a guest spawned a child the kworker must instantiate (M2-T5). */
+  spawn?: { pid: number; imagePath: string };
 }
 
 interface KernelModule {
@@ -99,6 +101,7 @@ function driveSyscall(pid: number, request: Uint8Array): void {
   if (outcome.termOutput.length > 0) {
     ctx.postMessage({ type: "output", pid, bytes: outcome.termOutput });
   }
+  if (outcome.spawn) handleSpawnRequest(outcome.spawn);
   if (outcome.reply === undefined) {
     parked.set(pid, request); // park — do NOT complete the ring
   } else {
@@ -126,6 +129,7 @@ function processWakeups(wakeups: Uint32Array | number[]): void {
     if (outcome.termOutput.length > 0) {
       ctx.postMessage({ type: "output", pid: w, bytes: outcome.termOutput });
     }
+    if (outcome.spawn) handleSpawnRequest(outcome.spawn);
     if (outcome.reply === undefined) {
       parked.set(w, request); // parked again (e.g. wait on a not-yet-exited child)
     } else {
@@ -214,10 +218,12 @@ function onProcExit(pid: number, msg: ExitMessage): void {
   rt.waiters = [];
 }
 
-function spawn(spec: SpawnSpec, wasmBytes: ArrayBuffer): number {
-  const ctl = requireControl();
-  const pid = ctl.spawn(spec);
-
+/**
+ * Bring an already-allocated process (PID + fd table + caps registered in the
+ * kernel) to life: create its ring, pump it, and start its worker on the given
+ * guest image. Shared by host-initiated spawn and guest-initiated spawn (KSPAWN).
+ */
+function instantiateProcess(pid: number, wasmBytes: ArrayBuffer | Uint8Array): void {
   const ringSab = createRing();
   const abort = new AbortController();
   const server = new RingServer(ringSab);
@@ -243,8 +249,23 @@ function spawn(spec: SpawnSpec, wasmBytes: ArrayBuffer): number {
   worker.onmessage = (e: MessageEvent) => onProcExit(pid, e.data as ExitMessage);
   worker.postMessage({ wasmBytes, pid, ringSab });
   procs.get(pid)!.worker = worker;
+}
 
+/** Host-initiated spawn (the M1 path): allocate the PID, then instantiate. */
+function spawn(spec: SpawnSpec, wasmBytes: ArrayBuffer): number {
+  const pid = requireControl().spawn(spec);
+  instantiateProcess(pid, wasmBytes);
   return pid;
+}
+
+/**
+ * Guest-initiated spawn (KSPAWN, M2): the kernel already allocated the child's
+ * PID/fds/caps and returned a `spawn` request. Read its image from the VFS and
+ * bring it to life.
+ */
+function handleSpawnRequest(req: { pid: number; imagePath: string }): void {
+  const image = requireControl().fsRead(req.imagePath);
+  instantiateProcess(req.pid, image);
 }
 
 function waitFor(pid: number): Promise<{ exitCode: number; sharedMemory: boolean }> {

@@ -1,0 +1,12 @@
+[package]
+name = "wasmos-sys"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+# Guest-side bindings for the wasmos_kernel process-control extension (M2).
+# Conforms to wit/kernel.wit; the Binder's `kernel-check` verifies the function
+# set matches (FR-36 drift gate). Pure rlib used by the shell + any guest that
+# needs spawn/pipe/wait.
+[lib]
+crate-type = ["rlib"]

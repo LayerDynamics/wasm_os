@@ -15,8 +15,14 @@
 //! field is `len:u32` followed by the raw bytes; a `string` is a UTF-8 `bytes`.
 
 use crate::pipe::PipeTable;
-use crate::types::{DescKind, Descriptor, ProcState, ProcTable, Rights, WaitReason, PREOPEN_FD};
+use crate::types::{
+    Capability, CapabilitySet, DescKind, Descriptor, ProcState, ProcTable, Rights, WaitReason,
+    PREOPEN_FD,
+};
 use crate::vfs::Vfs;
+
+/// Scheduling priority for processes spawned by a guest shell (M2).
+const SPAWN_PRIORITY: u8 = 5;
 
 /// Outcome of routing one syscall (M2 park/resume). Most syscalls complete
 /// immediately (`reply = Some`); a blocking read with no data yet **parks**
@@ -28,16 +34,26 @@ pub struct SyscallOutcome {
     pub wakeups: Vec<u32>,
     /// bytes a terminal-bound fd produced during this syscall (M2-T4 streams it).
     pub term_output: Vec<u8>,
+    /// A child the kernel allocated this syscall (KSPAWN) that the kworker must
+    /// now bring to life — load the image from the VFS and create its worker+ring.
+    pub spawn: Option<SpawnRequest>,
+}
+
+/// A child process the kernel registered, awaiting the kworker to instantiate it.
+#[derive(Clone, Debug)]
+pub struct SpawnRequest {
+    pub pid: u32,
+    pub image_path: String,
 }
 
 impl SyscallOutcome {
     /// A completed syscall with its reply bytes.
     pub fn ready(bytes: Vec<u8>) -> Self {
-        Self { reply: Some(bytes), wakeups: Vec::new(), term_output: Vec::new() }
+        Self { reply: Some(bytes), wakeups: Vec::new(), term_output: Vec::new(), spawn: None }
     }
     /// A parked syscall (no reply yet).
     pub fn parked() -> Self {
-        Self { reply: None, wakeups: Vec::new(), term_output: Vec::new() }
+        Self { reply: None, wakeups: Vec::new(), term_output: Vec::new(), spawn: None }
     }
 }
 
@@ -61,6 +77,10 @@ pub enum Op {
     RandomGet = 0x0E,
     ClockTimeGet = 0x0F,
     ProcExit = 0x10,
+    // wasmos_kernel extension (guest process control, M2).
+    KSpawn = 0x20,
+    KPipe = 0x21,
+    KWait = 0x22,
 }
 
 impl Op {
@@ -82,6 +102,9 @@ impl Op {
             0x0E => Op::RandomGet,
             0x0F => Op::ClockTimeGet,
             0x10 => Op::ProcExit,
+            0x20 => Op::KSpawn,
+            0x21 => Op::KPipe,
+            0x22 => Op::KWait,
             _ => return None,
         })
     }
@@ -260,18 +283,37 @@ pub fn dispatch(
         Op::FdPrestatGet => SyscallOutcome::ready(fd_prestat_get(procs, pid, &mut r)),
         Op::FdPrestatDirName => SyscallOutcome::ready(fd_prestat_dir_name(procs, pid, &mut r)),
         Op::FdFdstatGet => SyscallOutcome::ready(fd_fdstat_get(procs, pid, &mut r)),
-        Op::EnvironSizesGet | Op::ArgsSizesGet => {
-            // M1 guests get empty args/env.
+        Op::EnvironSizesGet => {
+            // M2 guests get an empty environment.
             SyscallOutcome::ready(Writer::new().u16(errno::SUCCESS).u32(0).u32(0).build())
         }
-        Op::EnvironGet | Op::ArgsGet => {
-            SyscallOutcome::ready(Writer::new().u16(errno::SUCCESS).bytes(&[]).build())
+        Op::EnvironGet => SyscallOutcome::ready(Writer::new().u16(errno::SUCCESS).bytes(&[]).build()),
+        Op::ArgsSizesGet => {
+            // count + total NUL-terminated byte size of argv.
+            let argv = procs.argv(pid);
+            let count = argv.len() as u32;
+            let buf_size: u32 = argv.iter().map(|a| a.len() as u32 + 1).sum();
+            SyscallOutcome::ready(Writer::new().u16(errno::SUCCESS).u32(count).u32(buf_size).build())
+        }
+        Op::ArgsGet => {
+            // argv as a NUL-terminated, NUL-joined blob; the shim lays out the
+            // pointer array into guest memory.
+            let mut blob = Vec::new();
+            for a in procs.argv(pid) {
+                blob.extend_from_slice(a.as_bytes());
+                blob.push(0);
+            }
+            SyscallOutcome::ready(Writer::new().u16(errno::SUCCESS).bytes(&blob).build())
         }
         Op::RandomGet => SyscallOutcome::ready(random_get(&mut r)),
         Op::ClockTimeGet => {
             SyscallOutcome::ready(Writer::new().u16(errno::SUCCESS).u64(M1_CLOCK_NS).build())
         }
-        Op::ProcExit => SyscallOutcome::ready(proc_exit(procs, pid, &mut r)),
+        Op::ProcExit => proc_exit(procs, pid, &mut r),
+        // wasmos_kernel extension (guest process control).
+        Op::KSpawn => k_spawn(vfs, procs, pipes, pid, &mut r),
+        Op::KPipe => k_pipe(procs, pipes, pid, &mut r),
+        Op::KWait => k_wait(procs, pid, &mut r),
     }
 }
 
@@ -305,6 +347,7 @@ fn fd_write(
                 reply: Some(resp(errno::SUCCESS, data.len() as u32)),
                 wakeups: Vec::new(),
                 term_output: data.to_vec(),
+                spawn: None,
             }
         }
         DescKind::PipeWrite { id } => {
@@ -320,7 +363,7 @@ fn fd_write(
             let n = pipes.write(id, data);
             // Wake any readers parked on this pipe.
             let wakeups = procs.take_blocked_on(&WaitReason::PipeRead(id));
-            SyscallOutcome { reply: Some(resp(errno::SUCCESS, n as u32)), wakeups, term_output: Vec::new() }
+            SyscallOutcome { reply: Some(resp(errno::SUCCESS, n as u32)), wakeups, term_output: Vec::new(), spawn: None }
         }
         DescKind::File { path } => {
             if !desc.rights.write {
@@ -376,7 +419,7 @@ fn fd_read(
                 let data = pipes.read(id, len as usize);
                 // Draining the pipe may unblock writers parked on a full buffer.
                 let wakeups = procs.take_blocked_on(&WaitReason::PipeWrite(id));
-                SyscallOutcome { reply: Some(ok(&data)), wakeups, term_output: Vec::new() }
+                SyscallOutcome { reply: Some(ok(&data)), wakeups, term_output: Vec::new(), spawn: None }
             } else if pipes.write_open(id) {
                 // Empty but writers remain — park until a write arrives.
                 procs.set_blocked(pid, WaitReason::PipeRead(id));
@@ -478,7 +521,7 @@ fn fd_close(
     } else {
         err_only(errno::BADF)
     };
-    SyscallOutcome { reply: Some(reply), wakeups, term_output: Vec::new() }
+    SyscallOutcome { reply: Some(reply), wakeups, term_output: Vec::new(), spawn: None }
 }
 
 fn path_open(vfs: &mut Vfs, procs: &mut ProcTable, pid: u32, r: &mut Reader) -> Vec<u8> {
@@ -638,11 +681,142 @@ fn random_get(r: &mut Reader) -> Vec<u8> {
     Writer::new().u16(errno::SUCCESS).bytes(&bytes).build()
 }
 
-fn proc_exit(procs: &mut ProcTable, pid: u32, r: &mut Reader) -> Vec<u8> {
+fn proc_exit(procs: &mut ProcTable, pid: u32, r: &mut Reader) -> SyscallOutcome {
     let code = r.u32().unwrap_or(0) as i32;
     procs.set_exit(pid, code);
     procs.set_state(pid, ProcState::Zombie);
-    err_only(errno::SUCCESS)
+    // Wake any parent parked in wait() on this child.
+    let wakeups = procs.take_blocked_on(&WaitReason::Wait(pid));
+    SyscallOutcome { reply: Some(err_only(errno::SUCCESS)), wakeups, term_output: Vec::new(), spawn: None }
+}
+
+// ---------------------------------------------------------------------------
+// wasmos_kernel extension — guest process control (M2)
+// ---------------------------------------------------------------------------
+
+/// One of a child's stdio fds, as the shell requests it.
+fn parse_fd_spec(r: &mut Reader) -> Option<FdSpec> {
+    Some(match r.u8()? {
+        0 => FdSpec::Terminal,
+        1 => FdSpec::PipeRead(r.u32()?),
+        2 => FdSpec::PipeWrite(r.u32()?),
+        3 => {
+            let path = r.string()?;
+            let write = r.u8()? != 0;
+            FdSpec::File { path, write }
+        }
+        _ => return None,
+    })
+}
+
+enum FdSpec {
+    Terminal,
+    PipeRead(u32),
+    PipeWrite(u32),
+    File { path: String, write: bool },
+}
+
+/// `wasmos_kernel.spawn(path, argv, stdio)` — register a child process and ask
+/// the kworker (via `outcome.spawn`) to instantiate it from the VFS image.
+fn k_spawn(
+    vfs: &mut Vfs,
+    procs: &mut ProcTable,
+    pipes: &mut PipeTable,
+    pid: u32,
+    r: &mut Reader,
+) -> SyscallOutcome {
+    let resp = |e: u16, child: u32| Writer::new().u16(e).u32(child).build();
+    // Only a process holding the Spawn capability may launch children (FR-31).
+    if !procs.has_cap(pid, &Capability::Spawn) {
+        return SyscallOutcome::ready(resp(errno::NOTCAPABLE, 0));
+    }
+    let Some(path) = r.string() else { return SyscallOutcome::ready(resp(errno::INVAL, 0)) };
+    let Some(argc) = r.u32() else { return SyscallOutcome::ready(resp(errno::INVAL, 0)) };
+    let mut argv = Vec::with_capacity(argc as usize);
+    for _ in 0..argc {
+        match r.string() {
+            Some(a) => argv.push(a),
+            None => return SyscallOutcome::ready(resp(errno::INVAL, 0)),
+        }
+    }
+    let mut specs = Vec::with_capacity(3);
+    for _ in 0..3 {
+        match parse_fd_spec(r) {
+            Some(s) => specs.push(s),
+            None => return SyscallOutcome::ready(resp(errno::INVAL, 0)),
+        }
+    }
+
+    // The child inherits a broad FS grant (the shell's children operate on the
+    // user's files); never Shm, never Spawn (only the shell spawns).
+    let mut caps = CapabilitySet::default();
+    caps.grant(Capability::FsPath { subtree: "/".into(), rights: Rights::RWX });
+    let name = path.rsplit('/').next().unwrap_or(&path).to_string();
+    let child = procs.spawn(&name, SPAWN_PRIORITY, caps);
+    let argv = if argv.is_empty() { vec![name] } else { argv };
+    procs.set_argv(child, argv);
+
+    // Configure stdio fds 0/1/2 from the shell's spec.
+    for (idx, spec) in specs.into_iter().enumerate() {
+        let fd = idx as u32;
+        let desc = match spec {
+            FdSpec::Terminal => {
+                let kind = if fd == 0 { DescKind::Stdin } else { DescKind::Terminal };
+                Descriptor { kind, offset: 0, rights: Rights::RW }
+            }
+            FdSpec::PipeRead(id) => {
+                pipes.add_reader(id);
+                Descriptor { kind: DescKind::PipeRead { id }, offset: 0, rights: Rights::R }
+            }
+            FdSpec::PipeWrite(id) => {
+                pipes.add_writer(id);
+                Descriptor { kind: DescKind::PipeWrite { id }, offset: 0, rights: Rights::RW }
+            }
+            FdSpec::File { path, write } => {
+                if write {
+                    let _ = vfs.write(&path, Vec::new()); // truncate-create for `>`
+                }
+                let rights = if write { Rights::RW } else { Rights::R };
+                Descriptor { kind: DescKind::File { path }, offset: 0, rights }
+            }
+        };
+        procs.set_fd(child, fd, desc);
+    }
+    procs.set_state(child, ProcState::Ready);
+
+    SyscallOutcome {
+        reply: Some(resp(errno::SUCCESS, child)),
+        wakeups: Vec::new(),
+        term_output: Vec::new(),
+        spawn: Some(SpawnRequest { pid: child, image_path: path }),
+    }
+}
+
+/// `wasmos_kernel.pipe()` — create a pipe; return `(read_fd, write_fd)` in the
+/// caller's fd table.
+fn k_pipe(procs: &mut ProcTable, pipes: &mut PipeTable, pid: u32, _r: &mut Reader) -> SyscallOutcome {
+    let id = pipes.create();
+    let rfd = procs
+        .open_fd(pid, Descriptor { kind: DescKind::PipeRead { id }, offset: 0, rights: Rights::R })
+        .unwrap_or(0);
+    let wfd = procs
+        .open_fd(pid, Descriptor { kind: DescKind::PipeWrite { id }, offset: 0, rights: Rights::RW })
+        .unwrap_or(0);
+    SyscallOutcome::ready(Writer::new().u16(errno::SUCCESS).u32(rfd).u32(wfd).build())
+}
+
+/// `wasmos_kernel.wait(pid)` — return a child's exit code, parking until it exits.
+fn k_wait(procs: &mut ProcTable, pid: u32, r: &mut Reader) -> SyscallOutcome {
+    let resp = |e: u16, code: i32| Writer::new().u16(e).u32(code as u32).build();
+    let Some(child) = r.u32() else { return SyscallOutcome::ready(resp(errno::INVAL, 0)) };
+    if let Some(code) = procs.exit_code(child) {
+        SyscallOutcome::ready(resp(errno::SUCCESS, code))
+    } else if procs.get(child).is_none() {
+        SyscallOutcome::ready(resp(errno::NOENT, 0)) // no such child
+    } else {
+        procs.set_blocked(pid, WaitReason::Wait(child));
+        SyscallOutcome::parked()
+    }
 }
 
 #[cfg(test)]
@@ -812,19 +986,20 @@ mod tests {
     }
 
     #[test]
-    fn args_and_environ_sizes_then_get_roundtrip() {
+    fn args_reflect_argv_and_environ_is_empty() {
         let (mut vfs, mut procs, mut pipes, pid) = setup();
-        for op in [Op::ArgsSizesGet, Op::EnvironSizesGet] {
-            let resp = drive(&mut vfs, &mut procs, &mut pipes, pid, &req_simple(op));
-            assert_eq!(read_u16(&resp), errno::SUCCESS);
-            assert_eq!(read_u32_at(&resp, 2), 0); // count
-            assert_eq!(read_u32_at(&resp, 6), 0); // buf_size
-        }
-        for op in [Op::ArgsGet, Op::EnvironGet] {
-            let resp = drive(&mut vfs, &mut procs, &mut pipes, pid, &req_simple(op));
-            assert_eq!(read_u16(&resp), errno::SUCCESS);
-            assert!(resp_bytes(&resp).is_empty());
-        }
+        // The setup process has argv = ["t"] (its name); environ is empty.
+        procs.set_argv(pid, vec!["ls".into(), "-la".into()]);
+        let sz = drive(&mut vfs, &mut procs, &mut pipes, pid, &req_simple(Op::ArgsSizesGet));
+        assert_eq!(read_u16(&sz), errno::SUCCESS);
+        assert_eq!(read_u32_at(&sz, 2), 2); // count = argc
+        assert_eq!(read_u32_at(&sz, 6), 7); // "ls\0-la\0" = 3 + 4
+        let blob = resp_bytes(&drive(&mut vfs, &mut procs, &mut pipes, pid, &req_simple(Op::ArgsGet)));
+        assert_eq!(blob, b"ls\0-la\0");
+        // environ stays empty.
+        let esz = drive(&mut vfs, &mut procs, &mut pipes, pid, &req_simple(Op::EnvironSizesGet));
+        assert_eq!(read_u32_at(&esz, 2), 0);
+        assert!(resp_bytes(&drive(&mut vfs, &mut procs, &mut pipes, pid, &req_simple(Op::EnvironGet))).is_empty());
     }
 
     #[test]
@@ -982,5 +1157,96 @@ mod tests {
         // A read drains the pipe → the parked writer is woken.
         let out = dispatch(&mut vfs, &mut procs, &mut pipes, reader, &req_fd_read(rfd, 1024));
         assert_eq!(out.wakeups, vec![writer]);
+    }
+
+    // --- M2: wasmos_kernel extension (spawn / pipe / wait) ---
+
+    /// A caller process holding the Spawn capability (a shell).
+    fn shell_setup() -> (Vfs, ProcTable, PipeTable, u32) {
+        let (vfs, mut procs, pipes, _t) = setup();
+        let mut caps = CapabilitySet::default();
+        caps.grant(Capability::Spawn);
+        caps.grant(Capability::FsPath { subtree: "/".into(), rights: Rights::RWX });
+        let sh = procs.spawn("sh", 5, caps);
+        procs.set_state(sh, ProcState::Running);
+        (vfs, procs, pipes, sh)
+    }
+    /// KSPAWN request with all stdio inheriting the terminal (tag 0).
+    fn req_kspawn_term(path: &str, argv: &[&str]) -> Vec<u8> {
+        let mut w = Writer::new();
+        w.u8(Op::KSpawn as u8).bytes(path.as_bytes()).u32(argv.len() as u32);
+        for a in argv {
+            w.bytes(a.as_bytes());
+        }
+        for _ in 0..3 {
+            w.u8(0); // terminal
+        }
+        w.build()
+    }
+    fn req_kwait(child: u32) -> Vec<u8> {
+        Writer::new().u8(Op::KWait as u8).u32(child).build()
+    }
+    fn req_proc_exit(code: u32) -> Vec<u8> {
+        Writer::new().u8(Op::ProcExit as u8).u32(code).build()
+    }
+
+    #[test]
+    fn kspawn_allocates_child_with_argv_stdio_and_requests_instantiation() {
+        let (mut vfs, mut procs, mut pipes, sh) = shell_setup();
+        let out = dispatch(&mut vfs, &mut procs, &mut pipes, sh, &req_kspawn_term("/bin/echo", &["echo", "hi"]));
+        let resp = out.reply.expect("ready");
+        assert_eq!(read_u16(&resp), errno::SUCCESS);
+        let child = read_u32_at(&resp, 2);
+        assert!(child > sh);
+        // The kworker is asked to instantiate the child from the VFS image.
+        let sr = out.spawn.expect("spawn request");
+        assert_eq!(sr.pid, child);
+        assert_eq!(sr.image_path, "/bin/echo");
+        // argv + terminal-bound stdout reached the child.
+        assert_eq!(procs.argv(child), vec!["echo".to_string(), "hi".to_string()]);
+        assert_eq!(procs.fd(child, 1).unwrap().kind, DescKind::Terminal);
+        assert_eq!(procs.fd(child, 0).unwrap().kind, DescKind::Stdin);
+    }
+
+    #[test]
+    fn kspawn_denied_without_spawn_capability() {
+        let (mut vfs, mut procs, mut pipes, pid) = setup(); // no Spawn cap
+        let out = dispatch(&mut vfs, &mut procs, &mut pipes, pid, &req_kspawn_term("/bin/echo", &["echo"]));
+        assert_eq!(read_u16(&out.reply.unwrap()), errno::NOTCAPABLE);
+        assert!(out.spawn.is_none());
+    }
+
+    #[test]
+    fn kpipe_returns_two_fds_in_the_caller() {
+        let (mut vfs, mut procs, mut pipes, sh) = shell_setup();
+        let resp = drive(&mut vfs, &mut procs, &mut pipes, sh, &req_simple(Op::KPipe));
+        assert_eq!(read_u16(&resp), errno::SUCCESS);
+        let rfd = read_u32_at(&resp, 2);
+        let wfd = read_u32_at(&resp, 6);
+        assert!(rfd >= 4 && wfd >= 4 && rfd != wfd);
+        assert!(matches!(procs.fd(sh, rfd).unwrap().kind, DescKind::PipeRead { .. }));
+        assert!(matches!(procs.fd(sh, wfd).unwrap().kind, DescKind::PipeWrite { .. }));
+    }
+
+    #[test]
+    fn kwait_parks_until_child_exits_then_returns_code() {
+        let (mut vfs, mut procs, mut pipes, sh) = shell_setup();
+        let child = read_u32_at(
+            &dispatch(&mut vfs, &mut procs, &mut pipes, sh, &req_kspawn_term("/bin/echo", &["echo"]))
+                .reply
+                .unwrap(),
+            2,
+        );
+        // Parent waits → parks (child has not exited).
+        let out = dispatch(&mut vfs, &mut procs, &mut pipes, sh, &req_kwait(child));
+        assert!(out.reply.is_none());
+        assert_eq!(procs.blocked_on(sh), Some(WaitReason::Wait(child)));
+        // Child exits(0) → the waiting parent is woken.
+        let exit = dispatch(&mut vfs, &mut procs, &mut pipes, child, &req_proc_exit(0));
+        assert_eq!(exit.wakeups, vec![sh]);
+        // Re-driving the parent's wait now returns the exit code.
+        let resp = drive(&mut vfs, &mut procs, &mut pipes, sh, &req_kwait(child));
+        assert_eq!(read_u16(&resp), errno::SUCCESS);
+        assert_eq!(read_u32_at(&resp, 2), 0); // exit code
     }
 }

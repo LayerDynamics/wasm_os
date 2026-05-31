@@ -9,17 +9,18 @@
   "scripts": {
     "binder": "node tools/binder/binder.mjs",
     "binder:check": "node tools/binder/binder.mjs check",
+    "binder:kernel-check": "node tools/binder/binder.mjs kernel-check",
     "build:kernel": "cargo component build --release -p kernel --target wasm32-unknown-unknown",
     "build:guests": "cargo build -p hello -p crash -p catfile --target wasm32-wasip1 --release && mkdir -p packages/host/guests && cp target/wasm32-wasip1/release/hello.wasm target/wasm32-wasip1/release/crash.wasm target/wasm32-wasip1/release/catfile.wasm packages/host/guests/",
     "build": "npm run build:kernel && npm run binder gen",
     "bundle": "esbuild packages/host/src/index.ts packages/host/src/worker/kernel-worker.ts packages/host/src/worker/process-worker.ts --bundle --format=esm --outdir=dist",
     "bundle:harness": "esbuild packages/host/src/test-harness.ts --bundle --format=esm --outfile=dist/test-harness.js",
     "typecheck": "tsc -p packages/host/tsconfig.json --noEmit",
-    "lint": "cargo clippy -p kernel --lib --all-targets -- -D warnings && cargo clippy -p kernel --target wasm32-unknown-unknown --release -- -D warnings",
+    "lint": "cargo clippy --workspace --all-targets -- -D warnings && cargo clippy -p kernel --target wasm32-unknown-unknown --release -- -D warnings",
     "test:rust": "cargo test -p kernel",
     "test:host": "vitest run",
     "test:e2e": "playwright test",
-    "verify": "npm run build && npm run lint && npm run typecheck && npm run test:rust && npm run test:host && npm run test:e2e"
+    "verify": "npm run build && npm run binder:kernel-check && npm run lint && npm run typecheck && npm run test:rust && npm run test:host && npm run test:e2e"
   },
   "devDependencies": {
     "@bytecodealliance/jco": "^1.4.0",
