@@ -34,9 +34,12 @@ interface control {
   mount: func(path: string, on: backend) -> result<_, fs-error>;
 
   // --- VFS operations (exercised by the M0 integration + E2E tests) ---
-  fs-write: func(path: string, bytes: list<u8>) -> result<_, fs-error>;
-  fs-read:  func(path: string) -> result<list<u8>, fs-error>;
-  fs-list:  func(path: string) -> result<list<string>, fs-error>;
+  fs-write:  func(path: string, bytes: list<u8>) -> result<_, fs-error>;
+  fs-read:   func(path: string) -> result<list<u8>, fs-error>;
+  fs-list:   func(path: string) -> result<list<string>, fs-error>;
+  /// Remove a file. Returns not-found if the path does not exist. Routes to the
+  /// backing store for opfs/idb mounts (durable unlink) and to tmpfs otherwise.
+  fs-delete: func(path: string) -> result<_, fs-error>;
 
   /// Process table view (empty at M0; proves the table exists).
   list-procs: func() -> list<proc-info>;

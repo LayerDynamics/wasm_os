@@ -43,7 +43,7 @@ impl KernelCore {
         let init = self.procs.spawn("init", 10, caps);
         self.procs.set_state(init, ProcState::Ready);
         self.sched.enqueue(init, 10);
-        if let Some(pid) = self.sched.next() {
+        if let Some(pid) = self.sched.pick_next() {
             self.procs.set_state(pid, ProcState::Running);
             self.sched.account(pid, 1);
         }
@@ -66,6 +66,9 @@ impl KernelCore {
     }
     pub fn list(&self, path: &str) -> Result<Vec<String>, FsError> {
         self.vfs.list(path)
+    }
+    pub fn delete(&mut self, path: &str) -> Result<(), FsError> {
+        self.vfs.delete(path)
     }
 
     // --- Process/scheduler/capability surface ---

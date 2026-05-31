@@ -4,6 +4,7 @@ export function mount(path: string, on: Backend): void;
 export function fsWrite(path: string, bytes: Uint8Array): void;
 export function fsRead(path: string): Uint8Array;
 export function fsList(path: string): Array<string>;
+export function fsDelete(path: string): void;
 export function listProcs(): Array<ProcInfo>;
 /**
  * # Variants

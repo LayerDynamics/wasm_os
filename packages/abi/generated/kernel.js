@@ -3320,36 +3320,7 @@ const module0 = getCoreModule('kernel.core.wasm');
 const module1 = getCoreModule('kernel.core2.wasm');
 const module2 = getCoreModule('kernel.core3.wasm');
 
-const { delete: _delete$1, get: get$1, listKeys: listKeys$1, put: put$1 } = imports['wasmos:abi/home-store'];
-
-if (_delete$1=== undefined) {
-  const err = new Error("unexpectedly undefined instance import '_delete$1', was 'delete' available at instantiation?");
-  console.error("ERROR:", err.toString());
-  throw err;
-}
-
-
-if (get$1=== undefined) {
-  const err = new Error("unexpectedly undefined instance import 'get$1', was 'get' available at instantiation?");
-  console.error("ERROR:", err.toString());
-  throw err;
-}
-
-
-if (listKeys$1=== undefined) {
-  const err = new Error("unexpectedly undefined instance import 'listKeys$1', was 'listKeys' available at instantiation?");
-  console.error("ERROR:", err.toString());
-  throw err;
-}
-
-
-if (put$1=== undefined) {
-  const err = new Error("unexpectedly undefined instance import 'put$1', was 'put' available at instantiation?");
-  console.error("ERROR:", err.toString());
-  throw err;
-}
-
-const { delete: _delete, get, listKeys, put } = imports['wasmos:abi/mnt-store'];
+const { delete: _delete, get, listKeys, put } = imports['wasmos:abi/home-store'];
 
 if (_delete=== undefined) {
   const err = new Error("unexpectedly undefined instance import '_delete', was 'delete' available at instantiation?");
@@ -3378,6 +3349,35 @@ if (put=== undefined) {
   throw err;
 }
 
+const { delete: _delete$1, get: get$1, listKeys: listKeys$1, put: put$1 } = imports['wasmos:abi/mnt-store'];
+
+if (_delete$1=== undefined) {
+  const err = new Error("unexpectedly undefined instance import '_delete$1', was 'delete' available at instantiation?");
+  console.error("ERROR:", err.toString());
+  throw err;
+}
+
+
+if (get$1=== undefined) {
+  const err = new Error("unexpectedly undefined instance import 'get$1', was 'get' available at instantiation?");
+  console.error("ERROR:", err.toString());
+  throw err;
+}
+
+
+if (listKeys$1=== undefined) {
+  const err = new Error("unexpectedly undefined instance import 'listKeys$1', was 'listKeys' available at instantiation?");
+  console.error("ERROR:", err.toString());
+  throw err;
+}
+
+
+if (put$1=== undefined) {
+  const err = new Error("unexpectedly undefined instance import 'put$1', was 'put' available at instantiation?");
+  console.error("ERROR:", err.toString());
+  throw err;
+}
+
 let gen = (function* _initGenerator () {
   let exports0;
   let exports1;
@@ -3389,7 +3389,7 @@ let gen = (function* _initGenerator () {
     var ptr0 = arg0;
     var len0 = arg1;
     var result0 = TEXT_DECODER_UTF8.decode(new Uint8Array(memory0.buffer, ptr0, len0));
-    _debugLog('[iface="wasmos:abi/mnt-store@0.1.0", function="get"] [Instruction::CallInterface] (sync, @ enter)');
+    _debugLog('[iface="wasmos:abi/home-store@0.1.0", function="get"] [Instruction::CallInterface] (sync, @ enter)');
     let hostProvided = true;
     
     let parentTask;
@@ -3482,7 +3482,7 @@ let gen = (function* _initGenerator () {
       dataView(memory0).setUint32(arg2 + 8, len1, true);
       dataView(memory0).setUint32(arg2 + 4, ptr1, true);
     }
-    _debugLog('[iface="wasmos:abi/mnt-store@0.1.0", function="get"][Instruction::Return]', {
+    _debugLog('[iface="wasmos:abi/home-store@0.1.0", function="get"][Instruction::Return]', {
       funcName: 'get',
       paramCount: 0,
       async: false,
@@ -3491,7 +3491,7 @@ let gen = (function* _initGenerator () {
     task.resolve([ret]);
     task.exit();
   }
-  _trampoline0.fnName = 'wasmos:abi/mnt-store@0.1.0#get';
+  _trampoline0.fnName = 'wasmos:abi/home-store@0.1.0#get';
   
   const _trampoline1 = function(arg0, arg1, arg2, arg3) {
     var ptr0 = arg0;
@@ -3500,7 +3500,7 @@ let gen = (function* _initGenerator () {
     var ptr1 = arg2;
     var len1 = arg3;
     var result1 = new Uint8Array(memory0.buffer.slice(ptr1, ptr1 + len1 * 1));
-    _debugLog('[iface="wasmos:abi/mnt-store@0.1.0", function="put"] [Instruction::CallInterface] (sync, @ enter)');
+    _debugLog('[iface="wasmos:abi/home-store@0.1.0", function="put"] [Instruction::CallInterface] (sync, @ enter)');
     let hostProvided = true;
     
     let parentTask;
@@ -3562,7 +3562,7 @@ let gen = (function* _initGenerator () {
       
     }
     
-    _debugLog('[iface="wasmos:abi/mnt-store@0.1.0", function="put"][Instruction::Return]', {
+    _debugLog('[iface="wasmos:abi/home-store@0.1.0", function="put"][Instruction::Return]', {
       funcName: 'put',
       paramCount: 1,
       async: false,
@@ -3572,13 +3572,13 @@ let gen = (function* _initGenerator () {
     task.exit();
     return ret ? 1 : 0;
   }
-  _trampoline1.fnName = 'wasmos:abi/mnt-store@0.1.0#put';
+  _trampoline1.fnName = 'wasmos:abi/home-store@0.1.0#put';
   
   const _trampoline2 = function(arg0, arg1) {
     var ptr0 = arg0;
     var len0 = arg1;
     var result0 = TEXT_DECODER_UTF8.decode(new Uint8Array(memory0.buffer, ptr0, len0));
-    _debugLog('[iface="wasmos:abi/mnt-store@0.1.0", function="delete"] [Instruction::CallInterface] (sync, @ enter)');
+    _debugLog('[iface="wasmos:abi/home-store@0.1.0", function="delete"] [Instruction::CallInterface] (sync, @ enter)');
     let hostProvided = true;
     
     let parentTask;
@@ -3640,7 +3640,7 @@ let gen = (function* _initGenerator () {
       
     }
     
-    _debugLog('[iface="wasmos:abi/mnt-store@0.1.0", function="delete"][Instruction::Return]', {
+    _debugLog('[iface="wasmos:abi/home-store@0.1.0", function="delete"][Instruction::Return]', {
       funcName: 'delete',
       paramCount: 1,
       async: false,
@@ -3650,13 +3650,13 @@ let gen = (function* _initGenerator () {
     task.exit();
     return ret ? 1 : 0;
   }
-  _trampoline2.fnName = 'wasmos:abi/mnt-store@0.1.0#_delete';
+  _trampoline2.fnName = 'wasmos:abi/home-store@0.1.0#_delete';
   
   const _trampoline3 = function(arg0, arg1, arg2) {
     var ptr0 = arg0;
     var len0 = arg1;
     var result0 = TEXT_DECODER_UTF8.decode(new Uint8Array(memory0.buffer, ptr0, len0));
-    _debugLog('[iface="wasmos:abi/mnt-store@0.1.0", function="list-keys"] [Instruction::CallInterface] (sync, @ enter)');
+    _debugLog('[iface="wasmos:abi/home-store@0.1.0", function="list-keys"] [Instruction::CallInterface] (sync, @ enter)');
     let hostProvided = true;
     
     let parentTask;
@@ -3733,7 +3733,7 @@ let gen = (function* _initGenerator () {
     }
     dataView(memory0).setUint32(arg2 + 4, len2, true);
     dataView(memory0).setUint32(arg2 + 0, result2, true);
-    _debugLog('[iface="wasmos:abi/mnt-store@0.1.0", function="list-keys"][Instruction::Return]', {
+    _debugLog('[iface="wasmos:abi/home-store@0.1.0", function="list-keys"][Instruction::Return]', {
       funcName: 'list-keys',
       paramCount: 0,
       async: false,
@@ -3742,13 +3742,13 @@ let gen = (function* _initGenerator () {
     task.resolve([ret]);
     task.exit();
   }
-  _trampoline3.fnName = 'wasmos:abi/mnt-store@0.1.0#listKeys';
+  _trampoline3.fnName = 'wasmos:abi/home-store@0.1.0#listKeys';
   
   const _trampoline4 = function(arg0, arg1, arg2) {
     var ptr0 = arg0;
     var len0 = arg1;
     var result0 = TEXT_DECODER_UTF8.decode(new Uint8Array(memory0.buffer, ptr0, len0));
-    _debugLog('[iface="wasmos:abi/home-store@0.1.0", function="get"] [Instruction::CallInterface] (sync, @ enter)');
+    _debugLog('[iface="wasmos:abi/mnt-store@0.1.0", function="get"] [Instruction::CallInterface] (sync, @ enter)');
     let hostProvided = true;
     
     let parentTask;
@@ -3841,7 +3841,7 @@ let gen = (function* _initGenerator () {
       dataView(memory0).setUint32(arg2 + 8, len1, true);
       dataView(memory0).setUint32(arg2 + 4, ptr1, true);
     }
-    _debugLog('[iface="wasmos:abi/home-store@0.1.0", function="get"][Instruction::Return]', {
+    _debugLog('[iface="wasmos:abi/mnt-store@0.1.0", function="get"][Instruction::Return]', {
       funcName: 'get',
       paramCount: 0,
       async: false,
@@ -3850,7 +3850,7 @@ let gen = (function* _initGenerator () {
     task.resolve([ret]);
     task.exit();
   }
-  _trampoline4.fnName = 'wasmos:abi/home-store@0.1.0#get$1';
+  _trampoline4.fnName = 'wasmos:abi/mnt-store@0.1.0#get$1';
   
   const _trampoline5 = function(arg0, arg1, arg2, arg3) {
     var ptr0 = arg0;
@@ -3859,7 +3859,7 @@ let gen = (function* _initGenerator () {
     var ptr1 = arg2;
     var len1 = arg3;
     var result1 = new Uint8Array(memory0.buffer.slice(ptr1, ptr1 + len1 * 1));
-    _debugLog('[iface="wasmos:abi/home-store@0.1.0", function="put"] [Instruction::CallInterface] (sync, @ enter)');
+    _debugLog('[iface="wasmos:abi/mnt-store@0.1.0", function="put"] [Instruction::CallInterface] (sync, @ enter)');
     let hostProvided = true;
     
     let parentTask;
@@ -3921,7 +3921,7 @@ let gen = (function* _initGenerator () {
       
     }
     
-    _debugLog('[iface="wasmos:abi/home-store@0.1.0", function="put"][Instruction::Return]', {
+    _debugLog('[iface="wasmos:abi/mnt-store@0.1.0", function="put"][Instruction::Return]', {
       funcName: 'put',
       paramCount: 1,
       async: false,
@@ -3931,13 +3931,13 @@ let gen = (function* _initGenerator () {
     task.exit();
     return ret ? 1 : 0;
   }
-  _trampoline5.fnName = 'wasmos:abi/home-store@0.1.0#put$1';
+  _trampoline5.fnName = 'wasmos:abi/mnt-store@0.1.0#put$1';
   
   const _trampoline6 = function(arg0, arg1) {
     var ptr0 = arg0;
     var len0 = arg1;
     var result0 = TEXT_DECODER_UTF8.decode(new Uint8Array(memory0.buffer, ptr0, len0));
-    _debugLog('[iface="wasmos:abi/home-store@0.1.0", function="delete"] [Instruction::CallInterface] (sync, @ enter)');
+    _debugLog('[iface="wasmos:abi/mnt-store@0.1.0", function="delete"] [Instruction::CallInterface] (sync, @ enter)');
     let hostProvided = true;
     
     let parentTask;
@@ -3999,7 +3999,7 @@ let gen = (function* _initGenerator () {
       
     }
     
-    _debugLog('[iface="wasmos:abi/home-store@0.1.0", function="delete"][Instruction::Return]', {
+    _debugLog('[iface="wasmos:abi/mnt-store@0.1.0", function="delete"][Instruction::Return]', {
       funcName: 'delete',
       paramCount: 1,
       async: false,
@@ -4009,13 +4009,13 @@ let gen = (function* _initGenerator () {
     task.exit();
     return ret ? 1 : 0;
   }
-  _trampoline6.fnName = 'wasmos:abi/home-store@0.1.0#_delete$1';
+  _trampoline6.fnName = 'wasmos:abi/mnt-store@0.1.0#_delete$1';
   
   const _trampoline7 = function(arg0, arg1, arg2) {
     var ptr0 = arg0;
     var len0 = arg1;
     var result0 = TEXT_DECODER_UTF8.decode(new Uint8Array(memory0.buffer, ptr0, len0));
-    _debugLog('[iface="wasmos:abi/home-store@0.1.0", function="list-keys"] [Instruction::CallInterface] (sync, @ enter)');
+    _debugLog('[iface="wasmos:abi/mnt-store@0.1.0", function="list-keys"] [Instruction::CallInterface] (sync, @ enter)');
     let hostProvided = true;
     
     let parentTask;
@@ -4092,7 +4092,7 @@ let gen = (function* _initGenerator () {
     }
     dataView(memory0).setUint32(arg2 + 4, len2, true);
     dataView(memory0).setUint32(arg2 + 0, result2, true);
-    _debugLog('[iface="wasmos:abi/home-store@0.1.0", function="list-keys"][Instruction::Return]', {
+    _debugLog('[iface="wasmos:abi/mnt-store@0.1.0", function="list-keys"][Instruction::Return]', {
       funcName: 'list-keys',
       paramCount: 0,
       async: false,
@@ -4101,7 +4101,7 @@ let gen = (function* _initGenerator () {
     task.resolve([ret]);
     task.exit();
   }
-  _trampoline7.fnName = 'wasmos:abi/home-store@0.1.0#listKeys$1';
+  _trampoline7.fnName = 'wasmos:abi/mnt-store@0.1.0#listKeys$1';
   let exports2;
   let postReturn0;
   let postReturn0Async;
@@ -4115,6 +4115,8 @@ let gen = (function* _initGenerator () {
   let postReturn4Async;
   let postReturn5;
   let postReturn5Async;
+  let postReturn6;
+  let postReturn6Async;
   let control010Boot;
   
   function boot(arg0) {
@@ -4779,6 +4781,133 @@ let gen = (function* _initGenerator () {
     return retCopy.val;
     
   }
+  let control010FsDelete;
+  
+  function fsDelete(arg0) {
+    
+    var encodeRes = _utf8AllocateAndEncode(arg0, realloc0, memory0);
+    var ptr0= encodeRes.ptr;
+    var len0 = encodeRes.len;
+    
+    _debugLog('[iface="wasmos:abi/control@0.1.0", function="fs-delete"][Instruction::CallWasm] enter', {
+      funcName: 'fs-delete',
+      paramCount: 2,
+      async: false,
+      postReturn: true,
+    });
+    const hostProvided = false;
+    
+    const [task, _wasm_call_currentTaskID] = createNewCurrentTask({
+      componentIdx: 0,
+      isAsync: false,
+      isManualAsync: false,
+      entryFnName: 'control010FsDelete',
+      getCallbackFn: () => null,
+      callbackFnName: null,
+      errHandling: 'throw-result-err',
+      callingWasmExport: true,
+    });
+    
+    const started = task.enterSync();
+    
+    if (0!== null) {
+      task.setReturnMemoryIdx(0);
+      task.setReturnMemory(() => memory0());
+    }
+    
+    
+    let ret;
+    
+    try {
+      ret =   _withGlobalCurrentTaskMeta({
+        taskID: task.id(),
+        componentIdx: task.componentIdx(),
+        fn: () => control010FsDelete(ptr0, len0),
+      });
+    } catch (err) {
+      
+      task.setErrored(err);
+      task.reject(err);
+      task.exit();
+      throw err;
+      
+    }
+    
+    let variant4;
+    switch (dataView(memory0).getUint8(ret + 0, true)) {
+      case 0: {
+        variant4= {
+          tag: 'ok',
+          val: undefined
+        };
+        break;
+      }
+      case 1: {
+        let variant3;
+        switch (dataView(memory0).getUint8(ret + 4, true)) {
+          case 0: {
+            variant3= {
+              tag: 'not-found',
+            };
+            break;
+          }
+          case 1: {
+            var ptr1 = dataView(memory0).getUint32(ret + 8, true);
+            var len1 = dataView(memory0).getUint32(ret + 12, true);
+            var result1 = TEXT_DECODER_UTF8.decode(new Uint8Array(memory0.buffer, ptr1, len1));
+            variant3= {
+              tag: 'io-failure',
+              val: result1
+            };
+            break;
+          }
+          case 2: {
+            var ptr2 = dataView(memory0).getUint32(ret + 8, true);
+            var len2 = dataView(memory0).getUint32(ret + 12, true);
+            var result2 = TEXT_DECODER_UTF8.decode(new Uint8Array(memory0.buffer, ptr2, len2));
+            variant3= {
+              tag: 'bad-path',
+              val: result2
+            };
+            break;
+          }
+          default: {
+            throw new TypeError('invalid variant discriminant for FsError');
+          }
+        }
+        variant4= {
+          tag: 'err',
+          val: variant3
+        };
+        break;
+      }
+      default: {
+        throw new TypeError('invalid variant discriminant for expected');
+      }
+    }
+    _debugLog('[iface="wasmos:abi/control@0.1.0", function="fs-delete"][Instruction::Return]', {
+      funcName: 'fs-delete',
+      paramCount: 1,
+      async: false,
+      postReturn: true
+    });
+    const retCopy = variant4;
+    task.resolve([retCopy.val]);
+    
+    let cstate = getOrCreateAsyncState(0);
+    cstate.mayLeave = false;
+    postReturn5(ret);
+    cstate.mayLeave = true;
+    task.exit();
+    
+    
+    
+    if (typeof retCopy === 'object' && retCopy.tag === 'err') {
+      throw new ComponentError(retCopy.val);
+    }
+    return retCopy.val;
+    
+  }
   let control010ListProcs;
   
   function listProcs() {
@@ -4854,7 +4983,7 @@ let gen = (function* _initGenerator () {
     
     let cstate = getOrCreateAsyncState(0);
     cstate.mayLeave = false;
-    postReturn5(ret);
+    postReturn6(ret);
     cstate.mayLeave = true;
     task.exit();
     return retCopy;
@@ -5260,16 +5389,16 @@ let gen = (function* _initGenerator () {
   ({ exports: exports0 } = yield instantiateCore(yield module1));
   ({ exports: exports1 } = yield instantiateCore(yield module0, {
     'wasmos:abi/home-store@0.1.0': {
-      'delete': exports0['6'],
-      get: exports0['4'],
-      'list-keys': exports0['7'],
-      put: exports0['5'],
-    },
-    'wasmos:abi/mnt-store@0.1.0': {
       'delete': exports0['2'],
       get: exports0['0'],
       'list-keys': exports0['3'],
       put: exports0['1'],
+    },
+    'wasmos:abi/mnt-store@0.1.0': {
+      'delete': exports0['6'],
+      get: exports0['4'],
+      'list-keys': exports0['7'],
+      put: exports0['5'],
     },
   }));
   memory0 = exports1.memory;
@@ -5334,12 +5463,20 @@ let gen = (function* _initGenerator () {
     postReturn4Async = exports1['cabi_post_wasmos:abi/control@0.1.0#fs-list'];
   }
   
-  postReturn5 = exports1['cabi_post_wasmos:abi/control@0.1.0#list-procs'];
+  postReturn5 = exports1['cabi_post_wasmos:abi/control@0.1.0#fs-delete'];
   
   try {
-    postReturn5Async = WebAssembly.promising(exports1['cabi_post_wasmos:abi/control@0.1.0#list-procs']);
+    postReturn5Async = WebAssembly.promising(exports1['cabi_post_wasmos:abi/control@0.1.0#fs-delete']);
   } catch(err) {
-    postReturn5Async = exports1['cabi_post_wasmos:abi/control@0.1.0#list-procs'];
+    postReturn5Async = exports1['cabi_post_wasmos:abi/control@0.1.0#fs-delete'];
+  }
+  
+  postReturn6 = exports1['cabi_post_wasmos:abi/control@0.1.0#list-procs'];
+  
+  try {
+    postReturn6Async = WebAssembly.promising(exports1['cabi_post_wasmos:abi/control@0.1.0#list-procs']);
+  } catch(err) {
+    postReturn6Async = exports1['cabi_post_wasmos:abi/control@0.1.0#list-procs'];
   }
   
   control010Boot = exports1['wasmos:abi/control@0.1.0#boot'];
@@ -5347,9 +5484,11 @@ let gen = (function* _initGenerator () {
   control010FsWrite = exports1['wasmos:abi/control@0.1.0#fs-write'];
   control010FsRead = exports1['wasmos:abi/control@0.1.0#fs-read'];
   control010FsList = exports1['wasmos:abi/control@0.1.0#fs-list'];
+  control010FsDelete = exports1['wasmos:abi/control@0.1.0#fs-delete'];
   control010ListProcs = exports1['wasmos:abi/control@0.1.0#list-procs'];
   const control010 = {
     boot: boot,
+    fsDelete: fsDelete,
     fsList: fsList,
     fsRead: fsRead,
     fsWrite: fsWrite,

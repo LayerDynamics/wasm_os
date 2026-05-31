@@ -15,6 +15,7 @@ export interface KernelControl {
   fsWrite(path: string, bytes: Uint8Array): void;
   fsRead(path: string): Uint8Array;
   fsList(path: string): string[];
+  fsDelete(path: string): void;
   listProcs(): { pid: number; name: string; state: string }[];
 }
 

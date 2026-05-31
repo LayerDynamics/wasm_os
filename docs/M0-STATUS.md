@@ -14,10 +14,12 @@
 
 ```text
 drift gate   : DETERMINISTIC — committed bindings == rebuild (git diff --exit-code, mac + Linux)
-cargo test   : 20 passed; 0 failed  (vfs ×4, types/capabilities ×7, scheduler ×5, kcore ×4)
+cargo test   : 22 passed; 0 failed  (vfs ×6, types/capabilities ×7, scheduler ×5, kcore ×4)
 vitest       : 5 passed (2 files)   (features detection ×2, IdbBlockstore ×3)
-playwright   : 4 passed             (boot<1.5s+tierA+init-proc; tri-backend persist;
+playwright   : 5 passed             (boot<1.5s+tierA+init-proc; tri-backend persist;
+                                      fs-delete unlink+persist across reload;
                                       OpfsBlockstore real-OPFS; IdbBlockstore real-IDB)
+clippy       : clean (-D warnings) on both wasm32 + host targets
 ```
 
 ## Post-review gap closure (FR-2, FR-3, sub-gaps)
@@ -49,11 +51,24 @@ After a completeness audit, the following spec-M0 gaps were closed (each with te
 4. **Unversioned import keys** at runtime: jco's `instantiate()` reads `wasmos:abi/home-store` (the `@0.1.0` suffix is types-only).
 5. **`wit-bindgen-rt`** runtime dep required by cargo-component-generated bindings (distinct from the `wit-bindgen` codegen crate).
 
-## Deferred to M1 (genuinely out of M0 scope; tracked)
+## Post-M0 follow-up closure (2026-05-31)
+
+Five review follow-ups were actioned. Three were completed; two were explicitly
+kept deferred by product decision (they require separate-milestone architecture).
+
+| # | Item | Disposition | Evidence |
+|---|------|-------------|----------|
+| 1 | `fs-delete` control verb (was the lone `#[allow(dead_code)]`) | **Done** — added to `wit/control.wit`; `Vfs::delete`/`KernelCore::delete`/component `fs_delete`; host `KernelControl.fsDelete`; bindings regenerated. `Blockstore::delete` now has a real caller (dead_code removed). | `vfs::tests::delete_*` (2) + `e2e/boot.spec.ts` "fsDelete unlinks across backends and the deletion persists across reload" |
+| 2 | Actually **use** SAB/JSPI (not just report) | **Deferred (decision)** — requires M1 worker-per-process execution + SharedArrayBuffer syscall ring; no honest M0-scoped partial. | tracked below |
+| 3 | Hierarchical VFS dirs | **Deferred (decision)** — real directory tree + `fd_readdir` is M2. | tracked below |
+| 4 | Cross-platform binding determinism on CI's arch | **Done** — `jco` on **linux/amd64** regenerates all 5 git-tracked glue files (`kernel.js` + 4 `.d.ts`) byte-identical to the committed mac/arm64 output. | `tools/verify-linux-determinism.sh` → `JCO_AMD64_GLUE_DETERMINISTIC`; full end-to-end rebuild remains gated in CI via `tools/ci-linux-determinism.sh` |
+| 5 | clippy `should_implement_trait` on `Scheduler::next` | **Done** — renamed `next` → `pick_next` (a non-`Iterator` `next` was misleading); all call sites updated. | `cargo clippy -D warnings` clean on wasm32 + host |
+
+## Deferred to M1/M2 (genuinely out of M0 scope; tracked)
 
 - `wasmos:kernel` guest syscall world + `wit-bindgen` Rust/C guest stubs; Asyncify/JSPI Tier-B path.
-- Worker-per-process execution + SharedArrayBuffer ring transport; actual WASM process *execution* (the table/scheduler/caps scaffolding is in place; M1 attaches real instances).
-- Control `fs-delete`/unlink + `spawn`/`kill` exposed over WIT (the `ProcTable`/`Blockstore` methods exist and are tested, awaiting their WIT callers).
-- Hierarchical VFS dirs (M0 uses flat keys); revisit with `fd_readdir` in M2.
+- **(item 2)** Worker-per-process execution + SharedArrayBuffer ring transport; actual WASM process *execution* and real *use* of SAB/JSPI (the table/scheduler/caps scaffolding is in place and tier detection *reports* SAB/JSPI; M1 attaches real instances and consumes them).
+- Control `spawn`/`kill` exposed over WIT (the `ProcTable` methods exist and are tested, awaiting their WIT callers). `fs-delete` is now exposed (see follow-up #1 above).
+- **(item 3)** Hierarchical VFS dirs (M0 uses flat keys); revisit with `fd_readdir` in M2.
 
-> Resolved (were watch-items): cross-platform binding determinism is now **proven** on Linux (`tools/ci-linux-determinism.sh` → byte-identical), and CI is run for real (see CI status below).
+> Resolved (were watch-items): cross-platform binding determinism is now **proven** — byte-identical glue on linux/amd64 (`tools/verify-linux-determinism.sh`, fast jco check) and end-to-end on Linux (`tools/ci-linux-determinism.sh`); CI runs the full rebuild + drift gate on every push.

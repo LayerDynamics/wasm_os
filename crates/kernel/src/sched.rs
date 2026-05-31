@@ -32,8 +32,9 @@ impl Scheduler {
     }
 
     /// Pick the next process to run: highest non-empty priority level, FIFO
-    /// within it. Returns `None` when nothing is ready.
-    pub fn next(&mut self) -> Option<u32> {
+    /// within it. Returns `None` when nothing is ready. Named `pick_next`
+    /// rather than `next` so it is not mistaken for an `Iterator` impl.
+    pub fn pick_next(&mut self) -> Option<u32> {
         // Highest priority first (BTreeMap iterates ascending; reverse it).
         let prio = *self
             .ready
@@ -82,13 +83,13 @@ mod tests {
         s.enqueue(1, 5);
         s.enqueue(2, 5);
         s.enqueue(3, 5);
-        assert_eq!(s.next(), Some(1));
-        assert_eq!(s.next(), Some(2));
+        assert_eq!(s.pick_next(), Some(1));
+        assert_eq!(s.pick_next(), Some(2));
         // Re-enqueue 1 (ran its quantum) — it goes to the back: round-robin.
         s.enqueue(1, 5);
-        assert_eq!(s.next(), Some(3));
-        assert_eq!(s.next(), Some(1));
-        assert_eq!(s.next(), None);
+        assert_eq!(s.pick_next(), Some(3));
+        assert_eq!(s.pick_next(), Some(1));
+        assert_eq!(s.pick_next(), None);
     }
 
     #[test]
@@ -97,9 +98,9 @@ mod tests {
         s.enqueue(10, 1); // low priority
         s.enqueue(20, 9); // high priority
         s.enqueue(11, 1);
-        assert_eq!(s.next(), Some(20)); // high first
-        assert_eq!(s.next(), Some(10)); // then low, FIFO
-        assert_eq!(s.next(), Some(11));
+        assert_eq!(s.pick_next(), Some(20)); // high first
+        assert_eq!(s.pick_next(), Some(10)); // then low, FIFO
+        assert_eq!(s.pick_next(), Some(11));
     }
 
     #[test]
@@ -109,8 +110,8 @@ mod tests {
         s.enqueue(2, 5);
         s.block(1);
         assert_eq!(s.ready_len(), 1);
-        assert_eq!(s.next(), Some(2));
-        assert_eq!(s.next(), None);
+        assert_eq!(s.pick_next(), Some(2));
+        assert_eq!(s.pick_next(), None);
     }
 
     #[test]
@@ -132,7 +133,7 @@ mod tests {
         }
         assert_eq!(s.ready_len(), 40);
         let mut drained = Vec::new();
-        while let Some(pid) = s.next() {
+        while let Some(pid) = s.pick_next() {
             drained.push(pid);
         }
         assert_eq!(drained.len(), 40);

@@ -111,6 +111,10 @@ mod component {
             KERNEL.with(|k| k.borrow().list(&path).map_err(map_err))
         }
 
+        fn fs_delete(path: String) -> Result<(), WFsError> {
+            KERNEL.with(|k| k.borrow_mut().delete(&path).map_err(map_err))
+        }
+
         fn list_procs() -> Vec<WProcInfo> {
             KERNEL.with(|k| {
                 k.borrow()

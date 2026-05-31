@@ -11,11 +11,8 @@ pub trait Blockstore {
     fn get(&self, key: &str) -> Option<Vec<u8>>;
     fn put(&mut self, key: &str, value: Vec<u8>) -> bool;
     fn list(&self, prefix: &str) -> Vec<String>;
-    /// Part of the home-store/mnt-store WIT contract and implemented end-to-end
-    /// (host `delete`). Its kernel-side caller (control `fs-delete` / unlink) is
-    /// scheduled for M1; the M0 control surface is intentionally write/read/list,
-    /// so this is contract-complete but not yet invoked at M0.
-    #[allow(dead_code)]
+    /// Remove a key, returning whether it existed. Invoked by the control
+    /// `fs-delete` verb for opfs/idb mounts (durable unlink).
     fn delete(&mut self, key: &str) -> bool;
 }
 
@@ -123,6 +120,19 @@ impl Vfs {
             b => Ok(self.store(b).unwrap().list(&prefix)),
         }
     }
+
+    /// Unlink a file. Returns `NotFound` if the path did not exist so the
+    /// control surface can report ENOENT-style semantics; durable for
+    /// opfs/idb (delegates to the backing store's `delete`).
+    pub fn delete(&mut self, path: &str) -> Result<(), FsError> {
+        match self.resolve(path)? {
+            Backend::Tmpfs => self.tmpfs.remove(path).map(|_| ()).ok_or(FsError::NotFound),
+            b => {
+                let store = self.store_mut(b).unwrap();
+                if store.delete(path) { Ok(()) } else { Err(FsError::NotFound) }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -179,5 +189,32 @@ mod tests {
     fn bad_path_rejected() {
         let mut v = vfs();
         assert_eq!(v.write("relative.txt", vec![]), Err(FsError::BadPath("relative.txt".into())));
+    }
+
+    #[test]
+    fn delete_removes_across_all_backends_and_reports_not_found() {
+        let mut v = vfs();
+        v.write("/scratch.txt", b"tmp".to_vec()).unwrap(); // tmpfs
+        v.write("/home/a.txt", b"home".to_vec()).unwrap();  // opfs
+        v.write("/mnt/b.txt", b"mnt".to_vec()).unwrap();    // idb
+
+        // deleting present files succeeds and the bytes are gone afterwards
+        assert_eq!(v.delete("/scratch.txt"), Ok(()));
+        assert_eq!(v.delete("/home/a.txt"), Ok(()));
+        assert_eq!(v.delete("/mnt/b.txt"), Ok(()));
+        assert_eq!(v.read("/scratch.txt"), Err(FsError::NotFound));
+        assert_eq!(v.read("/home/a.txt"), Err(FsError::NotFound));
+        assert_eq!(v.read("/mnt/b.txt"), Err(FsError::NotFound));
+
+        // deleting a missing file is NotFound on every backend
+        assert_eq!(v.delete("/scratch.txt"), Err(FsError::NotFound)); // tmpfs
+        assert_eq!(v.delete("/home/gone.txt"), Err(FsError::NotFound)); // opfs
+        assert_eq!(v.delete("/mnt/gone.txt"), Err(FsError::NotFound));  // idb
+    }
+
+    #[test]
+    fn delete_rejects_bad_path() {
+        let mut v = vfs();
+        assert_eq!(v.delete("relative"), Err(FsError::BadPath("relative".into())));
     }
 }

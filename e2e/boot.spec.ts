@@ -84,3 +84,60 @@ test("writes to /home (OPFS) and /mnt (IndexedDB) survive a reload", async ({ pa
   expect(after.scratch).toBeNull();           // tmpfs correctly volatile
   expect(after.homeList).toContain("/home/persisted.txt");
 });
+
+test("fsDelete unlinks across backends and the deletion persists across reload", async ({ page }) => {
+  const errors = captureErrors(page);
+  await page.goto("/");
+  await waitForBoot(page, errors);
+
+  // Seed one file per persistent backend, flush to durable storage.
+  await page.evaluate(async () => {
+    const w = (window as unknown as { __wasmos: { control: any; flush: () => Promise<void> } }).__wasmos;
+    const enc = new TextEncoder();
+    w.control.fsWrite("/home/del.txt", enc.encode("home-del"));
+    w.control.fsWrite("/mnt/del.txt", enc.encode("mnt-del"));
+    await w.flush();
+  });
+
+  // Delete through the real kernel control verb, then assert in-session state:
+  // gone from read/list, and a second delete reports the WIT not-found variant.
+  const inSession = await page.evaluate(async () => {
+    const w = (window as unknown as { __wasmos: { control: any; flush: () => Promise<void> } }).__wasmos;
+    const dec = new TextDecoder();
+    w.control.fsDelete("/home/del.txt");
+    w.control.fsDelete("/mnt/del.txt");
+    await w.flush();
+    const read = (p: string) => { try { return dec.decode(w.control.fsRead(p)); } catch { return null; } };
+    let secondDeleteTag: string | null = null;
+    try { w.control.fsDelete("/home/del.txt"); } catch (e: any) { secondDeleteTag = e?.payload?.tag ?? e?.tag ?? "threw"; }
+    return {
+      home: read("/home/del.txt"),
+      mnt: read("/mnt/del.txt"),
+      homeList: w.control.fsList("/home"),
+      mntList: w.control.fsList("/mnt"),
+      secondDeleteTag,
+    };
+  });
+
+  expect(inSession.home).toBeNull();                          // unlinked
+  expect(inSession.mnt).toBeNull();
+  expect(inSession.homeList).not.toContain("/home/del.txt");  // gone from listing
+  expect(inSession.mntList).not.toContain("/mnt/del.txt");
+  expect(inSession.secondDeleteTag).not.toBeNull();           // re-delete => not-found
+
+  // Reload: the deletion must be durable (not resurrected from OPFS/IndexedDB).
+  await page.reload();
+  await waitForBoot(page, errors);
+
+  const afterReload = await page.evaluate(() => {
+    const c = (window as unknown as { __wasmos: { control: any } }).__wasmos.control;
+    const dec = new TextDecoder();
+    const read = (p: string) => { try { return dec.decode(c.fsRead(p)); } catch { return null; } };
+    return { home: read("/home/del.txt"), mnt: read("/mnt/del.txt"), homeList: c.fsList("/home"), mntList: c.fsList("/mnt") };
+  });
+
+  expect(afterReload.home).toBeNull();                          // stayed deleted in OPFS
+  expect(afterReload.mnt).toBeNull();                           // stayed deleted in IndexedDB
+  expect(afterReload.homeList).not.toContain("/home/del.txt");
+  expect(afterReload.mntList).not.toContain("/mnt/del.txt");
+});
