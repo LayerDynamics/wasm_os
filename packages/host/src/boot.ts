@@ -53,9 +53,11 @@ export async function boot(): Promise<BootResult> {
   const getCoreModule = (path: string) =>
     WebAssembly.compileStreaming(fetch(`${ABI_BASE}/${path}`));
 
+  // jco's instantiate() reads UNVERSIONED import keys at runtime (the @0.1.0
+  // suffix appears only in the .d.ts ImportObject type).
   const instance = await mod.instantiate(getCoreModule, {
-    "wasmos:abi/home-store@0.1.0": home.imports(),
-    "wasmos:abi/mnt-store@0.1.0": mnt.imports(),
+    "wasmos:abi/home-store": home.imports(),
+    "wasmos:abi/mnt-store": mnt.imports(),
   });
 
   const control = instance.control;

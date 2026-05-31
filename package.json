@@ -2,12 +2,16 @@
   "name": "wasm_os",
   "private": true,
   "type": "module",
-  "workspaces": ["packages/*", "tools/binder"],
+  "workspaces": [
+    "packages/*",
+    "tools/binder"
+  ],
   "scripts": {
     "binder": "node tools/binder/binder.mjs",
     "binder:check": "node tools/binder/binder.mjs check",
     "build:kernel": "cargo component build --release -p kernel --target wasm32-unknown-unknown",
     "build": "npm run build:kernel && npm run binder gen",
+    "bundle": "esbuild packages/host/src/index.ts --bundle --format=esm --outfile=dist/host.js",
     "test:rust": "cargo test -p kernel",
     "test:host": "vitest run",
     "test:e2e": "playwright test",
@@ -15,9 +19,10 @@
   },
   "devDependencies": {
     "@bytecodealliance/jco": "^1.4.0",
-    "vitest": "^2.1.0",
     "@playwright/test": "^1.48.0",
+    "esbuild": "^0.28.0",
     "fake-indexeddb": "^6.0.0",
-    "typescript": "^5.6.0"
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0"
   }
 }
