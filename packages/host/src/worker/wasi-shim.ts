@@ -339,19 +339,65 @@ export function makeWasiImports(getMemory: () => WebAssembly.Memory, ring: RingC
   }) as Wasi;
 }
 
+const OP_WIN_SURFACE = 0x23;
+const OP_WIN_PRESENT = 0x24;
+
 /**
- * Build the `wasmos_kernel` import object — the process-control extension used
- * by the shell (spawn/pipe/wait). It is a single passthrough: the guest builds
- * a request (KSPAWN/KPIPE/KWAIT + fields), `syscall` forwards it through the
- * SAME ring (the kernel router dispatches by opcode), and the response bytes are
- * written back into a guest-provided buffer. Returns the response length.
+ * Host hooks for the M3 compositor surface path. Implemented by the process
+ * worker: it allocates the per-surface framebuffer SAB and relays surface/present
+ * notifications up to the compositor (pixels never traverse the kernel ring).
  */
-export function makeKernelImports(getMemory: () => WebAssembly.Memory, ring: RingClient): Wasi {
+export interface SurfaceHost {
+  /** The kernel allocated `surfaceId`; allocate a `width*height*4` framebuffer. */
+  onSurface(surfaceId: number, width: number, height: number): void;
+  /** Copy the guest framebuffer `src` into the surface's SAB and signal a frame. */
+  onPresent(surfaceId: number, src: Uint8Array): void;
+}
+
+/**
+ * Build the `wasmos_kernel` import object — the process-control + compositor
+ * extension. Most calls (KSPAWN/KPIPE/KWAIT, win_surface) are forwarded through
+ * the ring (the kernel router dispatches by opcode); `win_surface` success is
+ * post-processed to allocate the host framebuffer, and `win_present` is handled
+ * entirely here (the guest framebuffer is copied straight into the surface SAB,
+ * so per-frame pixels never enter the ring).
+ */
+export function makeKernelImports(
+  getMemory: () => WebAssembly.Memory,
+  ring: RingClient,
+  surfaces: SurfaceHost,
+): Wasi {
   return {
     syscall(reqPtr: number, reqLen: number, respPtr: number, respCap: number): number {
-      const mem = new Uint8Array(getMemory().buffer);
-      const req = mem.slice(reqPtr, reqPtr + reqLen);
+      const req = new Uint8Array(getMemory().buffer).slice(reqPtr, reqPtr + reqLen);
+      const op = req[0];
+      const reqView = new DataView(req.buffer, req.byteOffset, req.byteLength);
+
+      // win_present: copy the guest framebuffer into the surface SAB + notify the
+      // compositor. Never touches the kernel ring. Request: [0x24][id][ptr][len].
+      if (op === OP_WIN_PRESENT) {
+        const surfaceId = reqView.getUint32(1, true);
+        const ptr = reqView.getUint32(5, true);
+        const len = reqView.getUint32(9, true);
+        const src = new Uint8Array(getMemory().buffer, ptr, len);
+        surfaces.onPresent(surfaceId, src);
+        const ok = new Uint8Array([ERRNO.SUCCESS & 0xff, (ERRNO.SUCCESS >> 8) & 0xff]);
+        new Uint8Array(getMemory().buffer).set(ok.subarray(0, Math.min(ok.length, respCap)), respPtr);
+        return ok.length;
+      }
+
       const resp = ring.call(req);
+
+      // win_surface success → the kernel allocated the id; allocate the host
+      // framebuffer for it. Request: [0x23][w][h]. Reply: [errno u16][id u32].
+      if (op === OP_WIN_SURFACE && resp.length >= 6) {
+        const respView = new DataView(resp.buffer, resp.byteOffset, resp.byteLength);
+        if (respView.getUint16(0, true) === ERRNO.SUCCESS) {
+          const surfaceId = respView.getUint32(2, true);
+          surfaces.onSurface(surfaceId, reqView.getUint32(1, true), reqView.getUint32(5, true));
+        }
+      }
+
       const n = Math.min(resp.length, respCap);
       new Uint8Array(getMemory().buffer).set(resp.subarray(0, n), respPtr);
       return resp.length; // actual length (so the guest can detect truncation)

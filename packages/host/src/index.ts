@@ -1,6 +1,7 @@
 import { boot, type BootResult } from "./boot.js";
 import { attachTerminal, type TerminalSession } from "./term/terminal.js";
 import { Compositor } from "./compositor/compositor.js";
+import { SurfaceManager } from "./compositor/surface.js";
 
 /** Executables loaded into the VFS `/bin` at boot (tmpfs, repopulated each boot). */
 // "echo.zig" is the Zig-built sibling of "echo" (FR-14 polyglot proof): same WASI
@@ -17,6 +18,7 @@ export type ReadyState = BootResult & {
   shellPid: number;
   term: TerminalSession;
   compositor: Compositor;
+  surfaces: SurfaceManager;
 };
 
 declare global {
@@ -52,13 +54,19 @@ async function main() {
   const taskbarEl = document.getElementById("taskbar") ?? document.body;
   const compositor = new Compositor(desktop, taskbarEl);
 
+  // Process-owned canvas surfaces (M3): a process calls win_surface → a canvas
+  // window opens here and its shared framebuffer is blitted on present.
+  const surfaces = new SurfaceManager(compositor);
+  control.onSurface((info) => surfaces.onSurface(info));
+  control.onPresent((id) => surfaces.onPresent(id));
+
   const termWin = compositor.open({ title: "Terminal — sh", width: 724, height: 460, ownerPid: shellPid, surface: "dom" });
   const termHost = document.createElement("div");
   termHost.id = "terminal";
   termWin.content.appendChild(termHost);
   const term = attachTerminal(termHost, control, shellPid);
 
-  const state: ReadyState = { ...result, coldLoadMillis, shellPid, term, compositor };
+  const state: ReadyState = { ...result, coldLoadMillis, shellPid, term, compositor, surfaces };
   window.__wasmos = state;
 
   const status = document.getElementById("status");

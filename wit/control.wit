@@ -48,6 +48,12 @@ interface control {
     /// string grants no FS capability. M1 has no shm/net/signal grants.
     grant-fs-subtree: string,
     grant-spawn: bool,
+    /// Grant the Gpu capability — required to request a compositor surface
+    /// (`win_surface`, M3). Default-deny: a process without it cannot draw.
+    grant-gpu: bool,
+    /// Grant the Input capability — required to receive brokered keyboard/mouse
+    /// for its focused window (M3-T3). Default-deny.
+    grant-input: bool,
   }
 
   /// Allocate a process: PID + per-process fd table (0/1/2 preopened) + capset.

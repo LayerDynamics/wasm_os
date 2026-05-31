@@ -87,6 +87,10 @@ pub enum Op {
     KSpawn = 0x20,
     KPipe = 0x21,
     KWait = 0x22,
+    // wasmos_kernel compositor extension (M3). win_surface allocates a surface
+    // id under the Gpu capability; win_present is handled host-side in the
+    // process worker (pixels never enter the ring), so it is NOT an opcode here.
+    WinSurface = 0x23,
 }
 
 impl Op {
@@ -116,6 +120,7 @@ impl Op {
             0x20 => Op::KSpawn,
             0x21 => Op::KPipe,
             0x22 => Op::KWait,
+            0x23 => Op::WinSurface,
             _ => return None,
         })
     }
@@ -352,6 +357,8 @@ pub fn dispatch(
         Op::KSpawn => k_spawn(vfs, procs, pipes, pid, &mut r),
         Op::KPipe => k_pipe(procs, pipes, pid, &mut r),
         Op::KWait => k_wait(procs, pid, &mut r),
+        // wasmos_kernel compositor extension (M3).
+        Op::WinSurface => win_surface(procs, pid, &mut r),
     }
 }
 
@@ -727,6 +734,11 @@ fn proc_exit(procs: &mut ProcTable, pipes: &mut PipeTable, pid: u32, r: &mut Rea
     procs.set_exit(pid, code);
     procs.set_state(pid, ProcState::Zombie);
 
+    // Release the kernel-side ownership of any compositor surfaces (M3). The host
+    // tears down their windows when the worker dies (M3-T9); here we just keep the
+    // surface-id authority's map clean so ids don't leak.
+    procs.free_surfaces_of(pid);
+
     // Release every pipe end the dying process still holds, exactly as fd_close
     // would. This is what lets a pipeline terminate (and contains a crash inside
     // one, FR-34): closing the last writer gives a parked reader EOF; closing the
@@ -997,6 +1009,29 @@ fn k_pipe(procs: &mut ProcTable, pipes: &mut PipeTable, pid: u32, _r: &mut Reade
     // Return the caller's fds (to close after spawning) AND the pipe id (to pass
     // as a child's stdio spec).
     SyscallOutcome::ready(Writer::new().u16(errno::SUCCESS).u32(rfd).u32(wfd).u32(id).build())
+}
+
+/// Largest surface dimension the kernel will allocate (guards host SAB OOM).
+const MAX_SURFACE_DIM: u32 = 4096;
+
+/// `wasmos_kernel.win_surface(width, height)` — allocate a compositor surface
+/// (M3, FR-23). Requires the Gpu capability (default-deny, FR-31). The kernel is
+/// the surface-id authority; the owning process worker allocates the framebuffer
+/// SAB and the compositor blits it (pixels never enter the kernel ring). Request:
+/// `[0x23][w u32][h u32]`. Reply: `[errno u16][surface_id u32]`.
+fn win_surface(procs: &mut ProcTable, pid: u32, r: &mut Reader) -> SyscallOutcome {
+    let resp = |e: u16, id: u32| Writer::new().u16(e).u32(id).build();
+    if !procs.has_cap(pid, &Capability::Gpu) {
+        return SyscallOutcome::ready(resp(errno::NOTCAPABLE, 0));
+    }
+    let (Some(w), Some(h)) = (r.u32(), r.u32()) else {
+        return SyscallOutcome::ready(resp(errno::INVAL, 0));
+    };
+    if w == 0 || h == 0 || w > MAX_SURFACE_DIM || h > MAX_SURFACE_DIM {
+        return SyscallOutcome::ready(resp(errno::INVAL, 0));
+    }
+    let id = procs.alloc_surface(pid);
+    SyscallOutcome::ready(resp(errno::SUCCESS, id))
 }
 
 /// `wasmos_kernel.wait(pid)` — return a child's exit code, parking until it exits.
@@ -1539,5 +1574,58 @@ mod tests {
         let resp = drive(&mut vfs, &mut procs, &mut pipes, sh, &req_kwait(child));
         assert_eq!(read_u16(&resp), errno::SUCCESS);
         assert_eq!(read_u32_at(&resp, 2), 0); // exit code
+    }
+
+    // --- M3: compositor surfaces (win_surface) ---
+
+    fn gpu_proc(procs: &mut ProcTable) -> u32 {
+        let mut caps = CapabilitySet::default();
+        caps.grant(Capability::Gpu);
+        let pid = procs.spawn("gfx", 5, caps);
+        procs.set_state(pid, ProcState::Running);
+        pid
+    }
+    fn req_win_surface(w: u32, h: u32) -> Vec<u8> {
+        Writer::new().u8(Op::WinSurface as u8).u32(w).u32(h).build()
+    }
+
+    #[test]
+    fn win_surface_requires_gpu_capability() {
+        // The default setup() process holds no Gpu cap → default-deny (FR-31).
+        let (mut vfs, mut procs, mut pipes, pid) = setup();
+        let resp = drive(&mut vfs, &mut procs, &mut pipes, pid, &req_win_surface(64, 48));
+        assert_eq!(read_u16(&resp), errno::NOTCAPABLE);
+        assert_eq!(read_u32_at(&resp, 2), 0); // no surface id handed out
+    }
+
+    #[test]
+    fn win_surface_with_gpu_allocates_unique_ids_and_validates_dims() {
+        let (mut vfs, mut procs, mut pipes, _t) = setup();
+        let pid = gpu_proc(&mut procs);
+        // Valid request → SUCCESS + a nonzero surface id.
+        let r1 = drive(&mut vfs, &mut procs, &mut pipes, pid, &req_win_surface(64, 48));
+        assert_eq!(read_u16(&r1), errno::SUCCESS);
+        let id1 = read_u32_at(&r1, 2);
+        assert!(id1 >= 1);
+        // A second surface gets a distinct id.
+        let r2 = drive(&mut vfs, &mut procs, &mut pipes, pid, &req_win_surface(10, 10));
+        assert_ne!(id1, read_u32_at(&r2, 2));
+        // Zero and oversized dimensions are rejected (host SAB OOM guard).
+        assert_eq!(read_u16(&drive(&mut vfs, &mut procs, &mut pipes, pid, &req_win_surface(0, 10))), errno::INVAL);
+        assert_eq!(
+            read_u16(&drive(&mut vfs, &mut procs, &mut pipes, pid, &req_win_surface(99999, 10))),
+            errno::INVAL
+        );
+    }
+
+    #[test]
+    fn proc_exit_frees_owned_surfaces() {
+        let (mut vfs, mut procs, mut pipes, _t) = setup();
+        let pid = gpu_proc(&mut procs);
+        drive(&mut vfs, &mut procs, &mut pipes, pid, &req_win_surface(8, 8));
+        drive(&mut vfs, &mut procs, &mut pipes, pid, &req_win_surface(8, 8));
+        // proc_exit releases kernel-side surface ownership.
+        drive(&mut vfs, &mut procs, &mut pipes, pid, &req_proc_exit(0));
+        assert!(procs.free_surfaces_of(pid).is_empty());
     }
 }

@@ -16,6 +16,20 @@ export interface SpawnOptions {
   /** FS subtree granted to the child (read+write); empty = no FS grant. */
   grantFsSubtree?: string;
   grantSpawn?: boolean;
+  /** Grant Gpu — required to request a compositor surface (`win_surface`, M3). */
+  grantGpu?: boolean;
+  /** Grant Input — required to receive brokered keyboard/mouse (M3-T3). */
+  grantInput?: boolean;
+}
+
+/** A compositor surface a process created (M3): a shared RGBA framebuffer. */
+export interface SurfaceInfo {
+  pid: number;
+  surfaceId: number;
+  width: number;
+  height: number;
+  /** `width*height*4` RGBA bytes, shared with the owning process worker. */
+  sab: SharedArrayBuffer;
 }
 export interface ProcExit {
   exitCode: number;
@@ -46,6 +60,10 @@ export interface AsyncKernelControl {
   bindTerminal(pid: number): Promise<void>;
   /** Register a listener for streamed terminal output (stdout/stderr → xterm). */
   onOutput(cb: (pid: number, bytes: Uint8Array) => void): void;
+  /** A process created a compositor surface (M3) — open its canvas window. */
+  onSurface(cb: (info: SurfaceInfo) => void): void;
+  /** A process published a frame to `surfaceId` (M3) — blit it to the canvas. */
+  onPresent(cb: (surfaceId: number) => void): void;
   /** Await durability of all OPFS/IndexedDB writes (used before reload). */
   flush(): Promise<void>;
 }
@@ -72,6 +90,8 @@ export async function boot(): Promise<BootResult> {
   const pending = new Map<number, Pending>();
 
   const outputListeners: Array<(pid: number, bytes: Uint8Array) => void> = [];
+  const surfaceListeners: Array<(info: SurfaceInfo) => void> = [];
+  const presentListeners: Array<(surfaceId: number) => void> = [];
 
   worker.onmessage = (e: MessageEvent) => {
     const data = e.data as {
@@ -83,10 +103,30 @@ export async function boot(): Promise<BootResult> {
       result?: unknown;
       error?: string;
       tag?: string;
+      surfaceId?: number;
+      width?: number;
+      height?: number;
+      sab?: SharedArrayBuffer;
     };
     // Streaming (non-RPC) messages: terminal output as processes write it.
     if (data.type === "output") {
       for (const cb of outputListeners) cb(data.pid ?? 0, data.bytes ?? new Uint8Array());
+      return;
+    }
+    // M3 compositor surfaces.
+    if (data.type === "surface" && data.surfaceId !== undefined && data.sab) {
+      const info: SurfaceInfo = {
+        pid: data.pid ?? 0,
+        surfaceId: data.surfaceId,
+        width: data.width ?? 0,
+        height: data.height ?? 0,
+        sab: data.sab,
+      };
+      for (const cb of surfaceListeners) cb(info);
+      return;
+    }
+    if (data.type === "present" && data.surfaceId !== undefined) {
+      for (const cb of presentListeners) cb(data.surfaceId);
       return;
     }
     if (typeof data.id !== "number") return; // unknown message
@@ -132,6 +172,8 @@ export async function boot(): Promise<BootResult> {
           name: opts?.name ?? "proc",
           grantFsSubtree: opts?.grantFsSubtree ?? "",
           grantSpawn: opts?.grantSpawn ?? false,
+          grantGpu: opts?.grantGpu ?? false,
+          grantInput: opts?.grantInput ?? false,
         },
       }),
     wait: (pid) => call("wait", { pid }),
@@ -139,6 +181,12 @@ export async function boot(): Promise<BootResult> {
     bindTerminal: (pid) => call("bindTerminal", { pid }),
     onOutput: (cb) => {
       outputListeners.push(cb);
+    },
+    onSurface: (cb) => {
+      surfaceListeners.push(cb);
+    },
+    onPresent: (cb) => {
+      presentListeners.push(cb);
     },
     flush: () => call("flush"),
   };

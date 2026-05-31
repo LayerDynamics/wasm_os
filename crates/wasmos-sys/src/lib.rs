@@ -25,6 +25,11 @@ const FD_CLOSE: u8 = 0x04;
 const KSPAWN: u8 = 0x20;
 const KPIPE: u8 = 0x21;
 const KWAIT: u8 = 0x22;
+const WIN_SURFACE: u8 = 0x23;
+/// `win_present` is intercepted by the host process worker (it copies the guest
+/// framebuffer into the surface's shared SAB and notifies the compositor); it
+/// never reaches the kernel ring. The opcode is the marker the shim matches on.
+const WIN_PRESENT: u8 = 0x24;
 
 /// File open mode for a stdio redirect.
 pub const FILE_READ: u8 = 0; // `<`
@@ -146,4 +151,34 @@ pub fn wait(pid: u32) -> Result<i32, u16> {
         return Err(errno);
     }
     Ok(rd_u32(&resp, 2) as i32)
+}
+
+/// `win_surface(width, height)` — request a compositor canvas surface (M3, FR-23).
+/// Requires the `Gpu` capability. Returns the kernel-allocated `surface_id`; the
+/// host allocates a `width*height*4` RGBA framebuffer shared with the compositor.
+/// Present pixels with [`win_present`].
+pub fn win_surface(width: u32, height: u32) -> Result<u32, u16> {
+    let mut w = W::new();
+    w.u8(WIN_SURFACE);
+    w.u32(width);
+    w.u32(height);
+    let resp = call(&w.0);
+    let errno = rd_u16(&resp, 0);
+    if errno != 0 {
+        return Err(errno);
+    }
+    Ok(rd_u32(&resp, 2))
+}
+
+/// `win_present(surface_id, framebuffer)` — publish a frame. `framebuffer` is
+/// `width*height*4` RGBA bytes in guest memory; the host process worker copies it
+/// into the surface's shared buffer and the compositor blits it to the canvas on
+/// the next animation frame. The pixel bytes never enter the kernel ring.
+pub fn win_present(surface_id: u32, framebuffer: &[u8]) {
+    let mut w = W::new();
+    w.u8(WIN_PRESENT);
+    w.u32(surface_id);
+    w.u32(framebuffer.as_ptr() as usize as u32); // guest linear-memory address
+    w.u32(framebuffer.len() as u32);
+    let _ = call(&w.0);
 }

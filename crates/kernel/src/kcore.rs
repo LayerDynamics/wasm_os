@@ -102,13 +102,27 @@ impl KernelCore {
     /// FS grant; `grant_spawn` confers the right to spawn children. The kernel
     /// **never** grants `Shm` here — there is no inter-process memory path at M1
     /// (the structural half of the isolation guarantee, FR-6).
-    pub fn spawn(&mut self, name: &str, grant_fs: Option<(&str, Rights)>, grant_spawn: bool) -> u32 {
+    pub fn spawn(
+        &mut self,
+        name: &str,
+        grant_fs: Option<(&str, Rights)>,
+        grant_spawn: bool,
+        grant_gpu: bool,
+        grant_input: bool,
+    ) -> u32 {
         let mut caps = CapabilitySet::default();
         if let Some((subtree, rights)) = grant_fs {
             caps.grant(Capability::FsPath { subtree: subtree.to_string(), rights });
         }
         if grant_spawn {
             caps.grant(Capability::Spawn);
+        }
+        // Gpu gates win_surface (M3); Input gates brokered keyboard/mouse (M3-T3).
+        if grant_gpu {
+            caps.grant(Capability::Gpu);
+        }
+        if grant_input {
+            caps.grant(Capability::Input);
         }
         let pid = self.procs.spawn(name, USER_PRIORITY, caps);
         self.procs.set_state(pid, ProcState::Ready);
@@ -241,7 +255,7 @@ mod tests {
     fn spawn_then_service_fd_write_then_exit() {
         let mut k = core();
         k.boot();
-        let pid = k.spawn("hello", Some(("/", Rights::RW)), false);
+        let pid = k.spawn("hello", Some(("/", Rights::RW)), false, false, false);
         assert!(pid > 1); // init is pid 1
         // Process is Ready and enqueued.
         assert!(k.ready_count() >= 1);
@@ -258,7 +272,7 @@ mod tests {
     fn stdin_read_parks_then_deliver_wakes_and_redrives() {
         let mut k = core();
         k.boot();
-        let pid = k.spawn("reader", Some(("/", Rights::RW)), false);
+        let pid = k.spawn("reader", Some(("/", Rights::RW)), false, false, false);
         let req = fd_read_req(0, 16); // read stdin (fd 0)
 
         // No input yet → the syscall PARKS (no reply).
@@ -281,7 +295,7 @@ mod tests {
     fn bind_terminal_streams_writes_as_term_output() {
         let mut k = core();
         k.boot();
-        let pid = k.spawn("shell", Some(("/", Rights::RW)), false);
+        let pid = k.spawn("shell", Some(("/", Rights::RW)), false, false, false);
         k.bind_terminal(pid);
         // A write to fd 1 (now Terminal) streams out as term_output (→ xterm),
         // and is NOT accumulated in the at-exit capture buffer.
@@ -300,8 +314,8 @@ mod tests {
     fn two_spawns_have_isolated_fd_tables_and_no_shm_cap() {
         let mut k = core();
         k.boot();
-        let a = k.spawn("a", Some(("/home", Rights::RW)), false);
-        let b = k.spawn("b", Some(("/home", Rights::RW)), false);
+        let a = k.spawn("a", Some(("/home", Rights::RW)), false, false, false);
+        let b = k.spawn("b", Some(("/home", Rights::RW)), false, false, false);
         assert_ne!(a, b);
         // Neither holds Shm — there is no inter-process memory path (FR-6).
         assert!(!k.check_cap(a, &Capability::Shm));
@@ -316,12 +330,12 @@ mod tests {
         let mut k = core();
         k.boot();
         // No FS grant, no spawn grant → default-deny everything.
-        let pid = k.spawn("bare", None, false);
+        let pid = k.spawn("bare", None, false, false, false);
         assert!(!k.check_cap(pid, &Capability::Spawn));
         assert!(!k.check_cap(pid, &Capability::Shm));
         assert!(!k.check_cap(pid, &Capability::FsPath { subtree: "/".into(), rights: Rights::R }));
         // With spawn grant.
-        let p2 = k.spawn("launcher", None, true);
+        let p2 = k.spawn("launcher", None, true, false, false);
         assert!(k.check_cap(p2, &Capability::Spawn));
     }
 }

@@ -234,6 +234,11 @@ pub struct ProcInfo {
 pub struct ProcTable {
     procs: Vec<Process>,
     next_pid: u32,
+    /// Compositor surfaces (M3). `surface_id -> owning pid`. The kernel is the
+    /// surface-id authority (allocated under the Gpu capability in `win_surface`);
+    /// the host blits pixels from a per-surface SAB it shares with the owner.
+    surface_owners: BTreeMap<u32, u32>,
+    next_surface_id: u32,
 }
 
 impl Default for ProcTable {
@@ -245,7 +250,29 @@ impl Default for ProcTable {
 impl ProcTable {
     pub fn new() -> Self {
         // PID 0 is reserved (idle/kernel sentinel); real entries start at 1.
-        Self { procs: Vec::new(), next_pid: 1 }
+        Self { procs: Vec::new(), next_pid: 1, surface_owners: BTreeMap::new(), next_surface_id: 1 }
+    }
+
+    // --- Compositor surfaces (M3) ---
+
+    /// Allocate a new surface id owned by `pid` (called from `win_surface` after
+    /// the Gpu capability check). Surface ids are unique across the session.
+    pub fn alloc_surface(&mut self, pid: u32) -> u32 {
+        let id = self.next_surface_id;
+        self.next_surface_id += 1;
+        self.surface_owners.insert(id, pid);
+        id
+    }
+
+    /// Release every surface owned by `pid` (called on process exit, M3-T9), and
+    /// return the freed surface ids so the host can tear down their windows.
+    pub fn free_surfaces_of(&mut self, pid: u32) -> Vec<u32> {
+        let freed: Vec<u32> =
+            self.surface_owners.iter().filter(|(_, &p)| p == pid).map(|(&id, _)| id).collect();
+        for id in &freed {
+            self.surface_owners.remove(id);
+        }
+        freed
     }
 
     /// Create a process entry in the `New` state and return its unique PID.

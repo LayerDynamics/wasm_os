@@ -28,6 +28,8 @@ interface SpawnSpec {
   name: string;
   grantFsSubtree: string;
   grantSpawn: boolean;
+  grantGpu: boolean;
+  grantInput: boolean;
 }
 
 /** Synchronous kernel control surface (jco-generated export shape). */
@@ -92,6 +94,9 @@ const procs = new Map<number, ProcRuntime>();
  * the guest stays blocked in `Atomics.wait`; a wakeup re-drives the request.
  */
 const parked = new Map<number, Uint8Array>();
+
+/** M3 compositor surfaces: `surface_id -> owning pid` (present authorization). */
+const surfaceOwners = new Map<number, number>();
 
 /** Drive one syscall: complete it now, or park it; then process its wakeups. */
 function driveSyscall(pid: number, request: Uint8Array): void {
@@ -247,7 +252,31 @@ function instantiateProcess(pid: number, wasmBytes: ArrayBuffer | Uint8Array): v
   );
 
   const worker = new Worker(PROCESS_WORKER_URL, { type: "module" });
-  worker.onmessage = (e: MessageEvent) => onProcExit(pid, e.data as ExitMessage);
+  worker.onmessage = (e: MessageEvent) => {
+    const d = e.data as {
+      type?: string;
+      surfaceId?: number;
+      width?: number;
+      height?: number;
+      sab?: SharedArrayBuffer;
+    };
+    // M3 compositor surfaces: a process worker created a surface or published a
+    // frame. Track ownership (surface_id -> pid) and relay to the main thread,
+    // which drives the canvas window + blits the shared framebuffer.
+    if (d.type === "surface" && d.surfaceId !== undefined) {
+      surfaceOwners.set(d.surfaceId, pid);
+      ctx.postMessage({ type: "surface", pid, surfaceId: d.surfaceId, width: d.width, height: d.height, sab: d.sab });
+      return;
+    }
+    if (d.type === "present" && d.surfaceId !== undefined) {
+      // Only the owning process may present its surface.
+      if (surfaceOwners.get(d.surfaceId) === pid) {
+        ctx.postMessage({ type: "present", surfaceId: d.surfaceId });
+      }
+      return;
+    }
+    onProcExit(pid, e.data as ExitMessage);
+  };
   worker.postMessage({ wasmBytes, pid, ringSab });
   procs.get(pid)!.worker = worker;
 }
