@@ -65,3 +65,34 @@ test("terminal runs `echo` end-to-end through the real shell process", async ({ 
   expect((log.match(/ohai/g) || []).length).toBeGreaterThanOrEqual(2);
   expect((log.match(/wasmos:/g) || []).length).toBeGreaterThanOrEqual(2); // prompt returned
 });
+
+test("the Zig coreutil (echo.zig) runs end-to-end through the terminal (FR-14)", async ({ page }) => {
+  // The polyglot proof in the LIVE system: a Zig-built `wasm32-wasi` binary runs
+  // through the identical terminal → shell → wasmos_kernel spawn → process path as
+  // the Rust coreutils. (The byte-for-byte parity vs the Rust echo is pinned by the
+  // node:wasi host test; this proves the kernel actually executes the Zig guest.)
+  const errors = captureErrors(page);
+  await page.goto("/");
+  await waitReady(page, errors);
+  await page.waitForFunction(
+    () => ((window as unknown as { __wasmos: { term: { log(): string } } }).__wasmos.term.log()).includes("wasmos:"),
+    null,
+    { timeout: 10_000 },
+  );
+
+  await page.locator("#terminal").click();
+  await page.keyboard.type("echo.zig zig-polyglot-OK");
+  await page.keyboard.press("Enter");
+
+  const readLog = () =>
+    page.evaluate(() => (window as unknown as { __wasmos: { term: { log(): string } } }).__wasmos.term.log());
+  let log = "";
+  for (let i = 0; i < 60; i++) {
+    log = await readLog();
+    if ((log.match(/zig-polyglot-OK/g) || []).length >= 2) break; // echoed input + program output
+    await page.waitForTimeout(200);
+  }
+  // Output line distinct from the echoed input → the Zig binary actually ran.
+  expect((log.match(/zig-polyglot-OK/g) || []).length).toBeGreaterThanOrEqual(2);
+  expect((log.match(/wasmos:/g) || []).length).toBeGreaterThanOrEqual(2); // prompt returned
+});
