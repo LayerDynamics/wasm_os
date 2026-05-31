@@ -341,7 +341,7 @@ pub fn dispatch(
         Op::ClockTimeGet => {
             SyscallOutcome::ready(Writer::new().u16(errno::SUCCESS).u64(M1_CLOCK_NS).build())
         }
-        Op::ProcExit => proc_exit(procs, pid, &mut r),
+        Op::ProcExit => proc_exit(procs, pipes, pid, &mut r),
         // FS mutation (M2).
         Op::PathCreateDirectory => SyscallOutcome::ready(path_create_directory(vfs, procs, pid, &mut r)),
         Op::PathUnlinkFile => SyscallOutcome::ready(path_unlink_file(vfs, procs, pid, &mut r)),
@@ -722,12 +722,43 @@ fn random_get(r: &mut Reader) -> Vec<u8> {
     Writer::new().u16(errno::SUCCESS).bytes(&bytes).build()
 }
 
-fn proc_exit(procs: &mut ProcTable, pid: u32, r: &mut Reader) -> SyscallOutcome {
+fn proc_exit(procs: &mut ProcTable, pipes: &mut PipeTable, pid: u32, r: &mut Reader) -> SyscallOutcome {
     let code = r.u32().unwrap_or(0) as i32;
     procs.set_exit(pid, code);
     procs.set_state(pid, ProcState::Zombie);
+
+    // Release every pipe end the dying process still holds, exactly as fd_close
+    // would. This is what lets a pipeline terminate (and contains a crash inside
+    // one, FR-34): closing the last writer gives a parked reader EOF; closing the
+    // last reader gives a parked writer EPIPE. Without this, a peer blocked on the
+    // pipe of an exiting/trapped stage would park forever and wedge the shell.
+    let mut wakeups = Vec::new();
+    let pipe_ends: Vec<DescKind> = procs
+        .get(pid)
+        .map(|p| {
+            p.fds
+                .values()
+                .filter(|d| matches!(d.kind, DescKind::PipeRead { .. } | DescKind::PipeWrite { .. }))
+                .map(|d| d.kind.clone())
+                .collect()
+        })
+        .unwrap_or_default();
+    for kind in pipe_ends {
+        match kind {
+            DescKind::PipeWrite { id } => {
+                pipes.close_writer(id);
+                wakeups.extend(procs.take_blocked_on(&WaitReason::PipeRead(id)));
+            }
+            DescKind::PipeRead { id } => {
+                pipes.close_reader(id);
+                wakeups.extend(procs.take_blocked_on(&WaitReason::PipeWrite(id)));
+            }
+            _ => {}
+        }
+    }
+
     // Wake any parent parked in wait() on this child.
-    let wakeups = procs.take_blocked_on(&WaitReason::Wait(pid));
+    wakeups.extend(procs.take_blocked_on(&WaitReason::Wait(pid)));
     SyscallOutcome { reply: Some(err_only(errno::SUCCESS)), wakeups, term_output: Vec::new(), spawn: None }
 }
 
@@ -1320,6 +1351,64 @@ mod tests {
         // A read drains the pipe → the parked writer is woken.
         let out = dispatch(&mut vfs, &mut procs, &mut pipes, reader, &req_fd_read(rfd, 1024));
         assert_eq!(out.wakeups, vec![writer]);
+    }
+
+    // --- M2: crash containment (FR-34) — exit releases pipe ends ---
+
+    #[test]
+    fn proc_exit_of_writer_gives_parked_reader_eof() {
+        // A reader blocked on the empty pipe must be woken with EOF when the writer
+        // process EXITS (e.g. it trapped), not only when it explicitly fd_closes.
+        let (mut vfs, mut procs, mut pipes, reader, writer, id, rfd, _wfd) = pipe_setup();
+        let out = dispatch(&mut vfs, &mut procs, &mut pipes, reader, &req_fd_read(rfd, 64));
+        assert!(out.reply.is_none());
+        assert_eq!(procs.blocked_on(reader), Some(WaitReason::PipeRead(id)));
+        // Writer exits → its write end is released → the parked reader is woken.
+        let exit = dispatch(&mut vfs, &mut procs, &mut pipes, writer, &req_proc_exit(134));
+        assert!(exit.wakeups.contains(&reader));
+        // Re-driving the read now returns EOF (empty), not another park.
+        let resp = drive(&mut vfs, &mut procs, &mut pipes, reader, &req_fd_read(rfd, 64));
+        assert_eq!(read_u16(&resp), errno::SUCCESS);
+        assert_eq!(resp_bytes(&resp), b"");
+    }
+
+    #[test]
+    fn proc_exit_of_reader_gives_parked_writer_epipe() {
+        // A writer blocked on a full pipe must be woken with EPIPE when the reader
+        // process EXITS, so a crash at the tail of a pipeline cannot wedge the head.
+        let (mut vfs, mut procs, mut pipes, reader, writer, id, _rfd, wfd) = pipe_setup();
+        let big = vec![b'a'; crate::pipe::PIPE_CAPACITY];
+        dispatch(&mut vfs, &mut procs, &mut pipes, writer, &req_fd_write(wfd, &big));
+        let out = dispatch(&mut vfs, &mut procs, &mut pipes, writer, &req_fd_write(wfd, b"more"));
+        assert!(out.reply.is_none());
+        assert_eq!(procs.blocked_on(writer), Some(WaitReason::PipeWrite(id)));
+        // Reader exits → its read end is released → the parked writer is woken.
+        let exit = dispatch(&mut vfs, &mut procs, &mut pipes, reader, &req_proc_exit(0));
+        assert!(exit.wakeups.contains(&writer));
+        // Re-driving the write now returns EPIPE (no readers), not another park.
+        let resp = drive(&mut vfs, &mut procs, &mut pipes, writer, &req_fd_write(wfd, b"more"));
+        assert_eq!(read_u16(&resp), errno::PIPE);
+    }
+
+    #[test]
+    fn proc_exit_of_writer_delivers_buffered_bytes_then_eof() {
+        // No data loss: a stage that writes bytes then immediately exits must still
+        // hand those buffered bytes to a slower reader BEFORE the reader sees EOF.
+        // (This is the normal `a | b` path, not just the empty-crash path.)
+        let (mut vfs, mut procs, mut pipes, reader, writer, _id, rfd, wfd) = pipe_setup();
+        let n = read_u32_at(
+            &dispatch(&mut vfs, &mut procs, &mut pipes, writer, &req_fd_write(wfd, b"payload")).reply.unwrap(),
+            2,
+        );
+        assert_eq!(n, 7);
+        // Writer exits with bytes still buffered in the pipe.
+        dispatch(&mut vfs, &mut procs, &mut pipes, writer, &req_proc_exit(0));
+        // The reader still gets the buffered bytes...
+        let resp = drive(&mut vfs, &mut procs, &mut pipes, reader, &req_fd_read(rfd, 64));
+        assert_eq!(resp_bytes(&resp), b"payload");
+        // ...and only THEN sees EOF.
+        let resp = drive(&mut vfs, &mut procs, &mut pipes, reader, &req_fd_read(rfd, 64));
+        assert_eq!(resp_bytes(&resp), b"");
     }
 
     // --- M2: wasmos_kernel extension (spawn / pipe / wait) ---

@@ -4,7 +4,10 @@ import { attachTerminal, type TerminalSession } from "./term/terminal.js";
 /** Executables loaded into the VFS `/bin` at boot (tmpfs, repopulated each boot). */
 // "echo.zig" is the Zig-built sibling of "echo" (FR-14 polyglot proof): same WASI
 // ABI, observably identical output, runs through the exact same kernel process path.
-const BIN = ["sh", "echo", "cat", "grep", "ls", "wc", "cp", "mv", "rm", "mkdir", "pwd", "head", "tail", "env", "echo.zig"];
+// "crash" is the fault-injection guest (FR-34): it traps on purpose so the
+// crash-containment path (a trapped process must not take down the shell) is
+// exercisable from the terminal.
+const BIN = ["sh", "echo", "cat", "grep", "ls", "wc", "cp", "mv", "rm", "mkdir", "pwd", "head", "tail", "env", "echo.zig", "crash"];
 const GUESTS = "/packages/host/guests";
 
 /** Boot result + cold-load timing + the running shell/terminal session. */

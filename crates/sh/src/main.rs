@@ -163,6 +163,14 @@ fn run_pipeline(stages: &[Stage], cwd: &str) -> i32 {
             Some(p) => wait(*p).unwrap_or(-1),
             None => 127, // failed to spawn
         };
+        // A stage killed by a trap (wasm `unreachable`/panic) surfaces as an exit
+        // code >= 128 (128 + signal). Report it like a real shell does for a
+        // crashed child — naming the offending stage — so a crash anywhere in the
+        // pipeline is visible. The prompt still returns: this is just a message,
+        // and the kernel has already released the dead stage's pipe ends (FR-34).
+        if code >= 128 {
+            eprintln!("sh: {}: terminated abnormally (exit {code})", stages[i].argv[0]);
+        }
         if i == pids.len() - 1 {
             status = code;
         }
