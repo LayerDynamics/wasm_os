@@ -3,6 +3,7 @@
 //! `lib.rs` is a thin WIT adapter over this; `cargo test` exercises it directly
 //! on the host with an in-memory blockstore.
 
+use crate::pipe::PipeTable;
 use crate::sched::Scheduler;
 use crate::syscall;
 use crate::types::{Backend, Capability, CapabilitySet, ProcInfo, ProcState, ProcTable, Rights};
@@ -15,6 +16,7 @@ pub struct KernelCore {
     vfs: Vfs,
     procs: ProcTable,
     sched: Scheduler,
+    pipes: PipeTable,
     booted: bool,
 }
 
@@ -24,6 +26,7 @@ impl KernelCore {
             vfs: Vfs::new(home, mnt),
             procs: ProcTable::new(),
             sched: Scheduler::new(),
+            pipes: PipeTable::new(),
             booted: false,
         }
     }
@@ -114,7 +117,7 @@ impl KernelCore {
     /// Route one syscall for `pid` (FR-4). Returns a [`syscall::SyscallOutcome`]
     /// — a ready reply, or a park (M2) the kworker defers until a wakeup.
     pub fn service_syscall(&mut self, pid: u32, req: &[u8]) -> syscall::SyscallOutcome {
-        syscall::dispatch(&mut self.vfs, &mut self.procs, pid, req)
+        syscall::dispatch(&mut self.vfs, &mut self.procs, &mut self.pipes, pid, req)
     }
 
     /// Deliver input bytes to a process's stdin (terminal keystrokes, M2).

@@ -7,6 +7,7 @@
 // kernel's surface — and it means items reached only by the wasm-gated
 // `component` or by M1 callers are not miscounted as dead on the host build.
 pub mod kcore;
+pub mod pipe;
 pub mod sched;
 pub mod syscall;
 pub mod types;

@@ -121,6 +121,8 @@ pub enum DescKind {
     Stderr,                 // captured into Process::stderr
     Dir { path: String },   // a directory (the preopen "/" or an opened dir)
     File { path: String },  // a regular file backed by the VFS
+    PipeRead { id: u32 },   // the read end of a kernel pipe (M2)
+    PipeWrite { id: u32 },  // the write end of a kernel pipe (M2)
 }
 
 /// An open file descriptor: what it points at, the read/write cursor, and the
@@ -167,7 +169,11 @@ impl ProcState {
 pub enum WaitReason {
     /// Blocked reading its own stdin with no buffered data (terminal input).
     Stdin,
-    // M2-T3 adds PipeRead(u32)/PipeWrite(u32); M2-T5 adds Wait(u32) on a child.
+    /// Blocked reading an empty pipe (id) whose write end is still open.
+    PipeRead(u32),
+    /// Blocked writing a full pipe (id) whose read end is still open.
+    PipeWrite(u32),
+    // M2-T5 adds Wait(u32) on a child process exit.
 }
 
 /// A process table entry. `caps` is the owning capability set (FR-2); `fds` is
@@ -378,6 +384,22 @@ impl ProcTable {
 
     pub fn blocked_on(&self, pid: u32) -> Option<WaitReason> {
         self.get(pid).and_then(|p| p.blocked_on.clone())
+    }
+
+    /// Find every process parked on `reason`, clear their parked state, and
+    /// return their pids (the wakeup list for an event, M2 park/resume).
+    pub fn take_blocked_on(&mut self, reason: &WaitReason) -> Vec<u32> {
+        let mut woken = Vec::new();
+        for p in self.procs.iter_mut() {
+            if p.blocked_on.as_ref() == Some(reason) {
+                p.blocked_on = None;
+                if p.state == ProcState::Blocked {
+                    p.state = ProcState::Running;
+                }
+                woken.push(p.pid);
+            }
+        }
+        woken
     }
 
     pub fn set_state(&mut self, pid: u32, state: ProcState) -> bool {
