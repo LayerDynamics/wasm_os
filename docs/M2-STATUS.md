@@ -17,7 +17,7 @@ spawn → child process → stdout streamed back to xterm. No mocks.
 |---|-----------|-------------|--------|
 | 1 | Boot reaches an **interactive terminal** bound to a running Rust **shell**; typed chars echo and reach the shell's stdin | `e2e/terminal.spec.ts` (real keystrokes → `echo` output); `e2e/boot.spec.ts` listProcs shows `sh` | ✅ PASS |
 | 2 | `ls`/`cat`; **`cat f \| grep x`** (real kernel pipe); **`echo hi > out`** then `cat out` (redirection); correct **exit codes** (`$?`) | `e2e/shell.spec.ts` (pipeline, redirect, `$?`=1); `e2e/coreutils.spec.ts` (mkdir+ls) | ✅ PASS |
-| 3 | The **13 FR-18 coreutils** run from the terminal via `$PATH`; **≥1 built in Zig** (FR-14), observably identical to its Rust sibling | `e2e/coreutils.spec.ts` (cp/mv/rm, wc/head); `packages/host/test/polyglot-echo.test.ts` (node:wasi byte-diff, 6 cases); `e2e/terminal.spec.ts` (`echo.zig` live) | ✅ PASS |
+| 3 | The **13 FR-18 coreutils** run from the terminal via `$PATH`; **≥1 built in Zig** (FR-14), observably identical to its Rust sibling | `e2e/coreutils.spec.ts` (ls, cat, cp/mv/rm, wc/head, tail, env, pwd-binary); `e2e/shell.spec.ts` (cat\|grep, echo); `packages/host/test/polyglot-echo.test.ts` (node:wasi byte-diff, 6 cases); `e2e/terminal.spec.ts` (`echo.zig` live) | ✅ PASS |
 | 4 | A deliberately-crashing binary from the shell — standalone **and in a pipeline** — terminates without taking down the shell/terminal (FR-34); the prompt returns | `e2e/crash.spec.ts` (standalone, `crash\|wc`, `cat\|crash`, + normal-pipeline prompt-return); kernel `proc_exit_of_writer/reader_*` regressions | ✅ PASS |
 | 5 | `npm run verify` green **including** the M0/M1 regression suite, through the refactored VFS + streaming I/O | local `npm run verify` (exit 0) | ✅ PASS |
 
@@ -85,6 +85,15 @@ playwright    : 21 passed — M0 (boot<1.5s, tri-backend persist across reload, 
   returning the prompt) and is now covered by 3 kernel tests + 4 E2E cases.
 - **Shell built-ins** (`cd`, `pwd`, `exit`, `$?`) run only as a standalone
   command (not inside a pipeline), matching the plan's scope.
+- **`pwd` exists as both a shell builtin and a `/bin/pwd` binary.** The binary
+  cannot use `std::env::current_dir()` — on wasm32-wasip1 that reads wasi-libc's
+  cwd (always `/`), not this process's working directory. WASM_OS's working
+  directory **is** the process's preopen (fd 3, set to the cwd by `k_spawn`), so
+  the binary reads its preopen name via the WASI prestat calls. Both the builtin
+  and the binary report the real cwd (verified: `cd /d` then `/bin/pwd` → `/d`).
+  Note: coreutils invoked with a **relative** path still resolve it against
+  wasi-libc's cwd (`/`), so cross-directory work uses absolute paths under the
+  cwd preopen — a known WASI-libc limitation, not a kernel bug.
 - A trapped child surfaces as **exit code 134** (128 + SIGABRT); the shell prints
   `sh: <stage>: terminated abnormally (exit 134)` for any stage with code ≥ 128.
 
