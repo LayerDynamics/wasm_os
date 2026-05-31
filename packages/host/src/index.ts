@@ -3,6 +3,7 @@ import { attachTerminal, type TerminalSession } from "./term/terminal.js";
 import { Compositor } from "./compositor/compositor.js";
 import { SurfaceManager } from "./compositor/surface.js";
 import { InputRouter } from "./compositor/input.js";
+import { ThemeManager } from "./compositor/theme.js";
 
 /** Executables loaded into the VFS `/bin` at boot (tmpfs, repopulated each boot). */
 // "echo.zig" is the Zig-built sibling of "echo" (FR-14 polyglot proof): same WASI
@@ -60,6 +61,9 @@ async function main() {
   const desktop = document.getElementById("desktop") ?? document.body;
   const taskbarEl = document.getElementById("taskbar") ?? document.body;
   const compositor = new Compositor(desktop, taskbarEl);
+
+  // Desktop theme + wallpaper, persisted to /home (FR-26); applied on boot.
+  new ThemeManager(control, desktop, taskbarEl);
 
   // Brokered input (M3-T3): the focused canvas window's keyboard/mouse is routed
   // to its owning process; keys target the active canvas window.
