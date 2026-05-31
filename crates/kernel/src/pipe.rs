@@ -120,7 +120,7 @@ impl PipeTable {
     /// Drop a fully-closed, drained pipe.
     fn gc(&mut self, id: u32) {
         if let Some(p) = self.pipes.get(&id) {
-            if p.readers == 0 && p.writers == 0 && p.buf.is_empty() {
+            if p.readers == 0 && p.writers == 0 {
                 self.pipes.remove(&id);
             }
         }
