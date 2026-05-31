@@ -44,6 +44,7 @@ interface KernelControl {
   spawn(spec: SpawnSpec): number;
   serviceSyscall(pid: number, request: Uint8Array): SyscallOutcome;
   deliverStdin(pid: number, bytes: Uint8Array): Uint32Array;
+  deliverInput(pid: number, bytes: Uint8Array): Uint32Array;
   bindTerminal(pid: number): void;
   exitCode(pid: number): number | undefined;
   takeCapture(pid: number): [Uint8Array, Uint8Array];
@@ -355,6 +356,14 @@ ctx.onmessage = async (ev: MessageEvent) => {
       case "stdin": {
         // Deliver terminal keystrokes to a process's stdin; wake parked readers.
         const wakeups = requireControl().deliverStdin(args.pid as number, args.bytes as Uint8Array);
+        processWakeups(wakeups);
+        result = undefined;
+        break;
+      }
+      case "deliverInput": {
+        // Deliver brokered keyboard/mouse to the focused window's process (M3-T3);
+        // wake any parked win_read_input.
+        const wakeups = requireControl().deliverInput(args.pid as number, args.bytes as Uint8Array);
         processWakeups(wakeups);
         result = undefined;
         break;

@@ -28,6 +28,8 @@ export class SurfaceManager {
 
   constructor(
     private compositor: Compositor,
+    /** Bind pointer input on a new canvas to its owning process (M3-T3). */
+    private bindInput: (canvas: HTMLCanvasElement, ownerPid: number) => void = () => {},
     /** Title for a process-owned window, by owning pid (overridden in M3-T9). */
     private titleFor: (pid: number) => string = (pid) => `App (pid ${pid})`,
   ) {}
@@ -57,6 +59,8 @@ export class SurfaceManager {
       dirty: false,
     });
     this.byWindow.set(win.id, info.surfaceId);
+    // Route this canvas's pointer input to the owning process (M3-T3, FR-25).
+    this.bindInput(canvas, info.pid);
   }
 
   /** A process published a frame: schedule a blit. */

@@ -91,6 +91,9 @@ pub enum Op {
     // id under the Gpu capability; win_present is handled host-side in the
     // process worker (pixels never enter the ring), so it is NOT an opcode here.
     WinSurface = 0x23,
+    // win_read_input drains brokered keyboard/mouse events (Input capability),
+    // parking until the compositor delivers some (M3-T3).
+    WinReadInput = 0x25,
 }
 
 impl Op {
@@ -121,6 +124,7 @@ impl Op {
             0x21 => Op::KPipe,
             0x22 => Op::KWait,
             0x23 => Op::WinSurface,
+            0x25 => Op::WinReadInput,
             _ => return None,
         })
     }
@@ -359,6 +363,7 @@ pub fn dispatch(
         Op::KWait => k_wait(procs, pid, &mut r),
         // wasmos_kernel compositor extension (M3).
         Op::WinSurface => win_surface(procs, pid, &mut r),
+        Op::WinReadInput => win_read_input(procs, pid, &mut r),
     }
 }
 
@@ -1034,6 +1039,29 @@ fn win_surface(procs: &mut ProcTable, pid: u32, r: &mut Reader) -> SyscallOutcom
     SyscallOutcome::ready(resp(errno::SUCCESS, id))
 }
 
+/// One brokered input event is a fixed-size record (see `INPUT_EVENT_SIZE` in the
+/// compositor + `wasmos_sys::InputEvent`). Reads drain whole records only.
+const INPUT_EVENT_SIZE: usize = 12;
+
+/// `wasmos_kernel.win_read_input(max)` — drain queued keyboard/mouse events for
+/// this process (M3-T3, FR-25). Requires the Input capability (default-deny). If
+/// nothing is queued, PARKS on `WaitReason::Input`; a later `deliver_input`
+/// re-drives it. Reply: `[errno u16][len u32][event bytes]` (whole records).
+fn win_read_input(procs: &mut ProcTable, pid: u32, r: &mut Reader) -> SyscallOutcome {
+    if !procs.has_cap(pid, &Capability::Input) {
+        return SyscallOutcome::ready(err_only(errno::NOTCAPABLE));
+    }
+    // Drain whole records only (floor the cap to a multiple of the record size).
+    let cap = (r.u32().unwrap_or(0) as usize / INPUT_EVENT_SIZE) * INPUT_EVENT_SIZE;
+    if procs.input_len(pid) > 0 {
+        let data = procs.read_input(pid, cap.max(INPUT_EVENT_SIZE));
+        SyscallOutcome::ready(Writer::new().u16(errno::SUCCESS).bytes(&data).build())
+    } else {
+        procs.set_blocked(pid, WaitReason::Input);
+        SyscallOutcome::parked()
+    }
+}
+
 /// `wasmos_kernel.wait(pid)` — return a child's exit code, parking until it exits.
 fn k_wait(procs: &mut ProcTable, pid: u32, r: &mut Reader) -> SyscallOutcome {
     let resp = |e: u16, code: i32| Writer::new().u16(e).u32(code as u32).build();
@@ -1627,5 +1655,43 @@ mod tests {
         // proc_exit releases kernel-side surface ownership.
         drive(&mut vfs, &mut procs, &mut pipes, pid, &req_proc_exit(0));
         assert!(procs.free_surfaces_of(pid).is_empty());
+    }
+
+    // --- M3: brokered input (win_read_input / deliver_input, FR-25) ---
+
+    fn input_proc(procs: &mut ProcTable) -> u32 {
+        let mut caps = CapabilitySet::default();
+        caps.grant(Capability::Input);
+        let pid = procs.spawn("inp", 5, caps);
+        procs.set_state(pid, ProcState::Running);
+        pid
+    }
+    fn req_win_read_input(cap: u32) -> Vec<u8> {
+        Writer::new().u8(Op::WinReadInput as u8).u32(cap).build()
+    }
+
+    #[test]
+    fn win_read_input_requires_input_capability() {
+        let (mut vfs, mut procs, mut pipes, pid) = setup(); // no Input cap
+        let resp = drive(&mut vfs, &mut procs, &mut pipes, pid, &req_win_read_input(120));
+        assert_eq!(read_u16(&resp), errno::NOTCAPABLE);
+    }
+
+    #[test]
+    fn win_read_input_parks_on_empty_then_returns_delivered_events() {
+        let (mut vfs, mut procs, mut pipes, _t) = setup();
+        let pid = input_proc(&mut procs);
+        // Empty queue → parks on Input.
+        let out = dispatch(&mut vfs, &mut procs, &mut pipes, pid, &req_win_read_input(120));
+        assert!(out.reply.is_none());
+        assert_eq!(procs.blocked_on(pid), Some(WaitReason::Input));
+        // A 12-byte event is delivered; the parked reader becomes runnable.
+        let ev: [u8; 12] = [1, 0, 5, 0, 7, 0, 0, 0, 0, 0, 0, 0];
+        procs.push_input(pid, &ev);
+        assert_eq!(procs.take_blocked_on(&WaitReason::Input), vec![pid]);
+        // Re-driving the read now returns exactly the event bytes.
+        let resp = drive(&mut vfs, &mut procs, &mut pipes, pid, &req_win_read_input(120));
+        assert_eq!(read_u16(&resp), errno::SUCCESS);
+        assert_eq!(resp_bytes(&resp), &ev);
     }
 }

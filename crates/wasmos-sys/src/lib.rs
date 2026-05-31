@@ -30,6 +30,7 @@ const WIN_SURFACE: u8 = 0x23;
 /// framebuffer into the surface's shared SAB and notifies the compositor); it
 /// never reaches the kernel ring. The opcode is the marker the shim matches on.
 const WIN_PRESENT: u8 = 0x24;
+const WIN_READ_INPUT: u8 = 0x25;
 
 /// File open mode for a stdio redirect.
 pub const FILE_READ: u8 = 0; // `<`
@@ -181,4 +182,67 @@ pub fn win_present(surface_id: u32, framebuffer: &[u8]) {
     w.u32(framebuffer.as_ptr() as usize as u32); // guest linear-memory address
     w.u32(framebuffer.len() as u32);
     let _ = call(&w.0);
+}
+
+/// Size of one brokered input record on the wire (must match the compositor's
+/// encoder and `crates/kernel` `INPUT_EVENT_SIZE`).
+pub const INPUT_EVENT_SIZE: usize = 12;
+
+/// Brokered input event kinds (M3-T3, FR-25).
+pub const EV_POINTER_MOVE: u8 = 1;
+pub const EV_POINTER_DOWN: u8 = 2;
+pub const EV_POINTER_UP: u8 = 3;
+pub const EV_KEY_DOWN: u8 = 4;
+pub const EV_KEY_UP: u8 = 5;
+
+/// A decoded keyboard/mouse event delivered to a process's focused window.
+#[derive(Clone, Copy, Debug)]
+pub struct InputEvent {
+    /// One of the `EV_*` constants.
+    pub kind: u8,
+    /// Pointer button (0 = primary) for pointer events.
+    pub button: u8,
+    /// Surface-local pointer position (pixels).
+    pub x: u16,
+    pub y: u16,
+    /// Key code for key events (a `KeyboardEvent.keyCode`-class value).
+    pub key: u32,
+    /// Modifier bitfield: 1=Shift, 2=Ctrl, 4=Alt, 8=Meta.
+    pub mods: u8,
+}
+
+impl InputEvent {
+    fn decode(b: &[u8]) -> InputEvent {
+        InputEvent {
+            kind: b[0],
+            button: b[1],
+            x: u16::from_le_bytes([b[2], b[3]]),
+            y: u16::from_le_bytes([b[4], b[5]]),
+            key: u32::from_le_bytes([b[6], b[7], b[8], b[9]]),
+            mods: b[10],
+        }
+    }
+}
+
+/// `win_read_input()` — drain queued keyboard/mouse events for the focused window
+/// (M3-T3, FR-25). **Blocks** (parks) until at least one event is available.
+/// Returns `Err(errno)` if the process lacks the Input capability — callers
+/// without input should not poll this in a loop.
+pub fn win_read_input() -> Result<Vec<InputEvent>, u16> {
+    let mut w = W::new();
+    w.u8(WIN_READ_INPUT);
+    w.u32((INPUT_EVENT_SIZE * 20) as u32); // up to 20 events per call
+    let resp = call(&w.0);
+    let errno = rd_u16(&resp, 0);
+    if errno != 0 {
+        return Err(errno);
+    }
+    let len = rd_u32(&resp, 2) as usize;
+    let mut events = Vec::with_capacity(len / INPUT_EVENT_SIZE);
+    let mut off = 6;
+    while off + INPUT_EVENT_SIZE <= 6 + len && off + INPUT_EVENT_SIZE <= resp.len() {
+        events.push(InputEvent::decode(&resp[off..off + INPUT_EVENT_SIZE]));
+        off += INPUT_EVENT_SIZE;
+    }
+    Ok(events)
 }

@@ -56,6 +56,8 @@ export interface AsyncKernelControl {
   wait(pid: number): Promise<ProcExit>;
   /** Deliver input bytes to a process's stdin (terminal keystrokes, M2). */
   stdin(pid: number, bytes: Uint8Array): Promise<void>;
+  /** Deliver brokered input events to the focused window's process (M3-T3). */
+  deliverInput(pid: number, bytes: Uint8Array): Promise<void>;
   /** Bind a process's stdout/stderr to the terminal (writes stream to xterm). */
   bindTerminal(pid: number): Promise<void>;
   /** Register a listener for streamed terminal output (stdout/stderr → xterm). */
@@ -178,6 +180,7 @@ export async function boot(): Promise<BootResult> {
       }),
     wait: (pid) => call("wait", { pid }),
     stdin: (pid, bytes) => call("stdin", { pid, bytes }),
+    deliverInput: (pid, bytes) => call("deliverInput", { pid, bytes }),
     bindTerminal: (pid) => call("bindTerminal", { pid }),
     onOutput: (cb) => {
       outputListeners.push(cb);

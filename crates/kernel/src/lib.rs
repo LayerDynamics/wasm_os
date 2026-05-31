@@ -162,6 +162,10 @@ mod component {
             KERNEL.with(|k| k.borrow_mut().deliver_stdin(pid, &bytes))
         }
 
+        fn deliver_input(pid: u32, bytes: Vec<u8>) -> Vec<u32> {
+            KERNEL.with(|k| k.borrow_mut().deliver_input(pid, &bytes))
+        }
+
         fn bind_terminal(pid: u32) {
             KERNEL.with(|k| k.borrow_mut().bind_terminal(pid));
         }

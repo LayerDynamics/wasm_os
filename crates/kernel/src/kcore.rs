@@ -159,6 +159,22 @@ impl KernelCore {
         }
     }
 
+    /// Deliver brokered input events to a process's focused window (M3-T3, FR-25).
+    /// Default-deny: only a process holding the Input capability receives events.
+    /// Returns the pids whose parked `win_read_input` calls are now runnable.
+    pub fn deliver_input(&mut self, pid: u32, bytes: &[u8]) -> Vec<u32> {
+        if !self.procs.has_cap(pid, &Capability::Input) {
+            return vec![];
+        }
+        self.procs.push_input(pid, bytes);
+        if self.procs.blocked_on(pid) == Some(crate::types::WaitReason::Input) {
+            self.procs.clear_blocked(pid);
+            vec![pid]
+        } else {
+            vec![]
+        }
+    }
+
     /// The process's exit code, if it has exited (FR-5 `wait`).
     pub fn exit_code(&self, pid: u32) -> Option<i32> {
         self.procs.exit_code(pid)
@@ -337,5 +353,32 @@ mod tests {
         // With spawn grant.
         let p2 = k.spawn("launcher", None, true, false, false);
         assert!(k.check_cap(p2, &Capability::Spawn));
+    }
+
+    #[test]
+    fn spawn_grants_gpu_and_input_when_requested() {
+        let mut k = core();
+        k.boot();
+        let plain = k.spawn("plain", None, false, false, false);
+        assert!(!k.check_cap(plain, &Capability::Gpu));
+        assert!(!k.check_cap(plain, &Capability::Input));
+        let gfx = k.spawn("gfx", None, false, true, true);
+        assert!(k.check_cap(gfx, &Capability::Gpu));
+        assert!(k.check_cap(gfx, &Capability::Input));
+    }
+
+    #[test]
+    fn deliver_input_is_capability_gated_and_wakes_a_parked_reader() {
+        let mut k = core();
+        k.boot();
+        let with = k.spawn("g", None, false, false, true); // Input granted
+        let without = k.spawn("n", None, false, false, false); // no Input
+        // Default-deny: a process without Input receives nothing (no wakeups).
+        assert!(k.deliver_input(without, &[0u8; 12]).is_empty());
+        // Park `with` on win_read_input (opcode 0x25, cap=120) with an empty queue,
+        // then a delivery wakes exactly that pid.
+        let req = vec![0x25u8, 120, 0, 0, 0];
+        assert!(k.service_syscall(with, &req).reply.is_none());
+        assert_eq!(k.deliver_input(with, &[0u8; 12]), vec![with]);
     }
 }

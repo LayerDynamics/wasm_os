@@ -2,6 +2,7 @@ import { boot, type BootResult } from "./boot.js";
 import { attachTerminal, type TerminalSession } from "./term/terminal.js";
 import { Compositor } from "./compositor/compositor.js";
 import { SurfaceManager } from "./compositor/surface.js";
+import { InputRouter } from "./compositor/input.js";
 
 /** Executables loaded into the VFS `/bin` at boot (tmpfs, repopulated each boot). */
 // "echo.zig" is the Zig-built sibling of "echo" (FR-14 polyglot proof): same WASI
@@ -54,9 +55,19 @@ async function main() {
   const taskbarEl = document.getElementById("taskbar") ?? document.body;
   const compositor = new Compositor(desktop, taskbarEl);
 
+  // Brokered input (M3-T3): the focused canvas window's keyboard/mouse is routed
+  // to its owning process; keys target the active canvas window.
+  const inputRouter = new InputRouter(
+    (pid, bytes) => void control.deliverInput(pid, bytes),
+    () => {
+      const w = compositor.activeWindow();
+      return w && w.surface === "canvas" ? w.ownerPid : undefined;
+    },
+  );
+
   // Process-owned canvas surfaces (M3): a process calls win_surface → a canvas
   // window opens here and its shared framebuffer is blitted on present.
-  const surfaces = new SurfaceManager(compositor);
+  const surfaces = new SurfaceManager(compositor, (canvas, pid) => inputRouter.bindCanvas(canvas, pid));
   control.onSurface((info) => surfaces.onSurface(info));
   control.onPresent((id) => surfaces.onPresent(id));
 
