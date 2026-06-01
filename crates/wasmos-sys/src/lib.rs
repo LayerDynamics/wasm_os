@@ -477,7 +477,7 @@ pub fn shm_read(shm_id: u32, off: u32, len: u32) -> Result<Vec<u8>, u16> {
     let n = unsafe { syscall(req.as_ptr(), req.len(), resp.as_mut_ptr(), resp.len()) };
     resp.truncate(n.min(resp.len()));
     if resp.len() < 6 {
-        return Err(rd_u16(&resp, 0));
+        return Err(if resp.len() >= 2 { rd_u16(&resp, 0) } else { 28 });
     }
     let errno = rd_u16(&resp, 0);
     if errno != 0 {
