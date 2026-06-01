@@ -16,7 +16,7 @@ const BIN = [
   "echo.zig", "crash",
   // M3 graphical apps (canvas surfaces); launchable from the file manager.
   // "mandelbrot" is the Zig polyglot app (FR-14 on the graphics path).
-  "gfxspike", "filemanager", "paint", "editor", "mandelbrot", "spinner",
+  "gfxspike", "filemanager", "paint", "editor", "mandelbrot", "spinner", "chandemo",
 ];
 const GUESTS = "/packages/host/guests";
 

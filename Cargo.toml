@@ -14,6 +14,7 @@ members = [
     "crates/apps/paint",
     "crates/apps/editor",
     "crates/spinner",
+    "crates/chandemo",
 ]
 
 [workspace.package]

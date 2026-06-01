@@ -1,0 +1,15 @@
+[package]
+name = "chandemo"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+# M4-T3 IPC channel fixture: two instances rendezvous on a named channel; the
+# creator sends a message, the connector receives it and writes it to the VFS so
+# the test can verify cross-process message delivery.
+[[bin]]
+name = "chandemo"
+path = "src/main.rs"
+
+[dependencies]
+wasmos-sys = { path = "../wasmos-sys" }

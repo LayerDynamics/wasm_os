@@ -7,7 +7,7 @@ use crate::pipe::PipeTable;
 use crate::sched::Scheduler;
 use crate::syscall;
 use crate::types::{
-    Backend, Capability, CapabilitySet, DescKind, ProcInfo, ProcState, ProcTable, Rights,
+    Backend, Capability, CapabilitySet, DescKind, ProcInfo, ProcState, ProcTable, Rights, WaitReason,
 };
 use crate::vfs::{Blockstore, FsError, Vfs};
 
@@ -19,6 +19,7 @@ pub struct KernelCore {
     procs: ProcTable,
     sched: Scheduler,
     pipes: PipeTable,
+    chans: crate::chan::ChannelTable,
     booted: bool,
 }
 
@@ -29,6 +30,7 @@ impl KernelCore {
             procs: ProcTable::new(),
             sched: Scheduler::new(),
             pipes: PipeTable::new(),
+            chans: crate::chan::ChannelTable::new(),
             booted: false,
         }
     }
@@ -159,7 +161,19 @@ impl KernelCore {
         match req.first().copied() {
             Some(0x30) => syscall::SyscallOutcome::ready(self.encode_proc_list()),
             Some(0x31) => self.set_priority_syscall(pid, req),
-            _ => syscall::dispatch(&mut self.vfs, &mut self.procs, &mut self.pipes, pid, req),
+            Some(0x32) => self.chan_open_syscall(pid, req),
+            Some(0x33) => self.chan_send_syscall(pid, req),
+            Some(0x34) => self.chan_recv_syscall(pid, req),
+            _ => {
+                let mut out =
+                    syscall::dispatch(&mut self.vfs, &mut self.procs, &mut self.pipes, pid, req);
+                // proc_exit (0x10): also release this process's channel endpoints so
+                // a parked peer observes EOF (sibling of the pipe/surface cleanup).
+                if req.first() == Some(&0x10) {
+                    out.wakeups.extend(self.close_proc_channels(pid));
+                }
+                out
+            }
         }
     }
 
@@ -205,6 +219,85 @@ impl KernelCore {
         }
         self.set_priority(target, prio);
         err(syscall::errno::SUCCESS)
+    }
+
+    // --- M4-T3: message channels (opaque handles, not WASI fds) ---
+
+    /// `chan_open(name)` — rendezvous by name. Reply: `[errno u16][chan_id u32][end u8]`.
+    fn chan_open_syscall(&mut self, pid: u32, req: &[u8]) -> syscall::SyscallOutcome {
+        let name = String::from_utf8_lossy(&req[1..]).into_owned();
+        let (id, end) = self.chans.open(&name);
+        self.procs.add_channel(pid, id, end);
+        let mut b = Vec::with_capacity(7);
+        b.extend_from_slice(&syscall::errno::SUCCESS.to_le_bytes());
+        b.extend_from_slice(&id.to_le_bytes());
+        b.push(end);
+        syscall::SyscallOutcome::ready(b)
+    }
+
+    /// `chan_send(chan_id, msg)` — `[0x33][chan_id u32][msg...]`. Reply: `[errno u16]`.
+    /// The whole request payload after the id IS the message (boundaries preserved).
+    fn chan_send_syscall(&mut self, pid: u32, req: &[u8]) -> syscall::SyscallOutcome {
+        let err = |e: u16| syscall::SyscallOutcome::ready(e.to_le_bytes().to_vec());
+        if req.len() < 5 {
+            return err(syscall::errno::INVAL);
+        }
+        let id = u32::from_le_bytes([req[1], req[2], req[3], req[4]]);
+        let Some(end) = self.procs.channel_end(pid, id) else {
+            return err(syscall::errno::BADF); // caller does not hold this channel
+        };
+        if !self.chans.send(id, end, req[5..].to_vec()) {
+            return err(syscall::errno::PIPE); // peer permanently gone
+        }
+        // Wake a receiver parked on the PEER endpoint.
+        let wakeups = self.procs.take_blocked_on(&WaitReason::ChanRecv(id, 1 - end));
+        syscall::SyscallOutcome {
+            reply: Some(syscall::errno::SUCCESS.to_le_bytes().to_vec()),
+            wakeups,
+            term_output: Vec::new(),
+            spawn: None,
+        }
+    }
+
+    /// `chan_recv(chan_id)` — `[0x34][chan_id u32]`. Parks on an empty inbox whose
+    /// peer is still open; a closed-peer empty inbox is EOF (a zero-length reply).
+    /// Reply: `[errno u16][len u32][msg]`.
+    fn chan_recv_syscall(&mut self, pid: u32, req: &[u8]) -> syscall::SyscallOutcome {
+        if req.len() < 5 {
+            return syscall::SyscallOutcome::ready(syscall::errno::INVAL.to_le_bytes().to_vec());
+        }
+        let id = u32::from_le_bytes([req[1], req[2], req[3], req[4]]);
+        let Some(end) = self.procs.channel_end(pid, id) else {
+            return syscall::SyscallOutcome::ready(syscall::errno::BADF.to_le_bytes().to_vec());
+        };
+        if self.chans.inbox_len(id, end) > 0 {
+            let msg = self.chans.recv(id, end).unwrap_or_default();
+            let mut b = Vec::with_capacity(6 + msg.len());
+            b.extend_from_slice(&syscall::errno::SUCCESS.to_le_bytes());
+            b.extend_from_slice(&(msg.len() as u32).to_le_bytes());
+            b.extend_from_slice(&msg);
+            syscall::SyscallOutcome::ready(b)
+        } else if !self.chans.peer_open(id, end) {
+            // EOF: peer gone, inbox drained → empty message.
+            let mut b = Vec::with_capacity(6);
+            b.extend_from_slice(&syscall::errno::SUCCESS.to_le_bytes());
+            b.extend_from_slice(&0u32.to_le_bytes());
+            syscall::SyscallOutcome::ready(b)
+        } else {
+            self.procs.set_blocked(pid, WaitReason::ChanRecv(id, end));
+            syscall::SyscallOutcome::parked()
+        }
+    }
+
+    /// Release every channel endpoint a dying process holds; returns the pids whose
+    /// parked receives are now runnable (they will observe EOF).
+    fn close_proc_channels(&mut self, pid: u32) -> Vec<u32> {
+        let mut wakeups = Vec::new();
+        for (id, end) in self.procs.channels_of(pid) {
+            self.chans.close(id, end);
+            wakeups.extend(self.procs.take_blocked_on(&WaitReason::ChanRecv(id, 1 - end)));
+        }
+        wakeups
     }
 
     /// Bind a process's stdout + stderr (fd 1/2) to the interactive terminal so
@@ -488,5 +581,63 @@ mod tests {
         other_req.extend_from_slice(&1u32.to_le_bytes()); // init
         other_req.push(3);
         assert_eq!(read_u16(&k.service_syscall(pid, &other_req).reply.unwrap()), 76); // NOTCAPABLE
+    }
+
+    // --- M4-T3: message channels through the kernel core ---
+
+    fn chan_open_req(name: &str) -> Vec<u8> {
+        let mut v = vec![0x32u8];
+        v.extend_from_slice(name.as_bytes());
+        v
+    }
+    fn chan_send_req(id: u32, msg: &[u8]) -> Vec<u8> {
+        let mut v = vec![0x33u8];
+        v.extend_from_slice(&id.to_le_bytes());
+        v.extend_from_slice(msg);
+        v
+    }
+    fn chan_recv_req(id: u32) -> Vec<u8> {
+        let mut v = vec![0x34u8];
+        v.extend_from_slice(&id.to_le_bytes());
+        v
+    }
+
+    #[test]
+    fn channel_open_send_recv_park_resume_and_exit_eof() {
+        let mut k = core();
+        k.boot();
+        let a = k.spawn("a", None, false, false, false);
+        let b = k.spawn("b", None, false, false, false);
+
+        // a opens "demo" (creator, end 0); b connects (end 1) to the same channel.
+        let ra = k.service_syscall(a, &chan_open_req("demo")).reply.unwrap();
+        assert_eq!(read_u16(&ra), 0);
+        let id = u32::from_le_bytes([ra[2], ra[3], ra[4], ra[5]]);
+        assert_eq!(ra[6], 0);
+        let rb = k.service_syscall(b, &chan_open_req("demo")).reply.unwrap();
+        assert_eq!(u32::from_le_bytes([rb[2], rb[3], rb[4], rb[5]]), id);
+        assert_eq!(rb[6], 1);
+
+        // b receives on an empty inbox (peer open) → parks.
+        assert!(k.service_syscall(b, &chan_recv_req(id)).reply.is_none());
+        // a sends → wakes b.
+        let send = k.service_syscall(a, &chan_send_req(id, b"HELLO"));
+        assert_eq!(read_u16(&send.reply.unwrap()), 0);
+        assert_eq!(send.wakeups, vec![b]);
+        // Re-driving b's receive returns the message.
+        let r = k.service_syscall(b, &chan_recv_req(id)).reply.unwrap();
+        assert_eq!(read_u16(&r), 0);
+        let len = u32::from_le_bytes([r[2], r[3], r[4], r[5]]) as usize;
+        assert_eq!(&r[6..6 + len], b"HELLO");
+
+        // a exits → b's next receive is EOF (zero-length).
+        k.service_syscall(a, &proc_exit_req(0));
+        let eof = k.service_syscall(b, &chan_recv_req(id)).reply.unwrap();
+        assert_eq!(read_u16(&eof), 0);
+        assert_eq!(u32::from_le_bytes([eof[2], eof[3], eof[4], eof[5]]), 0);
+
+        // A process cannot receive on a channel it never opened.
+        let c = k.spawn("c", None, false, false, false);
+        assert_eq!(read_u16(&k.service_syscall(c, &chan_recv_req(id)).reply.unwrap()), 8); // BADF
     }
 }

@@ -178,6 +178,9 @@ pub enum WaitReason {
     Wait(u32),
     /// Blocked reading brokered input (keyboard/mouse) with none queued (M3-T3).
     Input,
+    /// Blocked receiving on a message channel `(chan_id, end)` with an empty inbox
+    /// whose peer is still open (M4-T3).
+    ChanRecv(u32, u8),
 }
 
 /// A process table entry. `caps` is the owning capability set (FR-2); `fds` is
@@ -213,6 +216,9 @@ pub struct Process {
     pub mem_bytes: u32,
     /// Pending signals delivered but not yet consumed via `sig_pending` (M4-T5).
     pub pending_signals: VecDeque<u8>,
+    /// Open message channels this process holds: `chan_id -> owned endpoint`
+    /// (M4-T3). Opaque handles, not WASI fds.
+    pub channels: BTreeMap<u32, u8>,
 }
 
 /// Build the standard descriptor table for a fresh process: stdin/stdout/stderr
@@ -318,8 +324,26 @@ impl ProcTable {
             parent: None,
             mem_bytes: 0,
             pending_signals: VecDeque::new(),
+            channels: BTreeMap::new(),
         });
         pid
+    }
+
+    /// Record that `pid` holds `end` of channel `id` (M4-T3).
+    pub fn add_channel(&mut self, pid: u32, id: u32, end: u8) {
+        if let Some(p) = self.get_mut(pid) {
+            p.channels.insert(id, end);
+        }
+    }
+
+    /// The endpoint `pid` holds for channel `id`, if any.
+    pub fn channel_end(&self, pid: u32, id: u32) -> Option<u8> {
+        self.get(pid).and_then(|p| p.channels.get(&id).copied())
+    }
+
+    /// All `(chan_id, end)` a process holds — used to release them on exit.
+    pub fn channels_of(&self, pid: u32) -> Vec<(u32, u8)> {
+        self.get(pid).map(|p| p.channels.iter().map(|(&id, &e)| (id, e)).collect()).unwrap_or_default()
     }
 
     pub fn get(&self, pid: u32) -> Option<&Process> {

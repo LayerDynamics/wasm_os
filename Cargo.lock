@@ -13,6 +13,13 @@ name = "catfile"
 version = "0.0.0"
 
 [[package]]
+name = "chandemo"
+version = "0.0.0"
+dependencies = [
+ "wasmos-sys",
+]
+
+[[package]]
 name = "coreutils"
 version = "0.0.0"
 

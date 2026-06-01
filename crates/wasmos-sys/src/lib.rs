@@ -33,6 +33,9 @@ const WIN_PRESENT: u8 = 0x24;
 const WIN_READ_INPUT: u8 = 0x25;
 const PROC_LIST: u8 = 0x30;
 const SET_PRIORITY: u8 = 0x31;
+const CHAN_OPEN: u8 = 0x32;
+const CHAN_SEND: u8 = 0x33;
+const CHAN_RECV: u8 = 0x34;
 
 /// File open mode for a stdio redirect.
 pub const FILE_READ: u8 = 0; // `<`
@@ -373,4 +376,52 @@ pub fn set_priority(pid: u32, priority: u8) -> u16 {
     w.u32(pid);
     w.u8(priority);
     rd_u16(&call(&w.0), 0)
+}
+
+// --- M4-T3: message channels (named bidirectional message queues) ---
+
+/// `chan_open(name)` — open or connect a named message channel (M4). The first
+/// opener creates it (endpoint 0); the second connects (endpoint 1). Returns the
+/// opaque `(chan_id, end)` handle, or the kernel errno.
+pub fn chan_open(name: &str) -> Result<(u32, u8), u16> {
+    let mut req = Vec::with_capacity(1 + name.len());
+    req.push(CHAN_OPEN);
+    req.extend_from_slice(name.as_bytes());
+    let resp = call(&req);
+    let errno = rd_u16(&resp, 0);
+    if errno != 0 {
+        return Err(errno);
+    }
+    Ok((rd_u32(&resp, 2), resp[6]))
+}
+
+/// `chan_send(chan_id, msg)` — send one message to the peer endpoint (preserving
+/// message boundaries). Returns the kernel errno (0 = success; EPIPE if the peer
+/// is permanently gone).
+pub fn chan_send(chan_id: u32, msg: &[u8]) -> u16 {
+    let mut req = Vec::with_capacity(5 + msg.len());
+    req.push(CHAN_SEND);
+    req.extend_from_slice(&chan_id.to_le_bytes());
+    req.extend_from_slice(msg);
+    rd_u16(&call(&req), 0)
+}
+
+/// `chan_recv(chan_id)` — receive one message (M4). **Blocks** until a message
+/// arrives; an empty `Ok(vec)` means EOF (the peer closed and the inbox drained).
+pub fn chan_recv(chan_id: u32) -> Result<Vec<u8>, u16> {
+    let mut req = vec![CHAN_RECV];
+    req.extend_from_slice(&chan_id.to_le_bytes());
+    // Messages can be larger than the default reply buffer; use a generous one.
+    let mut resp = vec![0u8; 16 * 1024];
+    let n = unsafe { syscall(req.as_ptr(), req.len(), resp.as_mut_ptr(), resp.len()) };
+    resp.truncate(n.min(resp.len()));
+    if resp.len() < 6 {
+        return Err(rd_u16(&resp, 0));
+    }
+    let errno = rd_u16(&resp, 0);
+    if errno != 0 {
+        return Err(errno);
+    }
+    let len = rd_u32(&resp, 2) as usize;
+    Ok(resp.get(6..6 + len).map(|s| s.to_vec()).unwrap_or_default())
 }

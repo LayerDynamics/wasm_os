@@ -49,6 +49,16 @@ interface process {
 
   /// Renice a process (FR-8); reniceing another requires the Signal capability.
   set-priority: func(pid: u32, priority: u8) -> u16;
+
+  /// Open/connect a named message channel (M4-T3). First opener creates it
+  /// (endpoint 0); the second connects (endpoint 1). Returns (chan-id, end).
+  chan-open: func(name: string) -> result<tuple<u32, u8>, u16>;
+
+  /// Send one message to the peer endpoint (boundaries preserved).
+  chan-send: func(chan-id: u32, msg: list<u8>) -> u16;
+
+  /// Receive one message, blocking until one arrives; an empty result is EOF.
+  chan-recv: func(chan-id: u32) -> result<list<u8>, u16>;
 }
 
 /// The wasmos_kernel compositor extension (M3) — the guest surface + input
