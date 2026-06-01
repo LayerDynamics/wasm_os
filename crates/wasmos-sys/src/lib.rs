@@ -36,6 +36,11 @@ const SET_PRIORITY: u8 = 0x31;
 const CHAN_OPEN: u8 = 0x32;
 const CHAN_SEND: u8 = 0x33;
 const CHAN_RECV: u8 = 0x34;
+const SHM_CREATE: u8 = 0x35;
+const SHM_MAP: u8 = 0x36;
+const SHM_READ: u8 = 0x37;
+const SHM_WRITE: u8 = 0x38;
+const SHM_GRANT: u8 = 0x39;
 
 /// File open mode for a stdio redirect.
 pub const FILE_READ: u8 = 0; // `<`
@@ -424,4 +429,70 @@ pub fn chan_recv(chan_id: u32) -> Result<Vec<u8>, u16> {
     }
     let len = rd_u32(&resp, 2) as usize;
     Ok(resp.get(6..6 + len).map(|s| s.to_vec()).unwrap_or_default())
+}
+
+// --- M4-T4: shared memory (capability-gated, kernel-arbitrated region, FR-6) ---
+
+/// `shm_create(size)` — create a shared-memory region of `size` bytes (M4). The
+/// caller owns it and is granted access; it may [`shm_grant`] other processes.
+/// Returns the `shm_id`, or the kernel errno.
+pub fn shm_create(size: u32) -> Result<u32, u16> {
+    let mut req = vec![SHM_CREATE];
+    req.extend_from_slice(&size.to_le_bytes());
+    let resp = call(&req);
+    let errno = rd_u16(&resp, 0);
+    if errno != 0 {
+        return Err(errno);
+    }
+    Ok(rd_u32(&resp, 2))
+}
+
+/// `shm_map(shm_id)` — confirm this process holds access to the region (granted by
+/// its owner). Returns the kernel errno (0 = mapped; NOTCAPABLE if not granted).
+pub fn shm_map(shm_id: u32) -> u16 {
+    let mut req = vec![SHM_MAP];
+    req.extend_from_slice(&shm_id.to_le_bytes());
+    rd_u16(&call(&req), 0)
+}
+
+/// `shm_read(shm_id, off, len)` — copy up to `len` bytes from the region (M4).
+/// Returns the bytes (clipped to the region), or the kernel errno (NOTCAPABLE if
+/// access was not granted).
+pub fn shm_read(shm_id: u32, off: u32, len: u32) -> Result<Vec<u8>, u16> {
+    let mut req = vec![SHM_READ];
+    req.extend_from_slice(&shm_id.to_le_bytes());
+    req.extend_from_slice(&off.to_le_bytes());
+    req.extend_from_slice(&len.to_le_bytes());
+    let mut resp = vec![0u8; 64 * 1024];
+    let n = unsafe { syscall(req.as_ptr(), req.len(), resp.as_mut_ptr(), resp.len()) };
+    resp.truncate(n.min(resp.len()));
+    if resp.len() < 6 {
+        return Err(rd_u16(&resp, 0));
+    }
+    let errno = rd_u16(&resp, 0);
+    if errno != 0 {
+        return Err(errno);
+    }
+    let got = rd_u32(&resp, 2) as usize;
+    Ok(resp.get(6..6 + got).map(|s| s.to_vec()).unwrap_or_default())
+}
+
+/// `shm_write(shm_id, off, data)` — copy `data` into the region at `off` (clipped
+/// to the region). Returns the kernel errno (NOTCAPABLE if access not granted).
+pub fn shm_write(shm_id: u32, off: u32, data: &[u8]) -> u16 {
+    let mut req = Vec::with_capacity(9 + data.len());
+    req.push(SHM_WRITE);
+    req.extend_from_slice(&shm_id.to_le_bytes());
+    req.extend_from_slice(&off.to_le_bytes());
+    req.extend_from_slice(data);
+    rd_u16(&call(&req), 0)
+}
+
+/// `shm_grant(shm_id, target_pid)` — share access to a region this process owns
+/// with another process. Returns the kernel errno (NOTCAPABLE if not the owner).
+pub fn shm_grant(shm_id: u32, target_pid: u32) -> u16 {
+    let mut req = vec![SHM_GRANT];
+    req.extend_from_slice(&shm_id.to_le_bytes());
+    req.extend_from_slice(&target_pid.to_le_bytes());
+    rd_u16(&call(&req), 0)
 }

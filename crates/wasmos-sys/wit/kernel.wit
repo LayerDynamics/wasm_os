@@ -59,6 +59,22 @@ interface process {
 
   /// Receive one message, blocking until one arrives; an empty result is EOF.
   chan-recv: func(chan-id: u32) -> result<list<u8>, u16>;
+
+  /// Create a capability-gated shared-memory region of `size` bytes (M4-T4, FR-6).
+  /// The caller owns it and is granted access. Returns the shm-id.
+  shm-create: func(size: u32) -> result<u32, u16>;
+
+  /// Confirm this process holds access to a region (granted by its owner).
+  shm-map: func(shm-id: u32) -> u16;
+
+  /// Copy up to `len` bytes from `off` in the region (needs granted access).
+  shm-read: func(shm-id: u32, off: u32, len: u32) -> result<list<u8>, u16>;
+
+  /// Copy `data` into the region at `off` (needs granted access).
+  shm-write: func(shm-id: u32, off: u32, data: list<u8>) -> u16;
+
+  /// Share access to a region this process owns with another process.
+  shm-grant: func(shm-id: u32, target-pid: u32) -> u16;
 }
 
 /// The wasmos_kernel compositor extension (M3) — the guest surface + input

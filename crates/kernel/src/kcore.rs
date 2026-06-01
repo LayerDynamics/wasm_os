@@ -20,6 +20,7 @@ pub struct KernelCore {
     sched: Scheduler,
     pipes: PipeTable,
     chans: crate::chan::ChannelTable,
+    shm: crate::shm::ShmTable,
     booted: bool,
 }
 
@@ -31,6 +32,7 @@ impl KernelCore {
             sched: Scheduler::new(),
             pipes: PipeTable::new(),
             chans: crate::chan::ChannelTable::new(),
+            shm: crate::shm::ShmTable::new(),
             booted: false,
         }
     }
@@ -164,13 +166,20 @@ impl KernelCore {
             Some(0x32) => self.chan_open_syscall(pid, req),
             Some(0x33) => self.chan_send_syscall(pid, req),
             Some(0x34) => self.chan_recv_syscall(pid, req),
+            Some(0x35) => self.shm_create_syscall(pid, req),
+            Some(0x36) => self.shm_map_syscall(pid, req),
+            Some(0x37) => self.shm_read_syscall(pid, req),
+            Some(0x38) => self.shm_write_syscall(pid, req),
+            Some(0x39) => self.shm_grant_syscall(pid, req),
             _ => {
                 let mut out =
                     syscall::dispatch(&mut self.vfs, &mut self.procs, &mut self.pipes, pid, req);
-                // proc_exit (0x10): also release this process's channel endpoints so
-                // a parked peer observes EOF (sibling of the pipe/surface cleanup).
+                // proc_exit (0x10): also release this process's channel endpoints and
+                // shm regions so parked peers observe EOF / freed memory (sibling of
+                // the pipe/surface cleanup).
                 if req.first() == Some(&0x10) {
                     out.wakeups.extend(self.close_proc_channels(pid));
+                    self.shm.free_owned(pid);
                 }
                 out
             }
@@ -298,6 +307,92 @@ impl KernelCore {
             wakeups.extend(self.procs.take_blocked_on(&WaitReason::ChanRecv(id, 1 - end)));
         }
         wakeups
+    }
+
+    // --- M4-T4: shared memory (kernel-arbitrated, capability-gated region, FR-6) ---
+
+    /// `shm_create(size)` — `[0x35][size u32]`. Reply: `[errno u16][shm_id u32]`.
+    /// Any process may create a region (it owns + may grant it); size is capped.
+    fn shm_create_syscall(&mut self, pid: u32, req: &[u8]) -> syscall::SyscallOutcome {
+        if req.len() < 5 {
+            return syscall::SyscallOutcome::ready(syscall::errno::INVAL.to_le_bytes().to_vec());
+        }
+        let size = u32::from_le_bytes([req[1], req[2], req[3], req[4]]) as usize;
+        let id = self.shm.create(pid, size);
+        let mut b = syscall::errno::SUCCESS.to_le_bytes().to_vec();
+        b.extend_from_slice(&id.to_le_bytes());
+        syscall::SyscallOutcome::ready(b)
+    }
+
+    /// `shm_map(shm_id)` — `[0x36][shm_id u32]`. Confirms this process holds access
+    /// (granted by the owner). Reply: `[errno u16]` (NOTCAPABLE if not granted).
+    fn shm_map_syscall(&mut self, pid: u32, req: &[u8]) -> syscall::SyscallOutcome {
+        let err = |e: u16| syscall::SyscallOutcome::ready(e.to_le_bytes().to_vec());
+        if req.len() < 5 {
+            return err(syscall::errno::INVAL);
+        }
+        let id = u32::from_le_bytes([req[1], req[2], req[3], req[4]]);
+        if !self.shm.exists(id) {
+            return err(syscall::errno::INVAL);
+        }
+        if !self.shm.has_access(id, pid) {
+            return err(syscall::errno::NOTCAPABLE);
+        }
+        err(syscall::errno::SUCCESS)
+    }
+
+    /// `shm_read(shm_id, off, len)` — `[0x37][shm_id u32][off u32][len u32]`.
+    /// Reply: `[errno u16][len u32][bytes]` (NOTCAPABLE if access not granted).
+    fn shm_read_syscall(&mut self, pid: u32, req: &[u8]) -> syscall::SyscallOutcome {
+        if req.len() < 13 {
+            return syscall::SyscallOutcome::ready(syscall::errno::INVAL.to_le_bytes().to_vec());
+        }
+        let id = u32::from_le_bytes([req[1], req[2], req[3], req[4]]);
+        let off = u32::from_le_bytes([req[5], req[6], req[7], req[8]]) as usize;
+        let len = u32::from_le_bytes([req[9], req[10], req[11], req[12]]) as usize;
+        if !self.shm.has_access(id, pid) {
+            return syscall::SyscallOutcome::ready(syscall::errno::NOTCAPABLE.to_le_bytes().to_vec());
+        }
+        let data = self.shm.read(id, off, len);
+        let mut b = syscall::errno::SUCCESS.to_le_bytes().to_vec();
+        b.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        b.extend_from_slice(&data);
+        syscall::SyscallOutcome::ready(b)
+    }
+
+    /// `shm_write(shm_id, off, data)` — `[0x38][shm_id u32][off u32][data...]`.
+    /// Reply: `[errno u16]` (NOTCAPABLE if access not granted).
+    fn shm_write_syscall(&mut self, pid: u32, req: &[u8]) -> syscall::SyscallOutcome {
+        let err = |e: u16| syscall::SyscallOutcome::ready(e.to_le_bytes().to_vec());
+        if req.len() < 9 {
+            return err(syscall::errno::INVAL);
+        }
+        let id = u32::from_le_bytes([req[1], req[2], req[3], req[4]]);
+        let off = u32::from_le_bytes([req[5], req[6], req[7], req[8]]) as usize;
+        if !self.shm.has_access(id, pid) {
+            return err(syscall::errno::NOTCAPABLE);
+        }
+        if !self.shm.write(id, off, &req[9..]) {
+            return err(syscall::errno::INVAL);
+        }
+        err(syscall::errno::SUCCESS)
+    }
+
+    /// `shm_grant(shm_id, target_pid)` — `[0x39][shm_id u32][target_pid u32]`.
+    /// The owner shares access with another process. Reply: `[errno u16]`
+    /// (NOTCAPABLE if the caller is not the region's owner).
+    fn shm_grant_syscall(&mut self, pid: u32, req: &[u8]) -> syscall::SyscallOutcome {
+        let err = |e: u16| syscall::SyscallOutcome::ready(e.to_le_bytes().to_vec());
+        if req.len() < 9 {
+            return err(syscall::errno::INVAL);
+        }
+        let id = u32::from_le_bytes([req[1], req[2], req[3], req[4]]);
+        let target = u32::from_le_bytes([req[5], req[6], req[7], req[8]]);
+        if self.shm.grant(id, pid, target) {
+            err(syscall::errno::SUCCESS)
+        } else {
+            err(syscall::errno::NOTCAPABLE)
+        }
     }
 
     /// Bind a process's stdout + stderr (fd 1/2) to the interactive terminal so
@@ -639,5 +734,68 @@ mod tests {
         // A process cannot receive on a channel it never opened.
         let c = k.spawn("c", None, false, false, false);
         assert_eq!(read_u16(&k.service_syscall(c, &chan_recv_req(id)).reply.unwrap()), 8); // BADF
+    }
+
+    // --- M4-T4: shared memory through the kernel core ---
+
+    fn shm_create_req(size: u32) -> Vec<u8> {
+        let mut v = vec![0x35u8];
+        v.extend_from_slice(&size.to_le_bytes());
+        v
+    }
+    fn shm_read_req(id: u32, off: u32, len: u32) -> Vec<u8> {
+        let mut v = vec![0x37u8];
+        v.extend_from_slice(&id.to_le_bytes());
+        v.extend_from_slice(&off.to_le_bytes());
+        v.extend_from_slice(&len.to_le_bytes());
+        v
+    }
+    fn shm_write_req(id: u32, off: u32, data: &[u8]) -> Vec<u8> {
+        let mut v = vec![0x38u8];
+        v.extend_from_slice(&id.to_le_bytes());
+        v.extend_from_slice(&off.to_le_bytes());
+        v.extend_from_slice(data);
+        v
+    }
+
+    #[test]
+    fn shm_create_grant_share_and_isolation_then_exit_frees() {
+        let mut k = core();
+        k.boot();
+        let owner = k.spawn("owner", None, false, false, false);
+        let peer = k.spawn("peer", None, false, false, false);
+
+        // owner creates a region (reply [errno][shm_id]) and writes into it.
+        let rc = k.service_syscall(owner, &shm_create_req(64)).reply.unwrap();
+        assert_eq!(read_u16(&rc), 0);
+        let id = u32::from_le_bytes([rc[2], rc[3], rc[4], rc[5]]);
+        assert_eq!(read_u16(&k.service_syscall(owner, &shm_write_req(id, 8, b"SHARED-MEM")).reply.unwrap()), 0);
+
+        // Default-deny: peer cannot map/read/write before being granted.
+        let mut map_req = vec![0x36u8];
+        map_req.extend_from_slice(&id.to_le_bytes());
+        assert_eq!(read_u16(&k.service_syscall(peer, &map_req).reply.unwrap()), 76); // NOTCAPABLE
+        assert_eq!(read_u16(&k.service_syscall(peer, &shm_read_req(id, 8, 10)).reply.unwrap()), 76);
+
+        // A non-owner cannot grant; the owner can.
+        let mut steal = vec![0x39u8];
+        steal.extend_from_slice(&id.to_le_bytes());
+        steal.extend_from_slice(&peer.to_le_bytes());
+        assert_eq!(read_u16(&k.service_syscall(peer, &steal).reply.unwrap()), 76); // peer isn't owner
+        let mut grant = vec![0x39u8];
+        grant.extend_from_slice(&id.to_le_bytes());
+        grant.extend_from_slice(&peer.to_le_bytes());
+        assert_eq!(read_u16(&k.service_syscall(owner, &grant).reply.unwrap()), 0);
+
+        // Now peer maps + reads exactly what the owner wrote (shared region).
+        assert_eq!(read_u16(&k.service_syscall(peer, &map_req).reply.unwrap()), 0);
+        let rr = k.service_syscall(peer, &shm_read_req(id, 8, 10)).reply.unwrap();
+        assert_eq!(read_u16(&rr), 0);
+        let n = u32::from_le_bytes([rr[2], rr[3], rr[4], rr[5]]) as usize;
+        assert_eq!(&rr[6..6 + n], b"SHARED-MEM");
+
+        // owner exits → region is freed; peer's access is revoked.
+        k.service_syscall(owner, &proc_exit_req(0));
+        assert_eq!(read_u16(&k.service_syscall(peer, &shm_read_req(id, 8, 10)).reply.unwrap()), 76);
     }
 }

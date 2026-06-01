@@ -77,6 +77,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "shmdemo"
+version = "0.0.0"
+dependencies = [
+ "wasmos-sys",
+]
+
+[[package]]
 name = "spinner"
 version = "0.0.0"
 

@@ -10,6 +10,7 @@ pub mod chan;
 pub mod kcore;
 pub mod pipe;
 pub mod sched;
+pub mod shm;
 pub mod syscall;
 pub mod types;
 pub mod vfs;
