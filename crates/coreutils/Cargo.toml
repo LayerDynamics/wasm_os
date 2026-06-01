@@ -73,5 +73,15 @@ path = "src/bin/kill.rs"
 name = "renice"
 path = "src/bin/renice.rs"
 
+# ps / top — snapshot the live process table via the proc_list syscall (M4-T7).
+# Read-only (no capability needed); ps orders by PID, top by CPU activity.
+[[bin]]
+name = "ps"
+path = "src/bin/ps.rs"
+
+[[bin]]
+name = "top"
+path = "src/bin/top.rs"
+
 [dependencies]
 wasmos-sys = { path = "../wasmos-sys" }
