@@ -7,7 +7,8 @@ use crate::pipe::PipeTable;
 use crate::sched::Scheduler;
 use crate::syscall;
 use crate::types::{
-    Backend, Capability, CapabilitySet, DescKind, ProcInfo, ProcState, ProcTable, Rights, WaitReason,
+    Backend, Capability, CapabilitySet, DescKind, ProcInfo, ProcKind, ProcState, ProcTable, Rights,
+    WaitReason,
 };
 use crate::vfs::{Blockstore, FsError, Vfs};
 
@@ -26,6 +27,9 @@ pub struct KernelCore {
     pipes: PipeTable,
     chans: crate::chan::ChannelTable,
     shm: crate::shm::ShmTable,
+    /// The privileged emulator process (M5), if one is running — special-cased by
+    /// the scheduler (run-to-budget, FR-28).
+    emulator_pid: Option<u32>,
     booted: bool,
 }
 
@@ -38,6 +42,7 @@ impl KernelCore {
             pipes: PipeTable::new(),
             chans: crate::chan::ChannelTable::new(),
             shm: crate::shm::ShmTable::new(),
+            emulator_pid: None,
             booted: false,
         }
     }
@@ -162,6 +167,38 @@ impl KernelCore {
         self.procs.set_state(pid, ProcState::Ready);
         self.sched.enqueue(pid, USER_PRIORITY);
         pid
+    }
+
+    /// Register the **privileged emulator process** (M5, FR-27/FR-28): a `Native`
+    /// process that runs its own CPU loop in a dedicated host worker rather than
+    /// making WASI syscalls over the ring. It is a first-class PID — it appears in
+    /// `proc_list`/`top`, holds a capability set (Gpu+Input+Net+FS for the
+    /// framebuffer, brokered input, image fetch, and the 9p shared folder), and is
+    /// killable via the normal signal/reap path — but is **never** enqueued on the
+    /// ring scheduler. It is marked `Running` (it runs continuously in its worker)
+    /// and special-cased for run-to-budget accounting (T5). Isolation (FR-6) holds:
+    /// it is a separate worker with no access to other processes' memory.
+    pub fn spawn_emulator(&mut self, name: &str) -> u32 {
+        let mut caps = CapabilitySet::default();
+        caps.grant(Capability::FsPath { subtree: "/".into(), rights: Rights::RWX });
+        caps.grant(Capability::Gpu);
+        caps.grant(Capability::Input);
+        caps.grant(Capability::Net);
+        let pid = self.procs.spawn(name, USER_PRIORITY, caps);
+        self.procs.set_kind(pid, ProcKind::Native);
+        self.procs.set_state(pid, ProcState::Running);
+        self.emulator_pid = Some(pid);
+        pid
+    }
+
+    /// The running emulator process's pid, if any (M5 scheduling/lifecycle).
+    pub fn emulator_pid(&self) -> Option<u32> {
+        self.emulator_pid
+    }
+
+    /// The execution kind of a process (M5 — `Native` for the emulator).
+    pub fn proc_kind(&self, pid: u32) -> ProcKind {
+        self.procs.kind_of(pid)
     }
 
     /// Route one syscall for `pid` (FR-4). Returns a [`syscall::SyscallOutcome`]
@@ -943,5 +980,37 @@ mod tests {
             k.list_procs().iter().find(|i| i.pid == victim).unwrap().state.as_str(),
             "zombie"
         );
+    }
+
+    // --- M5-T2: the emulator as a privileged (Native, non-ring) process ---
+
+    #[test]
+    fn emulator_is_a_killable_native_process_in_proc_list_and_isolated() {
+        let mut k = core();
+        k.boot();
+        // A normal wasi process running alongside the emulator.
+        let peer = k.spawn("peer", Some(("/", Rights::RW)), false, false, false);
+
+        // Register the privileged emulator process.
+        let emu = k.spawn_emulator("linux");
+        assert_eq!(k.emulator_pid(), Some(emu));
+        assert_eq!(k.proc_kind(emu), crate::types::ProcKind::Native);
+
+        // It is a first-class PID in proc_list, shown running.
+        let me = k.list_procs().into_iter().find(|i| i.pid == emu).unwrap();
+        assert_eq!(me.state.as_str(), "running");
+        assert_eq!(me.name, "linux");
+
+        // The System Monitor (Signal-capable) reaps it from `top`.
+        let mon = k.spawn("sysmon", None, false, false, false);
+        k.grant_signal(mon);
+        let killed = k.service_syscall(mon, &kill_req(emu, 9));
+        assert_eq!(read_u16(&killed.reply.unwrap()), 0);
+        assert_eq!(killed.reap, vec![emu]); // host tears down the emulator worker
+
+        // The emulator is reaped; the unrelated peer is untouched (FR-6 isolation).
+        let infos = k.list_procs();
+        assert_eq!(infos.iter().find(|i| i.pid == emu).unwrap().state.as_str(), "zombie");
+        assert_ne!(infos.iter().find(|i| i.pid == peer).unwrap().state.as_str(), "zombie");
     }
 }

@@ -165,6 +165,10 @@ mod component {
             })
         }
 
+        fn spawn_emulator(name: String) -> u32 {
+            KERNEL.with(|k| k.borrow_mut().spawn_emulator(&name))
+        }
+
         fn service_syscall(pid: u32, request: Vec<u8>) -> WSyscallOutcome {
             let out = KERNEL.with(|k| k.borrow_mut().service_syscall(pid, &request));
             WSyscallOutcome {

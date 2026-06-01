@@ -73,6 +73,12 @@ interface control {
   /// the guest, then drives syscalls in via service-syscall.
   spawn: func(spec: spawn-spec) -> u32;
 
+  /// Register the privileged emulator process (M5, FR-27/FR-28): a Native process
+  /// (Gpu+Input+Net+FS caps) that runs its own CPU loop in a dedicated host worker
+  /// — never pumped by the ring, but a first-class killable PID in proc-list.
+  /// Returns its pid; the host then creates the emulator worker and boots it.
+  spawn-emulator: func(name: string) -> u32;
+
   /// A child the kernel registered (via guest spawn) that the kworker must now
   /// instantiate: load `image-path` from the VFS and create its worker + ring.
   record spawn-request {

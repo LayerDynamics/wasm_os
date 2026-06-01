@@ -22,6 +22,7 @@ import type { ExitMessage } from "./process-worker.js";
 
 const ABI_BASE = "/packages/abi/generated";
 const PROCESS_WORKER_URL = "/dist/worker/process-worker.js";
+const EMULATOR_WORKER_URL = "/dist/worker/emulator-worker.js";
 
 type Backend = "tmpfs" | "opfs" | "idb";
 interface SpawnSpec {
@@ -43,6 +44,7 @@ interface KernelControl {
   fsDelete(path: string): void;
   listProcs(): Array<{ pid: number; name: string; state: string }>;
   spawn(spec: SpawnSpec): number;
+  spawnEmulator(name: string): number;
   serviceSyscall(pid: number, request: Uint8Array): SyscallOutcome;
   deliverStdin(pid: number, bytes: Uint8Array): Uint32Array;
   deliverInput(pid: number, bytes: Uint8Array): Uint32Array;
@@ -93,6 +95,25 @@ interface ProcRuntime {
   waiters: Array<(exitCode: number) => void>;
 }
 const procs = new Map<number, ProcRuntime>();
+
+/** Boot options for the emulator worker (same-origin asset URLs + kernel cmdline). */
+interface EmulatorBoot {
+  wasmPath: string;
+  bios: string;
+  vgaBios: string;
+  bzimage: string;
+  cmdline: string;
+  memoryMb?: number;
+}
+/** The privileged emulator process (M5): a Native process whose body is a dedicated
+ * v86 worker, tracked separately from the ring-driven `procs` so the wasi path is
+ * untouched. Killing it (window close or SIGKILL/reap) terminates this worker. */
+interface EmulatorRuntime {
+  worker: Worker;
+  serial: string;
+  exited: boolean;
+}
+const emulators = new Map<number, EmulatorRuntime>();
 
 /**
  * Parked syscalls (M2): a pid → the request bytes it parked on. While parked,
@@ -242,9 +263,51 @@ function onProcExit(pid: number, msg: ExitMessage): void {
  * (zombifies + releases pipes/surfaces + wakes waiters) then tears the worker
  * down via onProcExit. A no-op if the process already exited. */
 function killProcess(pid: number): void {
+  // The emulator (M5) is a Native process with no ring — reap its worker directly.
+  const emu = emulators.get(pid);
+  if (emu) {
+    reapEmulator(pid, emu);
+    return;
+  }
   const rt = procs.get(pid);
   if (!rt || rt.exited) return;
   onProcExit(pid, { pid, exit: { kind: "exit", code: 137 }, sharedMemory: rt.sharedMemory });
+}
+
+/** Register + boot the privileged emulator process (M5, FR-27/FR-28): the kernel
+ * allocates a Native PID, then a dedicated v86 worker runs it. Serial output is
+ * relayed to the main thread; killing the PID terminates this worker. */
+function spawnEmulator(name: string, boot: EmulatorBoot): number {
+  const pid = requireControl().spawnEmulator(name);
+  const worker = new Worker(EMULATOR_WORKER_URL, { type: "module" });
+  const emu: EmulatorRuntime = { worker, serial: "", exited: false };
+  emulators.set(pid, emu);
+  worker.onmessage = (e: MessageEvent) => {
+    const d = e.data as { type?: string; text?: string };
+    if (d.type === "serial" && typeof d.text === "string") {
+      emu.serial = d.text;
+      ctx.postMessage({ type: "emulatorSerial", pid, text: d.text });
+    } else if (d.type === "started") {
+      ctx.postMessage({ type: "emulatorStarted", pid });
+    }
+  };
+  worker.postMessage({ type: "boot", ...boot });
+  return pid;
+}
+
+/** Tear down the emulator worker + zombify its PID in the kernel (M5 kill/reap). */
+function reapEmulator(pid: number, emu: EmulatorRuntime): void {
+  if (emu.exited) return;
+  emu.exited = true;
+  // If the kernel doesn't already know it exited (e.g. window-close, not SIGKILL),
+  // record it so proc_list zombifies it and any waiter wakes.
+  if (requireControl().exitCode(pid) === undefined) {
+    const outcome = requireControl().serviceSyscall(pid, encodeProcExit(137));
+    processWakeups(outcome.wakeups);
+  }
+  emu.worker.terminate();
+  for (const [sid, owner] of surfaceOwners) if (owner === pid) surfaceOwners.delete(sid);
+  ctx.postMessage({ type: "exit", pid });
 }
 
 /**
@@ -377,6 +440,9 @@ ctx.onmessage = async (ev: MessageEvent) => {
         break;
       case "spawn":
         result = spawn(args.spec as SpawnSpec, args.wasmBytes as ArrayBuffer);
+        break;
+      case "spawnEmulator":
+        result = spawnEmulator(args.name as string, args.boot as EmulatorBoot);
         break;
       case "wait":
         result = await waitFor(args.pid as number);

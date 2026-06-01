@@ -186,12 +186,25 @@ pub enum WaitReason {
     SigWait,
 }
 
+/// What drives a process (M5). Most processes are `Wasi` guests pumped by the SAB
+/// syscall ring. The emulator (L5) is a `Native` privileged process: it runs its
+/// own CPU loop in a dedicated worker, makes no WASI syscalls, and is scheduled
+/// run-to-budget (FR-28) — but is still a first-class PID in the table: it appears
+/// in `proc_list`/`top`, holds a capability set, and is killable.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum ProcKind {
+    #[default]
+    Wasi,
+    Native,
+}
+
 /// A process table entry. `caps` is the owning capability set (FR-2); `fds` is
 /// the per-process descriptor table (FR-4) — isolated from every other process.
 #[derive(Clone, Debug)]
 pub struct Process {
     pub pid: u32,
     pub name: String,
+    pub kind: ProcKind,
     pub state: ProcState,
     pub priority: u8,
     pub caps: CapabilitySet,
@@ -311,6 +324,7 @@ impl ProcTable {
         self.procs.push(Process {
             pid,
             name: name.to_string(),
+            kind: ProcKind::Wasi,
             state: ProcState::New,
             priority,
             caps,
@@ -351,6 +365,18 @@ impl ProcTable {
 
     pub fn get(&self, pid: u32) -> Option<&Process> {
         self.procs.iter().find(|p| p.pid == pid)
+    }
+
+    /// Mark a process's execution kind (M5 — the emulator is `Native`).
+    pub fn set_kind(&mut self, pid: u32, kind: ProcKind) {
+        if let Some(p) = self.get_mut(pid) {
+            p.kind = kind;
+        }
+    }
+
+    /// The execution kind of `pid` (defaults `Wasi` for an unknown pid).
+    pub fn kind_of(&self, pid: u32) -> ProcKind {
+        self.get(pid).map(|p| p.kind).unwrap_or(ProcKind::Wasi)
     }
 
     fn get_mut(&mut self, pid: u32) -> Option<&mut Process> {
