@@ -237,6 +237,9 @@ impl KernelCore {
         }
         let target = u32::from_le_bytes([req[1], req[2], req[3], req[4]]);
         let prio = req[5];
+        if self.procs.get(target).is_none() {
+            return err(syscall::errno::SRCH);
+        }
         if target != pid && !self.procs.has_cap(pid, &Capability::Signal) {
             return err(syscall::errno::NOTCAPABLE);
         }

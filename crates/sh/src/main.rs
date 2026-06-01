@@ -195,7 +195,7 @@ fn run_pipeline(stages: &[Stage], cwd: &str) -> i32 {
         // Coreutils don't draw: no Gpu/Input delegation. The `kill` coreutil is
         // the exception — the shell delegates its Signal capability so `/bin/kill`
         // (used in pipelines / by full path) can signal other processes (M4-T5).
-        let want_signal = prog == "kill" || path.ends_with("/kill");
+        let want_signal = matches!(prog, "kill" | "renice") || path.ends_with("/kill") || path.ends_with("/renice");
         match spawn(&path, &stage.argv, &[stdin, stdout, Stdio::Terminal], cwd, false, false, want_signal) {
             Ok(pid) => pids.push(Some(pid)),
             Err(_) => {

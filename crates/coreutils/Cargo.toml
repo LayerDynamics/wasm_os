@@ -67,5 +67,11 @@ path = "src/bin/env.rs"
 name = "kill"
 path = "src/bin/kill.rs"
 
+# renice — change a process's scheduling priority (M4-T6). Like kill it needs the
+# wasmos_kernel set_priority syscall + a delegated Signal capability.
+[[bin]]
+name = "renice"
+path = "src/bin/renice.rs"
+
 [dependencies]
 wasmos-sys = { path = "../wasmos-sys" }
