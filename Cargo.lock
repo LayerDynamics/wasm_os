@@ -98,6 +98,14 @@ name = "spinner"
 version = "0.0.0"
 
 [[package]]
+name = "sysmon"
+version = "0.0.0"
+dependencies = [
+ "wasmgfx",
+ "wasmos-sys",
+]
+
+[[package]]
 name = "wasmgfx"
 version = "0.0.0"
 

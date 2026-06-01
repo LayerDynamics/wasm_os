@@ -16,7 +16,7 @@ const BIN = [
   "echo.zig", "crash",
   // M3 graphical apps (canvas surfaces); launchable from the file manager.
   // "mandelbrot" is the Zig polyglot app (FR-14 on the graphics path).
-  "gfxspike", "filemanager", "paint", "editor", "mandelbrot", "spinner", "chandemo", "shmdemo", "sigdemo", "kill", "renice", "ps", "top",
+  "gfxspike", "filemanager", "paint", "editor", "mandelbrot", "sysmon", "spinner", "chandemo", "shmdemo", "sigdemo", "kill", "renice", "ps", "top",
 ];
 const GUESTS = "/packages/host/guests";
 
@@ -95,13 +95,15 @@ async function main() {
   control.onExit((pid) => compositor.closeByOwner(pid));
 
   // Taskbar launcher: spawn each graphical app with its minimal capability set.
-  const launch = (name: string, opts: { grantGpu?: boolean; grantInput?: boolean; grantSpawn?: boolean; grantFsSubtree?: string }) =>
+  const launch = (name: string, opts: { grantGpu?: boolean; grantInput?: boolean; grantSpawn?: boolean; grantSignal?: boolean; grantFsSubtree?: string }) =>
     void control.spawn(bins[name]!, { name, ...opts });
   compositor.setLauncherApps([
     { label: "Files", launch: () => launch("filemanager", { grantGpu: true, grantInput: true, grantSpawn: true, grantFsSubtree: "/" }) },
     { label: "Paint", launch: () => launch("paint", { grantGpu: true, grantInput: true, grantFsSubtree: "/" }) },
     { label: "Editor", launch: () => launch("editor", { grantGpu: true, grantInput: true, grantFsSubtree: "/" }) },
     { label: "Mandelbrot", launch: () => launch("mandelbrot", { grantGpu: true, grantInput: true }) },
+    // System Monitor needs Signal (process control) in addition to Gpu+Input.
+    { label: "Monitor", launch: () => launch("sysmon", { grantGpu: true, grantInput: true, grantSignal: true }) },
   ]);
 
   const termWin = compositor.open({ title: "Terminal — sh", width: 724, height: 460, ownerPid: shellPid, surface: "dom" });
