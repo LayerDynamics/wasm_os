@@ -40,26 +40,39 @@ export function attachTerminal(
   // Kernel → terminal.
   control.onOutput((_pid, bytes) => write(dec.decode(bytes)));
 
-  // Terminal → kernel (local echo, then deliver to the shell's stdin).
+  // Terminal → kernel: a minimal line discipline (local echo + Backspace), then
+  // deliver to the shell's stdin. Only ordinary line input reaches the shell:
+  //   • Enter (CR)       → echo CRLF, send "\n", reset the line.
+  //   • Backspace / DEL  → visually erase the last typed char (never into the
+  //                        prompt) and send DEL so the shell drops it from its line.
+  //   • printable text    → echoed and forwarded verbatim.
+  //   • everything else   → dropped. Escape sequences (arrows/F-keys) would corrupt
+  //                        xterm's own parser if echoed, and raw control bytes would
+  //                        be pushed into the command by the line-oriented shell.
   //
-  // We must NOT blindly echo raw input back into xterm: pressing an arrow/function
-  // key makes xterm emit an escape sequence (e.g. ESC[A), and writing that straight
-  // back into xterm's own parser produces "Parsing error" spam. The shell is also
-  // line-oriented and has no use for cursor-movement keys. So:
-  //   • Enter (CR)         → echo CRLF, send "\n" to the shell.
-  //   • escape sequences   → dropped (not echoed, not forwarded).
-  //   • printable text      → echoed and forwarded verbatim.
-  //   • other control bytes → forwarded to the shell (e.g. Ctrl-C) but not echoed.
+  // `lineLen` tracks how many chars the user has typed on the CURRENT input line so
+  // Backspace erases only that, staying in lockstep with the shell's line buffer.
   const isPrintable = (s: string) =>
     s.length > 0 && [...s].every((ch) => { const c = ch.charCodeAt(0); return c >= 0x20 && c !== 0x7f; });
+  let lineLen = 0;
   term.onData((data) => {
     if (data === "\r") {
       write("\r\n");
+      lineLen = 0;
       void control.stdin(shellPid, enc.encode("\n"));
       return;
     }
-    if (data.charCodeAt(0) === 0x1b) return; // ESC-prefixed: arrows, F-keys, etc.
-    if (isPrintable(data)) write(data);
+    if (data === "\x7f" || data === "\b") {
+      if (lineLen > 0) {
+        write("\b \b"); // cursor back, overwrite with space, cursor back
+        lineLen -= 1;
+        void control.stdin(shellPid, enc.encode("\x7f"));
+      }
+      return;
+    }
+    if (!isPrintable(data)) return; // ESC sequences + other control bytes
+    write(data);
+    lineLen += [...data].length;
     void control.stdin(shellPid, enc.encode(data));
   });
 
