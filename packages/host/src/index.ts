@@ -66,7 +66,21 @@ function keyEventToConsoleText(bytes: Uint8Array): string {
   }
 }
 
-async function main() {
+/** Options for {@link startDesktop} — lets a host shell (e.g. the React client in
+ * apps/web) supply its own container elements + a status callback. All optional;
+ * they default to the `#desktop`/`#taskbar`/`#status` DOM ids of the plain entry. */
+export interface StartOptions {
+  desktop?: HTMLElement;
+  taskbar?: HTMLElement;
+  /** Called with the boot status line (the React shell renders it as chrome). */
+  onStatus?: (text: string) => void;
+}
+
+/** Boot the kernel + bring up the full WASM_OS desktop (compositor, terminal,
+ * surfaces, input brokering, session restore, the app launcher) into the given
+ * containers. Returns the ready state (also published on `window.__wasmos`). This
+ * is the single entry both the plain bundle and the React client call. */
+export async function startDesktop(opts: StartOptions = {}): Promise<ReadyState> {
   const result = await boot();
   // Capture full cold-load (navigation start → kernel ready) BEFORE the userland
   // spins up, so this stays comparable to M0/M1.
@@ -88,8 +102,8 @@ async function main() {
   // Bring up the desktop compositor and run the terminal inside its first window
   // (a DOM surface). The content host keeps id="terminal" so xterm sizing + the
   // existing E2E selectors continue to work under the compositor.
-  const desktop = document.getElementById("desktop") ?? document.body;
-  const taskbarEl = document.getElementById("taskbar") ?? document.body;
+  const desktop = opts.desktop ?? document.getElementById("desktop") ?? document.body;
+  const taskbarEl = opts.taskbar ?? document.getElementById("taskbar") ?? document.body;
   const compositor = new Compositor(desktop, taskbarEl);
 
   // Desktop theme + wallpaper, persisted to /home (FR-26); applied on boot.
@@ -176,9 +190,11 @@ async function main() {
   const state: ReadyState = { ...result, coldLoadMillis, shellPid, term, compositor, surfaces, session };
   window.__wasmos = state;
 
+  const statusText = `ready in ${coldLoadMillis}ms · tier ${result.features.tier} · shell pid ${shellPid}`;
+  opts.onStatus?.(statusText);
   const status = document.getElementById("status");
   if (status) {
-    status.textContent = `ready in ${coldLoadMillis}ms · tier ${result.features.tier} · shell pid ${shellPid}`;
+    status.textContent = statusText;
   }
   window.dispatchEvent(
     new CustomEvent("wasmos:ready", { detail: { bootMillis: result.bootMillis, coldLoadMillis, features: result.features } }),
@@ -187,10 +203,5 @@ async function main() {
   // Re-open the apps from the previous session (FR-35). Fire-and-forget: their
   // windows stream in as each process boots and requests its surface.
   void session.restore();
+  return state;
 }
-
-main().catch((e) => {
-  const el = document.getElementById("status");
-  if (el) el.textContent = `boot failed: ${String(e)}`;
-  throw e;
-});

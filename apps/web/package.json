@@ -1,0 +1,23 @@
+{
+  "name": "@wasmos/web",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The WASM_OS web client — a React application that boots the kernel and runs the full desktop (compositor, terminal, apps, emulator) in the browser. It reuses the proven host runtime (@wasmos/host startDesktop) and renders the OS shell as React.",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@wasmos/host": "*",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.3",
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "^4.3.1",
+    "vite": "^5.4.10"
+  }
+}

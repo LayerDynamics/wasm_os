@@ -4,6 +4,7 @@
   "type": "module",
   "workspaces": [
     "packages/*",
+    "apps/web",
     "tools/binder"
   ],
   "scripts": {
@@ -14,7 +15,7 @@
     "build:guests": "cargo build -p hello -p crash -p catfile -p sh -p coreutils -p gfxspike -p filemanager -p paint -p editor -p sysmon -p lisp -p spinner -p chandemo -p shmdemo -p sigdemo --target wasm32-wasip1 --release && mkdir -p packages/host/guests && for b in hello crash catfile sh echo cat grep ls wc cp mv rm mkdir pwd head tail env kill renice ps top fetch gfxspike filemanager paint editor sysmon lisp spinner chandemo shmdemo sigdemo; do cp target/wasm32-wasip1/release/$b.wasm packages/host/guests/; done && npm run build:guests:zig",
     "build:guests:zig": "zig build-exe guests/zig/echo.zig -target wasm32-wasi -O ReleaseSmall -femit-bin=packages/host/guests/echo.zig.wasm && zig build-exe guests/zig/mandelbrot.zig -target wasm32-wasi -O ReleaseFast -femit-bin=packages/host/guests/mandelbrot.wasm",
     "build": "npm run build:kernel && npm run binder gen",
-    "bundle": "esbuild packages/host/src/index.ts packages/host/src/worker/kernel-worker.ts packages/host/src/worker/process-worker.ts packages/host/src/worker/emulator-worker.ts --bundle --format=esm --outdir=dist --external:/third_party/v86/libv86.mjs",
+    "bundle": "esbuild packages/host/src/main.ts packages/host/src/worker/kernel-worker.ts packages/host/src/worker/process-worker.ts packages/host/src/worker/emulator-worker.ts --bundle --format=esm --outdir=dist --external:/third_party/v86/libv86.mjs",
     "bundle:harness": "esbuild packages/host/src/test-harness.ts --bundle --format=esm --outfile=dist/test-harness.js",
     "typecheck": "tsc -p packages/host/tsconfig.json --noEmit",
     "lint": "cargo clippy --workspace --all-targets -- -D warnings && cargo clippy -p kernel --target wasm32-unknown-unknown --release -- -D warnings",
@@ -22,7 +23,10 @@
     "test:host": "vitest run",
     "test:e2e": "playwright test --project=fast",
     "verify": "npm run build && npm run build:guests && npm run binder:kernel-check && npm run lint && npm run typecheck && npm run test:rust && npm run test:host && npm run test:e2e",
-    "test:e2e:slow": "playwright test --project=slow"
+    "test:e2e:slow": "playwright test --project=slow",
+    "dev:web": "npm run build && npm run build:guests && npm run bundle && npm -w @wasmos/web run dev",
+    "build:web": "npm -w @wasmos/web run build",
+    "typecheck:web": "tsc -p apps/web/tsconfig.json --noEmit"
   },
   "devDependencies": {
     "@bytecodealliance/jco": "^1.4.0",

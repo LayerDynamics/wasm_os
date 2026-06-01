@@ -39,3 +39,6 @@ crates/kernel/src/bindings.rs
 # Local-only / session + scratch
 development/reference_only
 .claude/
+
+# Vite production build of the web client (build output)
+apps/web/dist

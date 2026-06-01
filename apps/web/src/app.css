@@ -1,0 +1,76 @@
+html,
+body,
+#root {
+  margin: 0;
+  height: 100%;
+  background: #000;
+  color: #eee;
+  font-family: system-ui, -apple-system, "Segoe UI", monospace;
+  overflow: hidden;
+}
+
+.wasmos-root {
+  position: relative;
+  height: 100vh;
+  width: 100vw;
+}
+
+/* The compositor renders its windows into the desktop container; the taskbar host
+ * receives the compositor's taskbar. Their internal styling comes from the host's
+ * compositor.css (imported by @wasmos/host). */
+.wasmos-desktop {
+  position: absolute;
+  inset: 0;
+}
+
+/* Boot status readout in the corner (matches the plain entry's #status). */
+.wasmos-status {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  z-index: 9999;
+  margin: 0;
+  padding: 2px 8px;
+  font-size: 11px;
+  color: #8f8;
+  background: rgba(0, 0, 0, 0.5);
+  border-radius: 4px;
+  pointer-events: none;
+}
+.wasmos-status-error {
+  color: #f88;
+}
+
+/* Full-screen boot splash shown until the kernel is ready (or on a boot failure). */
+.wasmos-bootsplash {
+  position: absolute;
+  inset: 0;
+  z-index: 9998;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  background: radial-gradient(ellipse at center, #1a1426 0%, #07060c 70%);
+  color: #d6d9df;
+  user-select: none;
+}
+.wasmos-bootsplash-logo {
+  font-size: 44px;
+  font-weight: 800;
+  letter-spacing: 4px;
+  color: #b794f6;
+  text-shadow: 0 0 24px rgba(150, 110, 230, 0.45);
+}
+.wasmos-bootsplash-sub {
+  font-size: 13px;
+  color: #8c92a3;
+}
+.wasmos-bootsplash-status {
+  margin-top: 6px;
+  font-size: 12px;
+  color: #7ed68e;
+}
+.wasmos-bootsplash-error .wasmos-bootsplash-status {
+  color: #f88;
+}
