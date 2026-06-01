@@ -58,8 +58,13 @@ let screenCtx: OffscreenCanvasRenderingContext2D | undefined;
 let fbSab: SharedArrayBuffer | undefined;
 let fbView: Uint8Array | undefined;
 let renderQueued = false;
+/** The framebuffer surface (window) is opened exactly once; transient console mode
+ * changes during boot must not spawn extra windows (M5-T4/T9). */
+let surfacePosted = false;
 
 function initScreen(): void {
+  if (surfacePosted) return; // post the framebuffer surface (open the window) once
+  surfacePosted = true;
   const w = cols * CELL_W;
   const h = rows * CELL_H;
   screen = new OffscreenCanvas(w, h);
@@ -163,12 +168,13 @@ function boot(m: BootMessage): void {
   // Framebuffer (M5-T4): mirror the VGA text console into the shared RGBA surface.
   initScreen();
   emulator.add_listener("screen-set-size", (([w, h, bpp]: [number, number, number]) => {
-    // Text mode only (bpp 0). Re-init if the console resized before any drawing.
-    if (bpp === 0 && w > 0 && h > 0 && w <= 240 && h <= 100 && (w !== cols || h !== rows)) {
+    // Adopt the guest's text dimensions ONCE, before the window opens; after the
+    // surface is locked, ignore transient mode changes (they must not resize the
+    // window or spawn extra ones — M5-T9).
+    if (!surfacePosted && bpp === 0 && w > 0 && h > 0 && w <= 240 && h <= 100) {
       cols = w;
       rows = h;
       grid = new Uint16Array(cols * rows).fill(32);
-      initScreen();
     }
   }) as (a: never) => void);
   emulator.add_listener("screen-put-char", (([row, col, chr]: [number, number, number]) => {

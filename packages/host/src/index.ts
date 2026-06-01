@@ -153,14 +153,17 @@ async function main() {
   for (const app of APPS) {
     session.register(app.name, () => control.spawn(bins[app.name]!, { name: app.name, ...app.opts }));
   }
-  // Launch the privileged emulator process (M5): boots real Linux into a window.
-  const launchLinux = async () => {
+  // The privileged emulator process (M5): boots real Linux into a window. Registered
+  // with the SessionManager so it is part of the session (re-opens on reload, FR-35);
+  // its window is tagged "linux" and its keystrokes route to the guest console.
+  session.register("linux", async () => {
     const pid = await control.spawnEmulator({ name: "linux", bzimage: "/assets/linux/buildroot-bzimage.bin" });
     emulatorPids.add(pid);
-  };
+    return pid;
+  });
   compositor.setLauncherApps([
     ...APPS.map((a) => ({ label: a.label, launch: () => void session.launch(a.name) })),
-    { label: "Linux", launch: () => void launchLinux() },
+    { label: "Linux", launch: () => void session.launch("linux") },
   ]);
 
   const termWin = compositor.open({ title: "Terminal — sh", width: 724, height: 460, ownerPid: shellPid, surface: "dom" });
