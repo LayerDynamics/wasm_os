@@ -84,6 +84,11 @@ interface process {
   /// Block until at least one signal is pending, then drain + return them
   /// (zero-CPU cooperative delivery). A guest loops on this to handle SIGTERM.
   sig-wait: func() -> list<u8>;
+
+  /// Brokered network request (M5-T6, OQ-2): fetch `url` via the host and return
+  /// the response body. Requires the Net capability (default-deny). Blocks until
+  /// the fetch completes; an error result carries the kernel errno (IO on failure).
+  net-request: func(url: string) -> result<list<u8>, u16>;
 }
 
 /// The wasmos_kernel compositor extension (M3) — the guest surface + input

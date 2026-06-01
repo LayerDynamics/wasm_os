@@ -83,5 +83,11 @@ path = "src/bin/ps.rs"
 name = "top"
 path = "src/bin/top.rs"
 
+# fetch — brokered networking via the net_request syscall (M5-T6). Needs a
+# delegated Net capability, like kill/renice need Signal.
+[[bin]]
+name = "fetch"
+path = "src/bin/fetch.rs"
+
 [dependencies]
 wasmos-sys = { path = "../wasmos-sys" }

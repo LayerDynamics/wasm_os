@@ -66,6 +66,9 @@ interface control {
     /// Grant the Signal capability — process-control authority (the `kill`
     /// builtin signals other processes, M4-T5). Default-deny; the shell holds it.
     grant-signal: bool,
+    /// Grant the Net capability — brokered networking (the `fetch` coreutil, M5-T6).
+    /// Default-deny; the shell holds it and delegates it to `fetch`.
+    grant-net: bool,
   }
 
   /// Allocate a process: PID + per-process fd table (0/1/2 preopened) + capset.
@@ -108,7 +111,21 @@ interface control {
     /// pids the kworker must force-terminate (SIGKILL, M4-T5): the kernel has
     /// already zombified them; the host tears down their worker + ring.
     reap: list<u32>,
+    /// set when the caller parked on `net_request` (M5-T6): the kworker performs
+    /// the brokered fetch and returns the body via `deliver-net`.
+    net: option<net-request>,
   }
+
+  /// A capability-gated network request the kworker must broker (M5-T6, OQ-2).
+  record net-request {
+    pid: u32,
+    url: string,
+  }
+
+  /// Deliver a brokered fetch response to a parked `net_request` caller (M5-T6).
+  /// `ok` false signals a fetch failure (the guest sees errno IO). Returns the
+  /// pids whose parked requests are now runnable.
+  deliver-net: func(pid: u32, ok: bool, body: list<u8>) -> list<u32>;
 
   /// Route one WASI Preview 1 (or wasmos_kernel) syscall for `pid`. `request`
   /// is the binary wire format (see crates/kernel/src/syscall.rs). All

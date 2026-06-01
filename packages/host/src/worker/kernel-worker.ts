@@ -32,6 +32,7 @@ interface SpawnSpec {
   grantGpu: boolean;
   grantInput: boolean;
   grantSignal: boolean;
+  grantNet: boolean;
 }
 
 /** Synchronous kernel control surface (jco-generated export shape). */
@@ -46,6 +47,7 @@ interface KernelControl {
   spawn(spec: SpawnSpec): number;
   spawnEmulator(name: string): number;
   accountEmulator(pid: number, ticks: bigint): void;
+  deliverNet(pid: number, ok: boolean, body: Uint8Array): Uint32Array;
   serviceSyscall(pid: number, request: Uint8Array): SyscallOutcome;
   deliverStdin(pid: number, bytes: Uint8Array): Uint32Array;
   deliverInput(pid: number, bytes: Uint8Array): Uint32Array;
@@ -64,6 +66,8 @@ interface SyscallOutcome {
   spawn?: { pid: number; imagePath: string };
   /** pids the kworker must force-terminate (SIGKILL, M4-T5). */
   reap: Uint32Array;
+  /** Set when a guest parked on net_request (M5-T6) — the kworker fetches the URL. */
+  net?: { pid: number; url: string };
 }
 
 interface KernelModule {
@@ -138,6 +142,7 @@ function driveSyscall(pid: number, request: Uint8Array): void {
     ctx.postMessage({ type: "output", pid, bytes: outcome.termOutput });
   }
   if (outcome.spawn) handleSpawnRequest(outcome.spawn);
+  if (outcome.net) handleNetRequest(outcome.net);
   if (outcome.reply === undefined) {
     parked.set(pid, request); // park — do NOT complete the ring
   } else {
@@ -169,6 +174,7 @@ function processWakeups(wakeups: Uint32Array | number[]): void {
       ctx.postMessage({ type: "output", pid: w, bytes: outcome.termOutput });
     }
     if (outcome.spawn) handleSpawnRequest(outcome.spawn);
+    if (outcome.net) handleNetRequest(outcome.net);
     if (outcome.reply === undefined) {
       parked.set(w, request); // parked again (e.g. wait on a not-yet-exited child)
     } else {
@@ -419,6 +425,19 @@ function spawn(spec: SpawnSpec, wasmBytes: ArrayBuffer): number {
 function handleSpawnRequest(req: { pid: number; imagePath: string }): void {
   const image = requireControl().fsRead(req.imagePath);
   instantiateProcess(req.pid, image);
+}
+
+/** Perform a guest's brokered network request (M5-T6): the kernel parked the
+ * caller after checking its Net capability; we fetch the URL and deliver the
+ * body back (waking the caller). A failure delivers ok=false (guest sees IO). */
+function handleNetRequest(req: { pid: number; url: string }): void {
+  void fetch(req.url)
+    .then((r) => r.arrayBuffer())
+    .then((buf) => requireControl().deliverNet(req.pid, true, new Uint8Array(buf)))
+    .catch(() => requireControl().deliverNet(req.pid, false, new Uint8Array()))
+    .then((wakeups) => {
+      if (wakeups) processWakeups(wakeups);
+    });
 }
 
 function waitFor(pid: number): Promise<{ exitCode: number; sharedMemory: boolean }> {

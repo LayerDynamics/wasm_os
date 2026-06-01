@@ -28,6 +28,8 @@ export interface SpawnOptions {
   grantInput?: boolean;
   /** Grant Signal — process-control authority for the `kill` builtin (M4-T5). */
   grantSignal?: boolean;
+  /** Grant Net — brokered networking for the `fetch` coreutil (M5-T6). */
+  grantNet?: boolean;
 }
 
 /** Options for launching the emulator process (M5). The v86 runtime + BIOS are
@@ -219,6 +221,7 @@ export async function boot(): Promise<BootResult> {
           grantGpu: opts?.grantGpu ?? false,
           grantInput: opts?.grantInput ?? false,
           grantSignal: opts?.grantSignal ?? false,
+          grantNet: opts?.grantNet ?? false,
         },
       }),
     spawnEmulator: (opts) =>

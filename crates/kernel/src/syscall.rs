@@ -40,6 +40,17 @@ pub struct SyscallOutcome {
     /// pids the kworker must force-terminate (SIGKILL, M4-T5): the kernel has
     /// already zombified them; the host tears down their worker + ring.
     pub reap: Vec<u32>,
+    /// A brokered network request (M5-T6, OQ-2): the caller parked on `net_request`
+    /// and the kworker must perform the fetch, then `deliver_net` the response.
+    pub net: Option<NetRequest>,
+}
+
+/// A capability-gated network request the kworker must broker (M5-T6, FR-NG-1):
+/// the kernel checked the `Net` capability; the host performs the actual fetch.
+#[derive(Clone, Debug)]
+pub struct NetRequest {
+    pub pid: u32,
+    pub url: String,
 }
 
 /// A child process the kernel registered, awaiting the kworker to instantiate it.
@@ -52,11 +63,11 @@ pub struct SpawnRequest {
 impl SyscallOutcome {
     /// A completed syscall with its reply bytes.
     pub fn ready(bytes: Vec<u8>) -> Self {
-        Self { reply: Some(bytes), wakeups: Vec::new(), term_output: Vec::new(), spawn: None, reap: Vec::new() }
+        Self { reply: Some(bytes), wakeups: Vec::new(), term_output: Vec::new(), spawn: None, reap: Vec::new(), net: None }
     }
     /// A parked syscall (no reply yet).
     pub fn parked() -> Self {
-        Self { reply: None, wakeups: Vec::new(), term_output: Vec::new(), spawn: None, reap: Vec::new() }
+        Self { reply: None, wakeups: Vec::new(), term_output: Vec::new(), spawn: None, reap: Vec::new(), net: None }
     }
 }
 
@@ -138,6 +149,7 @@ pub mod errno {
     pub const SUCCESS: u16 = 0;
     pub const ACCES: u16 = 2;
     pub const BADF: u16 = 8;
+    pub const IO: u16 = 29; // I/O error (M5-T6 net_request fetch failure)
     pub const EXIST: u16 = 20;
     pub const INVAL: u16 = 28;
     pub const ISDIR: u16 = 31;
@@ -403,6 +415,7 @@ fn fd_write(
                 term_output: data.to_vec(),
                 spawn: None,
                 reap: Vec::new(),
+                net: None,
             }
         }
         DescKind::PipeWrite { id } => {
@@ -418,7 +431,7 @@ fn fd_write(
             let n = pipes.write(id, data);
             // Wake any readers parked on this pipe.
             let wakeups = procs.take_blocked_on(&WaitReason::PipeRead(id));
-            SyscallOutcome { reply: Some(resp(errno::SUCCESS, n as u32)), wakeups, term_output: Vec::new(), spawn: None, reap: Vec::new() }
+            SyscallOutcome { reply: Some(resp(errno::SUCCESS, n as u32)), wakeups, term_output: Vec::new(), spawn: None, reap: Vec::new(), net: None }
         }
         DescKind::File { path } => {
             if !desc.rights.write {
@@ -474,7 +487,7 @@ fn fd_read(
                 let data = pipes.read(id, len as usize);
                 // Draining the pipe may unblock writers parked on a full buffer.
                 let wakeups = procs.take_blocked_on(&WaitReason::PipeWrite(id));
-                SyscallOutcome { reply: Some(ok(&data)), wakeups, term_output: Vec::new(), spawn: None, reap: Vec::new() }
+                SyscallOutcome { reply: Some(ok(&data)), wakeups, term_output: Vec::new(), spawn: None, reap: Vec::new(), net: None }
             } else if pipes.write_open(id) {
                 // Empty but writers remain — park until a write arrives.
                 procs.set_blocked(pid, WaitReason::PipeRead(id));
@@ -576,7 +589,7 @@ fn fd_close(
     } else {
         err_only(errno::BADF)
     };
-    SyscallOutcome { reply: Some(reply), wakeups, term_output: Vec::new(), spawn: None, reap: Vec::new() }
+    SyscallOutcome { reply: Some(reply), wakeups, term_output: Vec::new(), spawn: None, reap: Vec::new(), net: None }
 }
 
 fn path_open(vfs: &mut Vfs, procs: &mut ProcTable, pid: u32, r: &mut Reader) -> Vec<u8> {
@@ -781,7 +794,7 @@ fn proc_exit(procs: &mut ProcTable, pipes: &mut PipeTable, pid: u32, r: &mut Rea
 
     // Wake any parent parked in wait() on this child.
     wakeups.extend(procs.take_blocked_on(&WaitReason::Wait(pid)));
-    SyscallOutcome { reply: Some(err_only(errno::SUCCESS)), wakeups, term_output: Vec::new(), spawn: None, reap: Vec::new() }
+    SyscallOutcome { reply: Some(err_only(errno::SUCCESS)), wakeups, term_output: Vec::new(), spawn: None, reap: Vec::new(), net: None }
 }
 
 // ---------------------------------------------------------------------------
@@ -952,6 +965,7 @@ fn k_spawn(
     let want_gpu = r.u8().unwrap_or(0) != 0;
     let want_input = r.u8().unwrap_or(0) != 0;
     let want_signal = r.u8().unwrap_or(0) != 0;
+    let want_net = r.u8().unwrap_or(0) != 0;
 
     // The child inherits a broad FS grant (the shell's children operate on the
     // user's files); never Shm, never Spawn (only the shell/file-manager spawns).
@@ -967,6 +981,11 @@ fn k_spawn(
     // spawned `kill` so it can signal other processes — only if the shell holds it.
     if want_signal && procs.has_cap(pid, &Capability::Signal) {
         caps.grant(Capability::Signal);
+    }
+    // Net delegation (M5-T6): the shell hands brokered networking to a spawned
+    // `fetch` — only if the shell holds Net.
+    if want_net && procs.has_cap(pid, &Capability::Net) {
+        caps.grant(Capability::Net);
     }
     let name = path.rsplit('/').next().unwrap_or(&path).to_string();
     let child = procs.spawn(&name, SPAWN_PRIORITY, caps);
@@ -1021,6 +1040,7 @@ fn k_spawn(
         term_output: Vec::new(),
         spawn: Some(SpawnRequest { pid: child, image_path: path }),
         reap: Vec::new(),
+        net: None,
     }
 }
 

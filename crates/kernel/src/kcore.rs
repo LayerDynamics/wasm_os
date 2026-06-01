@@ -30,6 +30,9 @@ pub struct KernelCore {
     /// The privileged emulator process (M5), if one is running — special-cased by
     /// the scheduler (run-to-budget, FR-28).
     emulator_pid: Option<u32>,
+    /// Brokered `net_request` responses awaiting their parked caller (M5-T6):
+    /// `pid -> (ok, body)`. Filled by `deliver_net`, drained on the re-driven call.
+    net_responses: std::collections::BTreeMap<u32, (bool, Vec<u8>)>,
     booted: bool,
 }
 
@@ -43,6 +46,7 @@ impl KernelCore {
             chans: crate::chan::ChannelTable::new(),
             shm: crate::shm::ShmTable::new(),
             emulator_pid: None,
+            net_responses: std::collections::BTreeMap::new(),
             booted: false,
         }
     }
@@ -125,6 +129,12 @@ impl KernelCore {
     /// other processes, and the shell may delegate it to a spawned `kill`.
     pub fn grant_signal(&mut self, pid: u32) {
         self.procs.grant_cap(pid, Capability::Signal);
+    }
+
+    /// Confer the Net (brokered-networking) capability on a process after spawn
+    /// (M5-T6). The host grants it to the shell, which delegates it to `fetch`.
+    pub fn grant_net(&mut self, pid: u32) {
+        self.procs.grant_cap(pid, Capability::Net);
     }
     pub fn ready_count(&self) -> usize {
         self.sched.ready_len()
@@ -232,6 +242,7 @@ impl KernelCore {
             Some(0x39) => self.shm_grant_syscall(pid, req),
             Some(0x3A) => self.kill_syscall(pid, req),
             Some(0x3B) => self.sig_wait_syscall(pid),
+            Some(0x40) => self.net_request_syscall(pid, req),
             _ => {
                 let mut out =
                     syscall::dispatch(&mut self.vfs, &mut self.procs, &mut self.pipes, pid, req);
@@ -330,6 +341,7 @@ impl KernelCore {
             term_output: Vec::new(),
             spawn: None,
             reap: Vec::new(),
+            net: None,
         }
     }
 
@@ -518,6 +530,7 @@ impl KernelCore {
                     term_output: Vec::new(),
                     spawn: None,
                     reap: Vec::new(),
+                    net: None,
                 }
             }
             _ => err(syscall::errno::INVAL), // unsupported signal
@@ -537,6 +550,44 @@ impl KernelCore {
         b.extend_from_slice(&(sigs.len() as u32).to_le_bytes());
         b.extend_from_slice(&sigs);
         syscall::SyscallOutcome::ready(b)
+    }
+
+    // --- M5-T6: brokered networking (the Net capability, OQ-2) ---
+
+    /// `net_request(url)` — `[0x40][url bytes]`. Capability-gated (default-deny):
+    /// without `Net`, returns NOTCAPABLE immediately. Otherwise it parks on the
+    /// host's brokered fetch (the kernel cannot fetch) and the re-driven call drains
+    /// the response. Reply: `[errno u16][len u32][body]` (IO on a fetch failure).
+    fn net_request_syscall(&mut self, pid: u32, req: &[u8]) -> syscall::SyscallOutcome {
+        if !self.procs.has_cap(pid, &Capability::Net) {
+            return syscall::SyscallOutcome::ready(syscall::errno::NOTCAPABLE.to_le_bytes().to_vec());
+        }
+        // The host delivered the response → drain + return it.
+        if let Some((ok, body)) = self.net_responses.remove(&pid) {
+            let errno = if ok { syscall::errno::SUCCESS } else { syscall::errno::IO };
+            let mut b = errno.to_le_bytes().to_vec();
+            b.extend_from_slice(&(body.len() as u32).to_le_bytes());
+            b.extend_from_slice(&body);
+            return syscall::SyscallOutcome::ready(b);
+        }
+        // First call: park and ask the host to perform the fetch.
+        let url = String::from_utf8_lossy(&req[1..]).into_owned();
+        self.procs.set_blocked(pid, WaitReason::NetReq);
+        let mut out = syscall::SyscallOutcome::parked();
+        out.net = Some(syscall::NetRequest { pid, url });
+        out
+    }
+
+    /// The host delivers a brokered fetch response (M5-T6); buffer it and wake the
+    /// parked caller so its re-driven `net_request` returns the bytes.
+    pub fn deliver_net(&mut self, pid: u32, ok: bool, body: Vec<u8>) -> Vec<u32> {
+        self.net_responses.insert(pid, (ok, body));
+        if self.procs.blocked_on(pid) == Some(WaitReason::NetReq) {
+            self.procs.clear_blocked(pid);
+            vec![pid]
+        } else {
+            Vec::new()
+        }
     }
 
     /// Bind a process's stdout + stderr (fd 1/2) to the interactive terminal so
@@ -1022,5 +1073,37 @@ mod tests {
         let infos = k.list_procs();
         assert_eq!(infos.iter().find(|i| i.pid == emu).unwrap().state.as_str(), "zombie");
         assert_ne!(infos.iter().find(|i| i.pid == peer).unwrap().state.as_str(), "zombie");
+    }
+
+    // --- M5-T6: brokered networking (net_request) ---
+
+    #[test]
+    fn net_request_is_capability_gated_and_parks_until_delivered() {
+        let mut k = core();
+        k.boot();
+        let mut req = vec![0x40u8];
+        req.extend_from_slice(b"https://example/data");
+
+        // Default-deny: a process without Net cannot use the broker.
+        let nonet = k.spawn("nonet", Some(("/", Rights::RW)), false, false, false);
+        assert_eq!(read_u16(&k.service_syscall(nonet, &req).reply.unwrap()), 76); // NOTCAPABLE
+
+        // A Net-capable process parks and asks the host to perform the fetch.
+        let net = k.spawn_emulator("linux"); // the emulator holds Net
+        let out = k.service_syscall(net, &req);
+        assert!(out.reply.is_none());
+        let nr = out.net.expect("a brokered net request");
+        assert_eq!(nr.pid, net);
+        assert_eq!(nr.url, "https://example/data");
+
+        // The host delivers the response → wakes the parked caller.
+        let wakeups = k.deliver_net(net, true, b"HELLO-NET".to_vec());
+        assert_eq!(wakeups, vec![net]);
+
+        // The re-driven call returns [SUCCESS][len][body].
+        let r = k.service_syscall(net, &req).reply.unwrap();
+        assert_eq!(read_u16(&r), 0);
+        let len = u32::from_le_bytes([r[2], r[3], r[4], r[5]]) as usize;
+        assert_eq!(&r[6..6 + len], b"HELLO-NET");
     }
 }

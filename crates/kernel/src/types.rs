@@ -184,6 +184,9 @@ pub enum WaitReason {
     /// Blocked in `sig_wait()` with no pending signal; woken when one is delivered
     /// (M4-T5 — zero-CPU signal delivery, no busy-poll).
     SigWait,
+    /// Blocked in `net_request()` awaiting the host's brokered fetch response
+    /// (M5-T6 — woken by `deliver_net`).
+    NetReq,
 }
 
 /// What drives a process (M5). Most processes are `Wasi` guests pumped by the SAB

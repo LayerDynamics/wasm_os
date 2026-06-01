@@ -43,6 +43,7 @@ const SHM_WRITE: u8 = 0x38;
 const SHM_GRANT: u8 = 0x39;
 const KILL: u8 = 0x3A;
 const SIG_WAIT: u8 = 0x3B;
+const NET_REQUEST: u8 = 0x40;
 
 /// Signal numbers (M4-T5) — match POSIX. SIGTERM is catchable (cooperative
 /// shutdown via [`sig_wait`]); SIGKILL is uncatchable + forceful.
@@ -122,6 +123,9 @@ fn rd_u64(b: &[u8], at: usize) -> u64 {
 
 /// Spawn a child process from a VFS image with argv and stdio wiring. Returns
 /// the child PID, or the kernel errno on failure.
+// The grant_* flags mirror the kernel spawn wire format 1:1 (delegation bytes);
+// keeping them as positional args matches that format rather than hiding it.
+#[allow(clippy::too_many_arguments)]
 pub fn spawn(
     path: &str,
     argv: &[&str],
@@ -130,6 +134,7 @@ pub fn spawn(
     grant_gpu: bool,
     grant_input: bool,
     grant_signal: bool,
+    grant_net: bool,
 ) -> Result<u32, u16> {
     let mut w = W::new();
     w.u8(KSPAWN);
@@ -148,6 +153,7 @@ pub fn spawn(
     w.u8(grant_gpu as u8);
     w.u8(grant_input as u8);
     w.u8(grant_signal as u8);
+    w.u8(grant_net as u8);
     let resp = call(&w.0);
     let errno = rd_u16(&resp, 0);
     if errno != 0 {
@@ -532,4 +538,28 @@ pub fn sig_wait() -> Vec<u8> {
     }
     let count = rd_u32(&resp, 2) as usize;
     resp.get(6..6 + count).map(|s| s.to_vec()).unwrap_or_default()
+}
+
+// --- M5-T6: brokered networking (the Net capability, OQ-2) ---
+
+/// `net_request(url)` — fetch `url` through the host network broker (M5). Requires
+/// the Net capability (default-deny → NOTCAPABLE). Blocks until the fetch completes;
+/// returns the response body, or the kernel errno (IO on a fetch failure). The
+/// kernel cannot fetch — it parks the caller and the host performs the fetch.
+pub fn net_request(url: &str) -> Result<Vec<u8>, u16> {
+    let mut req = vec![NET_REQUEST];
+    req.extend_from_slice(url.as_bytes());
+    // A response can be large; use a generous buffer (one ring payload).
+    let mut resp = vec![0u8; 60 * 1024];
+    let n = unsafe { syscall(req.as_ptr(), req.len(), resp.as_mut_ptr(), resp.len()) };
+    resp.truncate(n.min(resp.len()));
+    if resp.len() < 6 {
+        return Err(rd_u16(&resp, 0));
+    }
+    let errno = rd_u16(&resp, 0);
+    if errno != 0 {
+        return Err(errno);
+    }
+    let len = rd_u32(&resp, 2) as usize;
+    Ok(resp.get(6..6 + len).map(|s| s.to_vec()).unwrap_or_default())
 }
