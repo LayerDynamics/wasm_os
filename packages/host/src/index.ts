@@ -16,7 +16,7 @@ const BIN = [
   "echo.zig", "crash",
   // M3 graphical apps (canvas surfaces); launchable from the file manager.
   // "mandelbrot" is the Zig polyglot app (FR-14 on the graphics path).
-  "gfxspike", "filemanager", "paint", "editor", "mandelbrot", "spinner", "chandemo", "shmdemo",
+  "gfxspike", "filemanager", "paint", "editor", "mandelbrot", "spinner", "chandemo", "shmdemo", "sigdemo", "kill",
 ];
 const GUESTS = "/packages/host/guests";
 
@@ -52,7 +52,12 @@ async function main() {
   // Populate /bin, then launch the shell as a terminal-bound process.
   const bins: Record<string, ArrayBuffer> = {};
   for (const name of BIN) bins[name] = await loadBin(control, name);
-  const shellPid = await control.spawn(bins.sh!, { name: "sh", grantSpawn: true, grantFsSubtree: "/" });
+  const shellPid = await control.spawn(bins.sh!, {
+    name: "sh",
+    grantSpawn: true,
+    grantFsSubtree: "/",
+    grantSignal: true, // the user's process-control authority: enables `kill` (M4-T5)
+  });
   await control.bindTerminal(shellPid);
 
   // Bring up the desktop compositor and run the terminal inside its first window

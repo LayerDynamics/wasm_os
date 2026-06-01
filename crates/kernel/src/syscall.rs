@@ -37,6 +37,9 @@ pub struct SyscallOutcome {
     /// A child the kernel allocated this syscall (KSPAWN) that the kworker must
     /// now bring to life — load the image from the VFS and create its worker+ring.
     pub spawn: Option<SpawnRequest>,
+    /// pids the kworker must force-terminate (SIGKILL, M4-T5): the kernel has
+    /// already zombified them; the host tears down their worker + ring.
+    pub reap: Vec<u32>,
 }
 
 /// A child process the kernel registered, awaiting the kworker to instantiate it.
@@ -49,11 +52,11 @@ pub struct SpawnRequest {
 impl SyscallOutcome {
     /// A completed syscall with its reply bytes.
     pub fn ready(bytes: Vec<u8>) -> Self {
-        Self { reply: Some(bytes), wakeups: Vec::new(), term_output: Vec::new(), spawn: None }
+        Self { reply: Some(bytes), wakeups: Vec::new(), term_output: Vec::new(), spawn: None, reap: Vec::new() }
     }
     /// A parked syscall (no reply yet).
     pub fn parked() -> Self {
-        Self { reply: None, wakeups: Vec::new(), term_output: Vec::new(), spawn: None }
+        Self { reply: None, wakeups: Vec::new(), term_output: Vec::new(), spawn: None, reap: Vec::new() }
     }
 }
 
@@ -143,6 +146,7 @@ pub mod errno {
     pub const NOTDIR: u16 = 54;
     pub const NOTEMPTY: u16 = 55;
     pub const PIPE: u16 = 64;
+    pub const SRCH: u16 = 71; // no such process (M4-T5 signals)
     pub const NOTCAPABLE: u16 = 76;
 }
 
@@ -398,6 +402,7 @@ fn fd_write(
                 wakeups: Vec::new(),
                 term_output: data.to_vec(),
                 spawn: None,
+                reap: Vec::new(),
             }
         }
         DescKind::PipeWrite { id } => {
@@ -413,7 +418,7 @@ fn fd_write(
             let n = pipes.write(id, data);
             // Wake any readers parked on this pipe.
             let wakeups = procs.take_blocked_on(&WaitReason::PipeRead(id));
-            SyscallOutcome { reply: Some(resp(errno::SUCCESS, n as u32)), wakeups, term_output: Vec::new(), spawn: None }
+            SyscallOutcome { reply: Some(resp(errno::SUCCESS, n as u32)), wakeups, term_output: Vec::new(), spawn: None, reap: Vec::new() }
         }
         DescKind::File { path } => {
             if !desc.rights.write {
@@ -469,7 +474,7 @@ fn fd_read(
                 let data = pipes.read(id, len as usize);
                 // Draining the pipe may unblock writers parked on a full buffer.
                 let wakeups = procs.take_blocked_on(&WaitReason::PipeWrite(id));
-                SyscallOutcome { reply: Some(ok(&data)), wakeups, term_output: Vec::new(), spawn: None }
+                SyscallOutcome { reply: Some(ok(&data)), wakeups, term_output: Vec::new(), spawn: None, reap: Vec::new() }
             } else if pipes.write_open(id) {
                 // Empty but writers remain — park until a write arrives.
                 procs.set_blocked(pid, WaitReason::PipeRead(id));
@@ -571,7 +576,7 @@ fn fd_close(
     } else {
         err_only(errno::BADF)
     };
-    SyscallOutcome { reply: Some(reply), wakeups, term_output: Vec::new(), spawn: None }
+    SyscallOutcome { reply: Some(reply), wakeups, term_output: Vec::new(), spawn: None, reap: Vec::new() }
 }
 
 fn path_open(vfs: &mut Vfs, procs: &mut ProcTable, pid: u32, r: &mut Reader) -> Vec<u8> {
@@ -776,7 +781,7 @@ fn proc_exit(procs: &mut ProcTable, pipes: &mut PipeTable, pid: u32, r: &mut Rea
 
     // Wake any parent parked in wait() on this child.
     wakeups.extend(procs.take_blocked_on(&WaitReason::Wait(pid)));
-    SyscallOutcome { reply: Some(err_only(errno::SUCCESS)), wakeups, term_output: Vec::new(), spawn: None }
+    SyscallOutcome { reply: Some(err_only(errno::SUCCESS)), wakeups, term_output: Vec::new(), spawn: None, reap: Vec::new() }
 }
 
 // ---------------------------------------------------------------------------
@@ -946,6 +951,7 @@ fn k_spawn(
     // Older callers omit these bytes → default 0 (no grant).
     let want_gpu = r.u8().unwrap_or(0) != 0;
     let want_input = r.u8().unwrap_or(0) != 0;
+    let want_signal = r.u8().unwrap_or(0) != 0;
 
     // The child inherits a broad FS grant (the shell's children operate on the
     // user's files); never Shm, never Spawn (only the shell/file-manager spawns).
@@ -956,6 +962,11 @@ fn k_spawn(
     }
     if want_input && procs.has_cap(pid, &Capability::Input) {
         caps.grant(Capability::Input);
+    }
+    // Signal delegation (M4-T5): the shell hands process-control authority to a
+    // spawned `kill` so it can signal other processes — only if the shell holds it.
+    if want_signal && procs.has_cap(pid, &Capability::Signal) {
+        caps.grant(Capability::Signal);
     }
     let name = path.rsplit('/').next().unwrap_or(&path).to_string();
     let child = procs.spawn(&name, SPAWN_PRIORITY, caps);
@@ -1009,6 +1020,7 @@ fn k_spawn(
         wakeups: Vec::new(),
         term_output: Vec::new(),
         spawn: Some(SpawnRequest { pid: child, image_path: path }),
+        reap: Vec::new(),
     }
 }
 

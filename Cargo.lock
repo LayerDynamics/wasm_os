@@ -22,6 +22,9 @@ dependencies = [
 [[package]]
 name = "coreutils"
 version = "0.0.0"
+dependencies = [
+ "wasmos-sys",
+]
 
 [[package]]
 name = "crash"
@@ -78,6 +81,13 @@ dependencies = [
 
 [[package]]
 name = "shmdemo"
+version = "0.0.0"
+dependencies = [
+ "wasmos-sys",
+]
+
+[[package]]
+name = "sigdemo"
 version = "0.0.0"
 dependencies = [
  "wasmos-sys",

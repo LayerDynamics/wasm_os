@@ -75,6 +75,15 @@ interface process {
 
   /// Share access to a region this process owns with another process.
   shm-grant: func(shm-id: u32, target-pid: u32) -> u16;
+
+  /// Send a signal to a process (M4-T5). SIGTERM (15) is catchable + cooperative;
+  /// SIGKILL (9) is uncatchable + forceful. Signalling another process requires
+  /// the Signal capability (self always allowed). Returns the kernel errno.
+  kill: func(target-pid: u32, sig: u8) -> u16;
+
+  /// Block until at least one signal is pending, then drain + return them
+  /// (zero-CPU cooperative delivery). A guest loops on this to handle SIGTERM.
+  sig-wait: func() -> list<u8>;
 }
 
 /// The wasmos_kernel compositor extension (M3) — the guest surface + input

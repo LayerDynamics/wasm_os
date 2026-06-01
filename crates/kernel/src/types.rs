@@ -181,6 +181,9 @@ pub enum WaitReason {
     /// Blocked receiving on a message channel `(chan_id, end)` with an empty inbox
     /// whose peer is still open (M4-T3).
     ChanRecv(u32, u8),
+    /// Blocked in `sig_wait()` with no pending signal; woken when one is delivered
+    /// (M4-T5 — zero-CPU signal delivery, no busy-poll).
+    SigWait,
 }
 
 /// A process table entry. `caps` is the owning capability set (FR-2); `fds` is
@@ -541,6 +544,12 @@ impl ProcTable {
     /// Capability check for a process (FR-31). Unknown PID => deny.
     pub fn has_cap(&self, pid: u32, requested: &Capability) -> bool {
         self.get(pid).is_some_and(|p| p.caps.allows(requested))
+    }
+
+    /// Grant a capability to an already-spawned process (M4-T5 — the host confers
+    /// Signal on the shell, the user's process-control authority, after spawn).
+    pub fn grant_cap(&mut self, pid: u32, cap: Capability) -> bool {
+        self.get_mut(pid).map(|p| p.caps.grant(cap)).is_some()
     }
 
     pub fn count(&self) -> usize {

@@ -30,6 +30,7 @@ interface SpawnSpec {
   grantSpawn: boolean;
   grantGpu: boolean;
   grantInput: boolean;
+  grantSignal: boolean;
 }
 
 /** Synchronous kernel control surface (jco-generated export shape). */
@@ -58,6 +59,8 @@ interface SyscallOutcome {
   termOutput: Uint8Array;
   /** Set when a guest spawned a child the kworker must instantiate (M2-T5). */
   spawn?: { pid: number; imagePath: string };
+  /** pids the kworker must force-terminate (SIGKILL, M4-T5). */
+  reap: Uint32Array;
 }
 
 interface KernelModule {
@@ -114,6 +117,9 @@ function driveSyscall(pid: number, request: Uint8Array): void {
   } else {
     rt.server.complete(outcome.reply);
   }
+  // SIGKILL (M4-T5): the kernel zombified these; tear down their workers. Done
+  // AFTER completing this caller's reply so a self-kill's reply lands first.
+  for (const r of outcome.reap) killProcess(r);
   processWakeups(outcome.wakeups);
 }
 
@@ -142,6 +148,7 @@ function processWakeups(wakeups: Uint32Array | number[]): void {
     } else {
       rt.server.complete(outcome.reply);
     }
+    for (const r of outcome.reap) killProcess(r); // SIGKILL reap (M4-T5)
     for (const nw of outcome.wakeups) if (!queue.includes(nw)) queue.push(nw);
   }
 }

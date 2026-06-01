@@ -153,8 +153,15 @@ mod component {
                 Some((spec.grant_fs_subtree.as_str(), Rights::RW))
             };
             KERNEL.with(|k| {
-                k.borrow_mut()
-                    .spawn(&spec.name, grant_fs, spec.grant_spawn, spec.grant_gpu, spec.grant_input)
+                let mut k = k.borrow_mut();
+                let pid =
+                    k.spawn(&spec.name, grant_fs, spec.grant_spawn, spec.grant_gpu, spec.grant_input);
+                // Signal (process-control) authority — the shell holds it so its
+                // `kill` builtin can signal other processes (M4-T5).
+                if spec.grant_signal {
+                    k.grant_signal(pid);
+                }
+                pid
             })
         }
 
@@ -165,6 +172,7 @@ mod component {
                 wakeups: out.wakeups,
                 term_output: out.term_output,
                 spawn: out.spawn.map(|s| WSpawnRequest { pid: s.pid, image_path: s.image_path }),
+                reap: out.reap,
             }
         }
 

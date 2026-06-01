@@ -59,3 +59,13 @@ path = "src/bin/tail.rs"
 [[bin]]
 name = "env"
 path = "src/bin/env.rs"
+
+# kill — send a signal to a process (M4-T5). Unlike the other coreutils it needs
+# the wasmos_kernel `kill` syscall, so it depends on wasmos-sys; the shell
+# delegates its Signal capability when spawning it.
+[[bin]]
+name = "kill"
+path = "src/bin/kill.rs"
+
+[dependencies]
+wasmos-sys = { path = "../wasmos-sys" }

@@ -41,6 +41,13 @@ const SHM_MAP: u8 = 0x36;
 const SHM_READ: u8 = 0x37;
 const SHM_WRITE: u8 = 0x38;
 const SHM_GRANT: u8 = 0x39;
+const KILL: u8 = 0x3A;
+const SIG_WAIT: u8 = 0x3B;
+
+/// Signal numbers (M4-T5) — match POSIX. SIGTERM is catchable (cooperative
+/// shutdown via [`sig_wait`]); SIGKILL is uncatchable + forceful.
+pub const SIGTERM: u8 = 15;
+pub const SIGKILL: u8 = 9;
 
 /// File open mode for a stdio redirect.
 pub const FILE_READ: u8 = 0; // `<`
@@ -122,6 +129,7 @@ pub fn spawn(
     cwd: &str,
     grant_gpu: bool,
     grant_input: bool,
+    grant_signal: bool,
 ) -> Result<u32, u16> {
     let mut w = W::new();
     w.u8(KSPAWN);
@@ -134,10 +142,12 @@ pub fn spawn(
         w.stdio(s);
     }
     w.bytes(cwd.as_bytes());
-    // Capability delegation (M3): ask the kernel to also grant the child Gpu/Input
-    // (only honoured if THIS process holds them). Coreutils pass false/false.
+    // Capability delegation: ask the kernel to also grant the child Gpu/Input (M3)
+    // and Signal (M4-T5) — each only honoured if THIS process holds it. Ordinary
+    // coreutils pass false/false/false; the shell delegates Signal to `kill`.
     w.u8(grant_gpu as u8);
     w.u8(grant_input as u8);
+    w.u8(grant_signal as u8);
     let resp = call(&w.0);
     let errno = rd_u16(&resp, 0);
     if errno != 0 {
@@ -495,4 +505,31 @@ pub fn shm_grant(shm_id: u32, target_pid: u32) -> u16 {
     req.extend_from_slice(&shm_id.to_le_bytes());
     req.extend_from_slice(&target_pid.to_le_bytes());
     rd_u16(&call(&req), 0)
+}
+
+// --- M4-T5: signals (SIGTERM cooperative + SIGKILL forceful, Signal cap) ---
+
+/// `kill(target_pid, sig)` — send a signal to a process (M4-T5). Signalling
+/// another process requires the Signal capability (self always allowed). Use
+/// [`SIGTERM`] for a cooperative graceful stop (the target must `sig_wait`) or
+/// [`SIGKILL`] for an uncatchable forceful kill. Returns the kernel errno
+/// (NOTCAPABLE without Signal, SRCH=71 for an unknown pid).
+pub fn kill(target_pid: u32, sig: u8) -> u16 {
+    let mut req = vec![KILL];
+    req.extend_from_slice(&target_pid.to_le_bytes());
+    req.push(sig);
+    rd_u16(&call(&req), 0)
+}
+
+/// `sig_wait()` — block until at least one signal is pending for this process,
+/// then drain + return them (M4-T5). Zero-CPU: the process parks until a signal
+/// is delivered. A cooperative guest loops on this and exits when it sees
+/// [`SIGTERM`].
+pub fn sig_wait() -> Vec<u8> {
+    let resp = call(&[SIG_WAIT]);
+    if resp.len() < 6 || rd_u16(&resp, 0) != 0 {
+        return Vec::new();
+    }
+    let count = rd_u32(&resp, 2) as usize;
+    resp.get(6..6 + count).map(|s| s.to_vec()).unwrap_or_default()
 }

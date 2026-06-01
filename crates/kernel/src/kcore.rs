@@ -14,6 +14,11 @@ use crate::vfs::{Blockstore, FsError, Vfs};
 /// Default scheduling priority for user processes spawned at M1 (init is 10).
 const USER_PRIORITY: u8 = 5;
 
+/// Signals (M4-T5). SIGTERM is catchable (cooperative graceful shutdown); SIGKILL
+/// is uncatchable + forceful (the kernel reaps the process). Values match POSIX.
+const SIGKILL: u8 = 9;
+const SIGTERM: u8 = 15;
+
 pub struct KernelCore {
     vfs: Vfs,
     procs: ProcTable,
@@ -109,6 +114,13 @@ impl KernelCore {
     pub fn proc_count(&self) -> usize {
         self.procs.count()
     }
+
+    /// Confer the Signal (process-control) capability on a process after spawn
+    /// (M4-T5). The host grants it to the shell so its `kill` builtin can signal
+    /// other processes, and the shell may delegate it to a spawned `kill`.
+    pub fn grant_signal(&mut self, pid: u32) {
+        self.procs.grant_cap(pid, Capability::Signal);
+    }
     pub fn ready_count(&self) -> usize {
         self.sched.ready_len()
     }
@@ -171,6 +183,8 @@ impl KernelCore {
             Some(0x37) => self.shm_read_syscall(pid, req),
             Some(0x38) => self.shm_write_syscall(pid, req),
             Some(0x39) => self.shm_grant_syscall(pid, req),
+            Some(0x3A) => self.kill_syscall(pid, req),
+            Some(0x3B) => self.sig_wait_syscall(pid),
             _ => {
                 let mut out =
                     syscall::dispatch(&mut self.vfs, &mut self.procs, &mut self.pipes, pid, req);
@@ -265,6 +279,7 @@ impl KernelCore {
             wakeups,
             term_output: Vec::new(),
             spawn: None,
+            reap: Vec::new(),
         }
     }
 
@@ -393,6 +408,82 @@ impl KernelCore {
         } else {
             err(syscall::errno::NOTCAPABLE)
         }
+    }
+
+    // --- M4-T5: signals (SIGTERM cooperative + SIGKILL forceful, Signal cap) ---
+
+    /// `kill(target, sig)` — `[0x3A][target u32][sig u8]`. Reply: `[errno u16]`.
+    /// Signalling another process requires the Signal capability (self always
+    /// allowed). SIGKILL (9) is uncatchable + forceful: the kernel runs the
+    /// target's full exit teardown (pipes/channels/shm released, waiters woken) and
+    /// asks the host to terminate its worker (`reap`). SIGTERM (15) is catchable +
+    /// cooperative: it queues a pending signal and wakes the target if it is parked
+    /// in `sig_wait()`, so the guest can observe it and exit gracefully.
+    fn kill_syscall(&mut self, pid: u32, req: &[u8]) -> syscall::SyscallOutcome {
+        let err = |e: u16| syscall::SyscallOutcome::ready(e.to_le_bytes().to_vec());
+        if req.len() < 6 {
+            return err(syscall::errno::INVAL);
+        }
+        let target = u32::from_le_bytes([req[1], req[2], req[3], req[4]]);
+        let sig = req[5];
+        if self.procs.get(target).is_none() {
+            return err(syscall::errno::SRCH);
+        }
+        if target != pid && !self.procs.has_cap(pid, &Capability::Signal) {
+            return err(syscall::errno::NOTCAPABLE);
+        }
+        match sig {
+            SIGKILL => {
+                // Forge the target's own proc_exit (exit code 128+SIGKILL) so it
+                // releases pipes/surfaces and wakes its waiters exactly as a clean
+                // exit would, then release its channels + shm (the kcore-level
+                // siblings of that teardown) and ask the host to reap its worker.
+                let mut exit_req = vec![0x10u8];
+                exit_req.extend_from_slice(&(128u32 + SIGKILL as u32).to_le_bytes());
+                let mut out =
+                    syscall::dispatch(&mut self.vfs, &mut self.procs, &mut self.pipes, target, &exit_req);
+                out.wakeups.extend(self.close_proc_channels(target));
+                self.shm.free_owned(target);
+                out.reap.push(target);
+                // The forged exit's SUCCESS reply belongs to `target`'s (now dead)
+                // ring; replace it with this caller's kill reply.
+                out.reply = Some(syscall::errno::SUCCESS.to_le_bytes().to_vec());
+                out
+            }
+            SIGTERM => {
+                self.procs.push_signal(target, SIGTERM);
+                // Zero-CPU delivery: wake the target only if it is parked in
+                // sig_wait (its re-driven wait then drains the pending signal).
+                let mut wakeups = Vec::new();
+                if self.procs.blocked_on(target) == Some(WaitReason::SigWait) {
+                    self.procs.clear_blocked(target);
+                    wakeups.push(target);
+                }
+                syscall::SyscallOutcome {
+                    reply: Some(syscall::errno::SUCCESS.to_le_bytes().to_vec()),
+                    wakeups,
+                    term_output: Vec::new(),
+                    spawn: None,
+                    reap: Vec::new(),
+                }
+            }
+            _ => err(syscall::errno::INVAL), // unsupported signal
+        }
+    }
+
+    /// `sig_wait()` — `[0x3B]`. Blocks until at least one signal is pending, then
+    /// drains + returns them. Reply: `[errno u16][count u32][sig u8 ...]`. Parks on
+    /// an empty signal queue (woken by a SIGTERM delivery) — no busy-poll.
+    fn sig_wait_syscall(&mut self, pid: u32) -> syscall::SyscallOutcome {
+        let sigs = self.procs.take_signals(pid);
+        if sigs.is_empty() {
+            self.procs.set_blocked(pid, WaitReason::SigWait);
+            return syscall::SyscallOutcome::parked();
+        }
+        let mut b = syscall::errno::SUCCESS.to_le_bytes().to_vec();
+        b.extend_from_slice(&(sigs.len() as u32).to_le_bytes());
+        b.extend_from_slice(&sigs);
+        syscall::SyscallOutcome::ready(b)
     }
 
     /// Bind a process's stdout + stderr (fd 1/2) to the interactive terminal so
@@ -797,5 +888,54 @@ mod tests {
         // owner exits → region is freed; peer's access is revoked.
         k.service_syscall(owner, &proc_exit_req(0));
         assert_eq!(read_u16(&k.service_syscall(peer, &shm_read_req(id, 8, 10)).reply.unwrap()), 76);
+    }
+
+    // --- M4-T5: signals (SIGTERM cooperative + SIGKILL forceful) ---
+
+    fn kill_req(target: u32, sig: u8) -> Vec<u8> {
+        let mut v = vec![0x3Au8];
+        v.extend_from_slice(&target.to_le_bytes());
+        v.push(sig);
+        v
+    }
+
+    #[test]
+    fn signals_are_capability_gated_sigterm_wakes_sig_wait_sigkill_reaps() {
+        let mut k = core();
+        k.boot();
+        let signaler = k.spawn("signaler", None, false, false, false);
+        k.grant_signal(signaler); // process-control authority
+        let victim = k.spawn("victim", None, false, false, false);
+        let bystander = k.spawn("bystander", None, false, false, false);
+
+        // Default-deny: a process without Signal cannot signal another.
+        assert_eq!(read_u16(&k.service_syscall(bystander, &kill_req(victim, 15)).reply.unwrap()), 76); // NOTCAPABLE
+        // Unknown pid → SRCH.
+        assert_eq!(read_u16(&k.service_syscall(signaler, &kill_req(9999, 15)).reply.unwrap()), 71); // SRCH
+        // Self-signalling is always allowed (no Signal cap required).
+        assert_eq!(read_u16(&k.service_syscall(victim, &kill_req(victim, 15)).reply.unwrap()), 0);
+        // (drain the self-delivered signal so the park test below starts clean)
+        let drained = k.service_syscall(victim, &[0x3Bu8]).reply.unwrap();
+        assert_eq!(read_u16(&drained), 0);
+
+        // SIGTERM delivery wakes a process parked in sig_wait (zero-CPU path).
+        assert!(k.service_syscall(victim, &[0x3Bu8]).reply.is_none()); // parks (no pending)
+        let term = k.service_syscall(signaler, &kill_req(victim, 15));
+        assert_eq!(read_u16(&term.reply.unwrap()), 0);
+        assert_eq!(term.wakeups, vec![victim]); // the parked sig_wait is runnable
+        let got = k.service_syscall(victim, &[0x3Bu8]).reply.unwrap(); // re-driven
+        assert_eq!(read_u16(&got), 0);
+        let count = u32::from_le_bytes([got[2], got[3], got[4], got[5]]) as usize;
+        assert_eq!(&got[6..6 + count], &[15u8]); // SIGTERM observed
+
+        // SIGKILL is forceful: the kernel zombifies the target and asks the host
+        // to reap its worker.
+        let killed = k.service_syscall(signaler, &kill_req(victim, 9));
+        assert_eq!(read_u16(&killed.reply.unwrap()), 0);
+        assert_eq!(killed.reap, vec![victim]);
+        assert_eq!(
+            k.list_procs().iter().find(|i| i.pid == victim).unwrap().state.as_str(),
+            "zombie"
+        );
     }
 }

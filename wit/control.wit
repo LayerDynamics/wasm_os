@@ -63,6 +63,9 @@ interface control {
     /// Grant the Input capability — required to receive brokered keyboard/mouse
     /// for its focused window (M3-T3). Default-deny.
     grant-input: bool,
+    /// Grant the Signal capability — process-control authority (the `kill`
+    /// builtin signals other processes, M4-T5). Default-deny; the shell holds it.
+    grant-signal: bool,
   }
 
   /// Allocate a process: PID + per-process fd table (0/1/2 preopened) + capset.
@@ -91,6 +94,9 @@ interface control {
     term-output: list<u8>,
     /// set when a guest spawned a child — the kworker brings it to life.
     spawn: option<spawn-request>,
+    /// pids the kworker must force-terminate (SIGKILL, M4-T5): the kernel has
+    /// already zombified them; the host tears down their worker + ring.
+    reap: list<u32>,
   }
 
   /// Route one WASI Preview 1 (or wasmos_kernel) syscall for `pid`. `request`
