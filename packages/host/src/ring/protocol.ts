@@ -22,14 +22,17 @@ export const OP = {
   ENVIRON_GET: 0x0b,
   ARGS_SIZES_GET: 0x0c,
   ARGS_GET: 0x0d,
-  RANDOM_GET: 0x0e,
-  CLOCK_TIME_GET: 0x0f,
+  // 0x0e (random_get) and 0x0f (clock_time_get) are serviced host-side in the
+  // WASI shim with real entropy/time — they never reach the kernel ring.
   PROC_EXIT: 0x10,
   PATH_CREATE_DIRECTORY: 0x11,
   PATH_UNLINK_FILE: 0x12,
   PATH_REMOVE_DIRECTORY: 0x13,
   PATH_RENAME: 0x14,
   PATH_FILESTAT_GET: 0x15,
+  FD_FILESTAT_GET: 0x16,
+  FD_FDSTAT_SET_FLAGS: 0x17,
+  FD_READY: 0x18,
 } as const;
 
 /** WASI Preview 1 errno values (subset) — must match `syscall::errno`. */

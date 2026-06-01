@@ -1,0 +1,17 @@
+[package]
+name = "lisp"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+# Lisp — a flagship code-runtime app (L3): a complete Scheme-like interpreter
+# (lexer + parser + evaluator with closures, recursion, and a standard library)
+# packaged as a wasm32-wasip1 canvas app with an interactive REPL. The interpreter
+# (src/interp.rs) is pure Rust, unit-tested on the host; main.rs is the REPL UI.
+[[bin]]
+name = "lisp"
+path = "src/main.rs"
+
+[dependencies]
+wasmos-sys = { path = "../../wasmos-sys" }
+wasmgfx = { path = "../../wasmgfx" }

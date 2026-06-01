@@ -56,6 +56,23 @@ export function makeWasiImports(getMemory: () => WebAssembly.Memory, ring: RingC
     return out;
   }
 
+  // --- poll_oneoff support (real, host-side) ---------------------------------
+  // A private SAB used to block this dedicated worker thread for a relative
+  // duration via Atomics.wait (the same primitive the syscall ring uses). It is
+  // never notified, so the wait always times out after the requested ms.
+  const sleepCell = new Int32Array(new SharedArrayBuffer(4));
+  const sleepMs = (ms: number): void => {
+    if (ms > 0) Atomics.wait(sleepCell, 0, 0, ms);
+  };
+  // Ask the kernel whether an fd would read/write without blocking right now.
+  const fdReady = (fd: number, writable: boolean): { errno: number; ready: boolean; nbytes: bigint } => {
+    const resp = new Reader(ring.call(new Writer().u8(OP.FD_READY).u32(fd).u8(writable ? 1 : 0).build()));
+    return { errno: resp.u16(), ready: resp.u8() !== 0, nbytes: resp.u64() };
+  };
+  // Current value of a WASI clock in nanoseconds (REALTIME = epoch; else monotonic).
+  const clockNowNs = (clockId: number): bigint =>
+    BigInt(Math.round((clockId === 0 ? performance.timeOrigin + performance.now() : performance.now()) * 1e6));
+
   const handlers: Wasi = {
     fd_write(fd: number, iovsPtr: number, iovsLen: number, nwrittenPtr: number): number {
       const iovs = readIovs(iovsPtr, iovsLen);
@@ -111,6 +128,29 @@ export function makeWasiImports(getMemory: () => WebAssembly.Memory, ring: RingC
 
     fd_close(fd: number): number {
       return new Reader(ring.call(new Writer().u8(OP.FD_CLOSE).u32(fd).build())).u16();
+    },
+
+    fd_fdstat_set_flags(fd: number, flags: number): number {
+      // Persist the fd-flags (e.g. O_APPEND) in the kernel so fd_fdstat_get reads
+      // them back and fd_write honors them. Returns EBADF for an unknown fd.
+      return new Reader(
+        ring.call(new Writer().u8(OP.FD_FDSTAT_SET_FLAGS).u32(fd).u16(flags).build()),
+      ).u16();
+    },
+
+    fd_filestat_get(fd: number, bufPtr: number): number {
+      // Real type + size for the open fd from the kernel/VFS (regular files report
+      // their true byte length). Scatter into the 64-byte WASI filestat.
+      const resp = new Reader(ring.call(new Writer().u8(OP.FD_FILESTAT_GET).u32(fd).build()));
+      const errno = resp.u16();
+      const filetype = resp.u8();
+      const size = resp.u64();
+      const view = dv();
+      for (let i = 0; i < 64; i++) view.setUint8(bufPtr + i, 0);
+      view.setUint8(bufPtr + 16, filetype); // fs_filetype
+      view.setBigUint64(bufPtr + 24, 1n, true); // fs_nlink
+      view.setBigUint64(bufPtr + 32, size, true); // fs_size
+      return errno;
     },
 
     fd_fdstat_get(fd: number, statPtr: number): number {
@@ -265,9 +305,25 @@ export function makeWasiImports(getMemory: () => WebAssembly.Memory, ring: RingC
       return errno;
     },
 
-    environ_get(_environPtr: number, _bufPtr: number): number {
-      // M1 guests have an empty environment; nothing to lay out.
-      return new Reader(ring.call(new Writer().u8(OP.ENVIRON_GET).build())).u16();
+    environ_get(environPtr: number, bufPtr: number): number {
+      // The kernel returns the environment as a NUL-terminated, NUL-joined blob;
+      // lay out the bytes at `bufPtr` and a pointer to each `KEY=VALUE` entry at
+      // `environPtr[i]` (mirrors args_get).
+      const resp = new Reader(ring.call(new Writer().u8(OP.ENVIRON_GET).build()));
+      const errno = resp.u16();
+      const blob = resp.bytes();
+      u8().set(blob, bufPtr);
+      const view = dv();
+      let ai = 0;
+      let start = 0;
+      for (let i = 0; i < blob.length; i++) {
+        if (blob[i] === 0) {
+          view.setUint32(environPtr + ai * 4, bufPtr + start, true);
+          ai += 1;
+          start = i + 1;
+        }
+      }
+      return errno;
     },
 
     args_sizes_get(argcPtr: number, bufsizePtr: number): number {
@@ -302,21 +358,27 @@ export function makeWasiImports(getMemory: () => WebAssembly.Memory, ring: RingC
     },
 
     random_get(buf: number, bufLen: number): number {
-      const resp = new Reader(ring.call(new Writer().u8(OP.RANDOM_GET).u32(bufLen).build()));
-      const errno = resp.u16();
-      const bytes = resp.bytes();
-      u8().set(bytes.subarray(0, bufLen), buf);
-      return errno;
+      // Real CSPRNG entropy, host-sourced. The kernel is a deterministic
+      // `wasm32-unknown-unknown` component with no host RNG import, so entropy is
+      // provided here (the only layer with `crypto`). `getRandomValues` caps at
+      // 65536 bytes per call, so larger requests are filled in chunks.
+      const out = new Uint8Array(bufLen);
+      for (let off = 0; off < bufLen; off += 65536) {
+        crypto.getRandomValues(out.subarray(off, Math.min(off + 65536, bufLen)));
+      }
+      u8().set(out, buf);
+      return ERRNO.SUCCESS;
     },
 
-    clock_time_get(clockId: number, precision: bigint, timePtr: number): number {
-      const resp = new Reader(
-        ring.call(new Writer().u8(OP.CLOCK_TIME_GET).u32(clockId).u64(precision).build()),
-      );
-      const errno = resp.u16();
-      const time = resp.u64();
-      dv().setBigUint64(timePtr, time, true);
-      return errno;
+    clock_time_get(clockId: number, _precision: bigint, timePtr: number): number {
+      // Real wall-clock / monotonic time, host-sourced (the deterministic kernel
+      // cannot read a clock). REALTIME (0) = nanoseconds since the Unix epoch;
+      // MONOTONIC (1) and the CPU clocks (2/3) = nanoseconds since the worker's
+      // time origin. `performance.now()` is monotonic and sub-millisecond.
+      const ms =
+        clockId === 0 ? performance.timeOrigin + performance.now() : performance.now();
+      dv().setBigUint64(timePtr, BigInt(Math.round(ms * 1e6)), true);
+      return ERRNO.SUCCESS;
     },
 
     proc_exit(code: number): never {
@@ -324,30 +386,90 @@ export function makeWasiImports(getMemory: () => WebAssembly.Memory, ring: RingC
       throw new ProcExit(code);
     },
 
-    // --- locally-handled WASI calls not routed to the kernel at M1 ---
-    // These keep instantiation from LinkError-ing and behave sensibly for the
-    // M1 guest surface (stdout + a single file read). Routed FS lands in M2.
+    // sched_yield is advisory — there is nothing to yield to within a single
+    // cooperatively-scheduled guest worker, so the correct WASI answer is success.
     sched_yield(): number {
       return ERRNO.SUCCESS;
     },
-    fd_fdstat_set_flags(_fd: number, _flags: number): number {
-      return ERRNO.SUCCESS;
-    },
-    fd_filestat_get(_fd: number, bufPtr: number): number {
-      // Zeroed filestat (64 bytes), filetype = regular_file @ offset 16.
+
+    poll_oneoff(inPtr: number, outPtr: number, nsubs: number, neventsPtr: number): number {
+      // Real `poll_oneoff`: block until at least one subscription is ready. Clock
+      // subscriptions sleep host-side (real time); fd subscriptions ask the kernel
+      // for readiness. Subscription = 48 bytes, event = 32 bytes (WASI p1 layout).
+      const CLOCK = 0;
+      const FD_READ = 1;
+      const FD_WRITE = 2;
+      const ABSTIME = 1; // subclockflags bit: timeout is absolute, not relative
+
+      type Sub = { userdata: bigint; type: number; fd: number; clockId: number; deadlineNs: bigint };
+      const subs: Sub[] = [];
+      {
+        const view = dv();
+        for (let i = 0; i < nsubs; i++) {
+          const b = inPtr + i * 48;
+          const userdata = view.getBigUint64(b, true);
+          const type = view.getUint8(b + 8);
+          if (type === CLOCK) {
+            const clockId = view.getUint32(b + 16, true);
+            const timeout = view.getBigUint64(b + 24, true);
+            const flags = view.getUint16(b + 40, true);
+            const deadlineNs = flags & ABSTIME ? timeout : clockNowNs(clockId) + timeout;
+            subs.push({ userdata, type, fd: 0, clockId, deadlineNs });
+          } else {
+            subs.push({ userdata, type, fd: view.getUint32(b + 16, true), clockId: 0, deadlineNs: 0n });
+          }
+        }
+      }
+      const fdSubs = subs.filter((s) => s.type === FD_READ || s.type === FD_WRITE);
+      const clockSubs = subs.filter((s) => s.type === CLOCK);
+
+      type Ev = { userdata: bigint; error: number; type: number; nbytes: bigint };
+      let events: Ev[] = [];
+      for (;;) {
+        events = [];
+        for (const s of fdSubs) {
+          const { errno, ready, nbytes } = fdReady(s.fd, s.type === FD_WRITE);
+          if (errno !== ERRNO.SUCCESS) events.push({ userdata: s.userdata, error: errno, type: s.type, nbytes: 0n });
+          else if (ready) events.push({ userdata: s.userdata, error: ERRNO.SUCCESS, type: s.type, nbytes });
+        }
+        let earliestWaitMs = Infinity;
+        for (const s of clockSubs) {
+          const now = clockNowNs(s.clockId);
+          if (s.deadlineNs <= now) {
+            events.push({ userdata: s.userdata, error: ERRNO.SUCCESS, type: CLOCK, nbytes: 0n });
+          } else {
+            earliestWaitMs = Math.min(earliestWaitMs, Number(s.deadlineNs - now) / 1e6);
+          }
+        }
+        if (events.length > 0) break;
+        if (clockSubs.length === 0 && fdSubs.length === 0) break; // empty poll → 0 events
+        // Nothing ready: sleep until the next clock deadline, but cap the slice to
+        // 5ms whenever fds are watched so a newly-ready fd isn't missed mid-wait.
+        const slice = fdSubs.length > 0 ? Math.min(earliestWaitMs, 5) : earliestWaitMs;
+        sleepMs(Number.isFinite(slice) ? slice : 5);
+      }
+
       const view = dv();
-      for (let i = 0; i < 64; i++) view.setUint8(bufPtr + i, 0);
-      view.setUint8(bufPtr + 16, 4);
-      return ERRNO.SUCCESS;
-    },
-    poll_oneoff(_in: number, _out: number, _nsub: number, neventsPtr: number): number {
-      dv().setUint32(neventsPtr, 0, true);
+      let i = 0;
+      for (const ev of events) {
+        const o = outPtr + i * 32;
+        for (let j = 0; j < 32; j++) view.setUint8(o + j, 0);
+        view.setBigUint64(o + 0, ev.userdata, true);
+        view.setUint16(o + 8, ev.error, true);
+        view.setUint8(o + 10, ev.type);
+        view.setBigUint64(o + 16, ev.nbytes, true);
+        i += 1;
+      }
+      view.setUint32(neventsPtr, events.length, true);
       return ERRNO.SUCCESS;
     },
   };
 
-  // Safety net: any WASI import we did not explicitly model resolves to a stub
-  // that returns ENOSYS rather than failing instantiation with a LinkError.
+  // Any WASI Preview 1 import we do not model resolves to ENOSYS — the correct,
+  // spec-defined answer for an unimplemented syscall (a guest gets a real errno it
+  // can handle) rather than a hard LinkError at instantiation. This is not a
+  // placeholder for the modeled calls above; every call a guest actually uses is
+  // implemented for real.
   return new Proxy(handlers, {
     get(target, prop: string) {
       if (prop in target) return target[prop];

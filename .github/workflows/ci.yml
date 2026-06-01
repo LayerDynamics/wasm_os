@@ -51,6 +51,14 @@ jobs:
         run: npm run build
       - name: Typecheck host against fresh bindings
         run: npm run typecheck
+      - name: Typecheck + build the React web client (apps/web)
+        # The web client (apps/web) is a Vite + React app that boots WASM_OS via the
+        # @wasmos/host startDesktop entry. Verify it type-checks and builds for
+        # production so it can't silently rot. (At runtime it loads the kernel
+        # bindings + workers + guests, served same-origin with COOP/COEP.)
+        run: |
+          npm run typecheck:web
+          npm run build:web
       - name: Clippy (-D warnings, both targets)
         run: npm run lint
       - name: Rust tests

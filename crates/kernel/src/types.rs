@@ -238,6 +238,24 @@ pub struct Process {
     /// Open message channels this process holds: `chan_id -> owned endpoint`
     /// (M4-T3). Opaque handles, not WASI fds.
     pub channels: BTreeMap<u32, u8>,
+    /// Environment variables surfaced via `environ_get` (FR-18) as `KEY=VALUE`
+    /// strings. Seeded with a sane baseline at creation and inherited by spawned
+    /// children (with `PWD` overridden to the child's working directory).
+    pub env: Vec<String>,
+    /// WASI fd-flags set on an fd via `fd_fdstat_set_flags` (e.g. O_APPEND),
+    /// keyed by fd. Read back by `fd_fdstat_get` and honored by `fd_write`.
+    pub fd_flags: BTreeMap<u32, u16>,
+}
+
+/// The baseline environment every process starts with (a real, inheritable env —
+/// not an empty placeholder). `PWD` is refined per child to its working directory.
+pub fn default_env() -> Vec<String> {
+    vec![
+        "PATH=/bin".to_string(),
+        "HOME=/home".to_string(),
+        "TERM=xterm-256color".to_string(),
+        "PWD=/".to_string(),
+    ]
 }
 
 /// Build the standard descriptor table for a fresh process: stdin/stdout/stderr
@@ -345,6 +363,8 @@ impl ProcTable {
             mem_bytes: 0,
             pending_signals: VecDeque::new(),
             channels: BTreeMap::new(),
+            env: default_env(),
+            fd_flags: BTreeMap::new(),
         });
         pid
     }
@@ -412,6 +432,17 @@ impl ProcTable {
         self.get(pid).map(|p| p.argv.clone()).unwrap_or_default()
     }
 
+    /// This process's environment (`KEY=VALUE` entries) for `environ_get` (FR-18).
+    pub fn env(&self, pid: u32) -> Vec<String> {
+        self.get(pid).map(|p| p.env.clone()).unwrap_or_default()
+    }
+
+    /// Replace a process's environment. Used when a child inherits its parent's
+    /// env at spawn (with `PWD` set to the child's working directory).
+    pub fn set_env(&mut self, pid: u32, env: Vec<String>) -> bool {
+        self.get_mut(pid).map(|p| p.env = env).is_some()
+    }
+
     pub fn fd(&self, pid: u32, fd: u32) -> Option<&Descriptor> {
         self.get(pid).and_then(|p| p.fds.get(&fd))
     }
@@ -422,7 +453,27 @@ impl ProcTable {
 
     /// Close an fd. Returns false if the pid or fd is unknown.
     pub fn close_fd(&mut self, pid: u32, fd: u32) -> bool {
-        self.get_mut(pid).is_some_and(|p| p.fds.remove(&fd).is_some())
+        self.get_mut(pid).is_some_and(|p| {
+            p.fd_flags.remove(&fd); // drop any per-fd flags alongside the descriptor
+            p.fds.remove(&fd).is_some()
+        })
+    }
+
+    /// WASI fd-flags currently set on `fd` (0 if none / unknown), for `fd_fdstat_get`.
+    pub fn fd_flags(&self, pid: u32, fd: u32) -> u16 {
+        self.get(pid).and_then(|p| p.fd_flags.get(&fd).copied()).unwrap_or(0)
+    }
+
+    /// Set the WASI fd-flags on `fd` (`fd_fdstat_set_flags`). Returns false if the
+    /// pid or fd is unknown (so the caller can report EBADF).
+    pub fn set_fd_flags(&mut self, pid: u32, fd: u32, flags: u16) -> bool {
+        self.get_mut(pid).is_some_and(|p| {
+            if !p.fds.contains_key(&fd) {
+                return false;
+            }
+            p.fd_flags.insert(fd, flags);
+            true
+        })
     }
 
     /// Append bytes to a process's captured stdout. Returns false if pid unknown.

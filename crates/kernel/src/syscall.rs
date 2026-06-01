@@ -88,8 +88,6 @@ pub enum Op {
     EnvironGet = 0x0B,
     ArgsSizesGet = 0x0C,
     ArgsGet = 0x0D,
-    RandomGet = 0x0E,
-    ClockTimeGet = 0x0F,
     ProcExit = 0x10,
     // FS mutation (M2 — mkdir/rm/mv coreutils).
     PathCreateDirectory = 0x11,
@@ -97,6 +95,11 @@ pub enum Op {
     PathRemoveDirectory = 0x13,
     PathRename = 0x14,
     PathFilestatGet = 0x15,
+    // fd-based stat + flag mutation (real type/size from the VFS; O_APPEND, FR-18).
+    FdFilestatGet = 0x16,
+    FdFdstatSetFlags = 0x17,
+    // fd readiness query backing a real `poll_oneoff` (host-side in the shim).
+    FdReady = 0x18,
     // wasmos_kernel extension (guest process control, M2).
     KSpawn = 0x20,
     KPipe = 0x21,
@@ -126,14 +129,15 @@ impl Op {
             0x0B => Op::EnvironGet,
             0x0C => Op::ArgsSizesGet,
             0x0D => Op::ArgsGet,
-            0x0E => Op::RandomGet,
-            0x0F => Op::ClockTimeGet,
             0x10 => Op::ProcExit,
             0x11 => Op::PathCreateDirectory,
             0x12 => Op::PathUnlinkFile,
             0x13 => Op::PathRemoveDirectory,
             0x14 => Op::PathRename,
             0x15 => Op::PathFilestatGet,
+            0x16 => Op::FdFilestatGet,
+            0x17 => Op::FdFdstatSetFlags,
+            0x18 => Op::FdReady,
             0x20 => Op::KSpawn,
             0x21 => Op::KPipe,
             0x22 => Op::KWait,
@@ -169,6 +173,12 @@ pub mod filetype {
     pub const REGULAR_FILE: u8 = 4;
 }
 
+/// WASI Preview 1 fd-flags (the `fdflags` bitfield set by `fd_fdstat_set_flags`).
+pub mod fdflags {
+    /// O_APPEND — every write goes to the current end of file.
+    pub const APPEND: u16 = 0x0001;
+}
+
 /// WASI `whence` values for `fd_seek`.
 mod whence {
     pub const SET: u8 = 0;
@@ -184,9 +194,10 @@ mod oflags {
     pub const TRUNC: u16 = 8;
 }
 
-/// Deterministic clock value for M1 (ns). A real capability-gated clock broker
-/// replaces this later (§3.6); a constant keeps tests reproducible.
-const M1_CLOCK_NS: u64 = 1_700_000_000_000_000_000;
+// `clock_time_get` and `random_get` are NOT routed here: real wall-clock time and
+// CSPRNG entropy are host facts the deterministic `wasm32-unknown-unknown` kernel
+// cannot produce, so the WASI shim services them directly (see
+// `packages/host/src/worker/wasi-shim.ts`).
 
 // ---------------------------------------------------------------------------
 // Little-endian reader / writer
@@ -341,10 +352,22 @@ pub fn dispatch(
         Op::FdPrestatDirName => SyscallOutcome::ready(fd_prestat_dir_name(procs, pid, &mut r)),
         Op::FdFdstatGet => SyscallOutcome::ready(fd_fdstat_get(procs, pid, &mut r)),
         Op::EnvironSizesGet => {
-            // M2 guests get an empty environment.
-            SyscallOutcome::ready(Writer::new().u16(errno::SUCCESS).u32(0).u32(0).build())
+            // count + total NUL-terminated byte size of the process environment.
+            let env = procs.env(pid);
+            let count = env.len() as u32;
+            let buf_size: u32 = env.iter().map(|e| e.len() as u32 + 1).sum();
+            SyscallOutcome::ready(Writer::new().u16(errno::SUCCESS).u32(count).u32(buf_size).build())
         }
-        Op::EnvironGet => SyscallOutcome::ready(Writer::new().u16(errno::SUCCESS).bytes(&[]).build()),
+        Op::EnvironGet => {
+            // The environment as a NUL-terminated, NUL-joined `KEY=VALUE` blob; the
+            // shim lays out the pointer array into guest memory (mirrors args_get).
+            let mut blob = Vec::new();
+            for e in procs.env(pid) {
+                blob.extend_from_slice(e.as_bytes());
+                blob.push(0);
+            }
+            SyscallOutcome::ready(Writer::new().u16(errno::SUCCESS).bytes(&blob).build())
+        }
         Op::ArgsSizesGet => {
             // count + total NUL-terminated byte size of argv.
             let argv = procs.argv(pid);
@@ -362,10 +385,6 @@ pub fn dispatch(
             }
             SyscallOutcome::ready(Writer::new().u16(errno::SUCCESS).bytes(&blob).build())
         }
-        Op::RandomGet => SyscallOutcome::ready(random_get(&mut r)),
-        Op::ClockTimeGet => {
-            SyscallOutcome::ready(Writer::new().u16(errno::SUCCESS).u64(M1_CLOCK_NS).build())
-        }
         Op::ProcExit => proc_exit(procs, pipes, pid, &mut r),
         // FS mutation (M2).
         Op::PathCreateDirectory => SyscallOutcome::ready(path_create_directory(vfs, procs, pid, &mut r)),
@@ -373,6 +392,9 @@ pub fn dispatch(
         Op::PathRemoveDirectory => SyscallOutcome::ready(path_remove_directory(vfs, procs, pid, &mut r)),
         Op::PathRename => SyscallOutcome::ready(path_rename(vfs, procs, pid, &mut r)),
         Op::PathFilestatGet => SyscallOutcome::ready(path_filestat_get(vfs, procs, pid, &mut r)),
+        Op::FdFilestatGet => SyscallOutcome::ready(fd_filestat_get(vfs, procs, pid, &mut r)),
+        Op::FdFdstatSetFlags => SyscallOutcome::ready(fd_fdstat_set_flags(procs, pid, &mut r)),
+        Op::FdReady => SyscallOutcome::ready(fd_ready(vfs, procs, pipes, pid, &mut r)),
         // wasmos_kernel extension (guest process control).
         Op::KSpawn => k_spawn(vfs, procs, pipes, pid, &mut r),
         Op::KPipe => k_pipe(procs, pipes, pid, &mut r),
@@ -437,7 +459,14 @@ fn fd_write(
             if !desc.rights.write {
                 return SyscallOutcome::ready(resp(errno::ACCES, 0));
             }
-            let offset = desc.offset as usize;
+            // O_APPEND (fd_fdstat_set_flags): every write lands at the current end
+            // of file, regardless of the descriptor's seek offset.
+            let append = procs.fd_flags(pid, fd) & fdflags::APPEND != 0;
+            let offset = if append {
+                vfs.read(&path).map(|c| c.len()).unwrap_or(0)
+            } else {
+                desc.offset as usize
+            };
             let mut content = match vfs.read(&path) {
                 Ok(c) => c,
                 Err(crate::vfs::FsError::NotFound) => Vec::new(),
@@ -727,29 +756,82 @@ fn fd_fdstat_get(procs: &mut ProcTable, pid: u32, r: &mut Reader) -> Vec<u8> {
         DescKind::Dir { .. } => filetype::DIRECTORY,
         DescKind::File { .. } => filetype::REGULAR_FILE,
     };
-    // Grant the full rights set at M1 (capabilities are enforced at path_open).
+    // Report the fd-flags actually set on this fd (e.g. O_APPEND); rights are the
+    // full set (capabilities are enforced at path_open, not in fdstat).
+    let flags = procs.fd_flags(pid, fd);
     Writer::new()
         .u16(errno::SUCCESS)
         .u8(ft)
-        .u16(0)
+        .u16(flags)
         .u64(u64::MAX)
         .u64(u64::MAX)
         .build()
 }
 
-fn random_get(r: &mut Reader) -> Vec<u8> {
-    let Some(len) = r.u32() else {
-        return Writer::new().u16(errno::INVAL).bytes(&[]).build();
-    };
-    // Deterministic fill for M1 (a real capability-gated entropy broker replaces
-    // this later, §3.6). A small LCG keeps output reproducible across runs.
-    let mut state: u32 = 0x9E37_79B9 ^ len;
-    let mut bytes = Vec::with_capacity(len as usize);
-    for _ in 0..len {
-        state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-        bytes.push((state >> 24) as u8);
+/// `fd_filestat_get(fd)` — real type + size for an open fd (FR-18). Reply:
+/// `[errno u16][filetype u8][size u64]`; the shim scatters it into the 64-byte
+/// WASI `filestat`. Regular files report their true VFS byte length.
+fn fd_filestat_get(vfs: &Vfs, procs: &ProcTable, pid: u32, r: &mut Reader) -> Vec<u8> {
+    let out = |e: u16, ft: u8, size: u64| Writer::new().u16(e).u8(ft).u64(size).build();
+    let Some(fd) = r.u32() else { return out(errno::INVAL, 0, 0) };
+    let Some(desc) = procs.fd(pid, fd) else { return out(errno::BADF, 0, 0) };
+    match &desc.kind {
+        DescKind::Dir { .. } => out(errno::SUCCESS, filetype::DIRECTORY, 0),
+        DescKind::File { path } => {
+            let size = vfs.read(path).map(|c| c.len() as u64).unwrap_or(0);
+            out(errno::SUCCESS, filetype::REGULAR_FILE, size)
+        }
+        // stdin/stdout/stderr/terminal/pipes are streams, not sized files.
+        _ => out(errno::SUCCESS, filetype::CHARACTER_DEVICE, 0),
     }
-    Writer::new().u16(errno::SUCCESS).bytes(&bytes).build()
+}
+
+/// `fd_fdstat_set_flags(fd, flags)` — set the WASI fd-flags on an open fd (FR-18).
+/// Stored per-fd, reflected by `fd_fdstat_get`, and honored on write (O_APPEND).
+fn fd_fdstat_set_flags(procs: &mut ProcTable, pid: u32, r: &mut Reader) -> Vec<u8> {
+    let (Some(fd), Some(flags)) = (r.u32(), r.u16()) else {
+        return err_only(errno::INVAL);
+    };
+    if procs.set_fd_flags(pid, fd, flags) {
+        err_only(errno::SUCCESS)
+    } else {
+        err_only(errno::BADF)
+    }
+}
+
+/// `fd_ready(fd, writable)` — does an fd have a read/write that would NOT block?
+/// Backs a real `poll_oneoff` (the shim polls readiness + sleeps host-side).
+/// Request: `[fd u32][writable u8]`. Reply: `[errno u16][ready u8][nbytes u64]`
+/// where `nbytes` is the bytes available to read (0 for the writable query).
+fn fd_ready(vfs: &Vfs, procs: &ProcTable, pipes: &PipeTable, pid: u32, r: &mut Reader) -> Vec<u8> {
+    let out = |e: u16, ready: bool, n: u64| Writer::new().u16(e).u8(ready as u8).u64(n).build();
+    let (Some(fd), Some(writable)) = (r.u32(), r.u8()) else { return out(errno::INVAL, false, 0) };
+    let writable = writable != 0;
+    let Some(desc) = procs.fd(pid, fd) else { return out(errno::BADF, false, 0) };
+    let (ready, nbytes) = match &desc.kind {
+        // Regular files and directories never block.
+        DescKind::File { path } => {
+            let len = vfs.read(path).map(|c| c.len() as u64).unwrap_or(0);
+            (true, if writable { 0 } else { len.saturating_sub(desc.offset) })
+        }
+        DescKind::Dir { .. } => (true, 0),
+        // Writable streams always accept output (the terminal/captures never block).
+        DescKind::Stdout | DescKind::Stderr | DescKind::Terminal => (writable, 0),
+        // stdin is readable once bytes are buffered or it has hit EOF.
+        DescKind::Stdin => {
+            let n = procs.stdin_len(pid) as u64;
+            (!writable && (n > 0 || procs.stdin_is_eof(pid)), n)
+        }
+        // A pipe read end is ready when bytes are buffered or all writers are gone.
+        DescKind::PipeRead { id } => {
+            let n = pipes.buf_len(*id) as u64;
+            (!writable && (n > 0 || !pipes.write_open(*id)), n)
+        }
+        // A pipe write end is ready when there is space or all readers are gone
+        // (the latter so the next write returns EPIPE instead of blocking forever).
+        DescKind::PipeWrite { id } => (writable && (pipes.space(*id) > 0 || !pipes.read_open(*id)), 0),
+    };
+    out(errno::SUCCESS, ready, nbytes)
 }
 
 fn proc_exit(procs: &mut ProcTable, pipes: &mut PipeTable, pid: u32, r: &mut Reader) -> SyscallOutcome {
@@ -942,6 +1024,13 @@ fn k_spawn(
         return SyscallOutcome::ready(resp(errno::NOTCAPABLE, 0));
     }
     let Some(path) = r.string() else { return SyscallOutcome::ready(resp(errno::INVAL, 0)) };
+    // Validate the image exists as a readable file BEFORE allocating a child and
+    // emitting a SpawnRequest. Otherwise the host's fsRead(image_path) throws and
+    // crashes the ring pump, and the never-started child leaves the parent's wait()
+    // hung. Returning NOENT lets the shell cleanly report "command not found".
+    if !vfs.is_file(&path) {
+        return SyscallOutcome::ready(resp(errno::NOENT, 0));
+    }
     let Some(argc) = r.u32() else { return SyscallOutcome::ready(resp(errno::INVAL, 0)) };
     let mut argv = Vec::with_capacity(argc as usize);
     for _ in 0..argc {
@@ -991,6 +1080,12 @@ fn k_spawn(
     let child = procs.spawn(&name, SPAWN_PRIORITY, caps);
     let argv = if argv.is_empty() { vec![name] } else { argv };
     procs.set_argv(child, argv);
+    // The child inherits the parent's environment (FR-18), with PWD repointed at
+    // its own working directory so `$PWD` and tools that read it are correct.
+    let mut env = procs.env(pid);
+    env.retain(|e| !e.starts_with("PWD="));
+    env.push(format!("PWD={cwd}"));
+    procs.set_env(child, env);
 
     // Configure stdio fds 0/1/2 from the shell's spec.
     for (idx, spec) in specs.into_iter().enumerate() {
@@ -1148,6 +1243,13 @@ mod tests {
     fn setup() -> (Vfs, ProcTable, PipeTable, u32) {
         let mut vfs = Vfs::new(Box::new(MemStore::default()), Box::new(MemStore::default()));
         vfs.mount("/mnt", Backend::Idb).unwrap();
+        // Seed the guest images the spawn tests launch: k_spawn now validates the
+        // image exists in the VFS before requesting instantiation (a missing image
+        // returns NOENT instead of crashing the host fsRead). The bytes are a stub
+        // wasm magic — the unit tests never actually instantiate them.
+        for bin in ["/bin/echo", "/bin/x"] {
+            vfs.write(bin, b"\0asm".to_vec()).unwrap();
+        }
         let mut procs = ProcTable::new();
         let mut caps = CapabilitySet::default();
         caps.grant(Capability::FsPath { subtree: "/".into(), rights: Rights::RWX });
@@ -1286,9 +1388,9 @@ mod tests {
     }
 
     #[test]
-    fn args_reflect_argv_and_environ_is_empty() {
+    fn args_reflect_argv_and_environ_is_the_real_baseline() {
         let (mut vfs, mut procs, mut pipes, pid) = setup();
-        // The setup process has argv = ["t"] (its name); environ is empty.
+        // The setup process has argv = ["t"] (its name).
         procs.set_argv(pid, vec!["ls".into(), "-la".into()]);
         let sz = drive(&mut vfs, &mut procs, &mut pipes, pid, &req_simple(Op::ArgsSizesGet));
         assert_eq!(read_u16(&sz), errno::SUCCESS);
@@ -1296,10 +1398,142 @@ mod tests {
         assert_eq!(read_u32_at(&sz, 6), 7); // "ls\0-la\0" = 3 + 4
         let blob = resp_bytes(&drive(&mut vfs, &mut procs, &mut pipes, pid, &req_simple(Op::ArgsGet)));
         assert_eq!(blob, b"ls\0-la\0");
-        // environ stays empty.
+        // environ carries the real baseline (PATH/HOME/TERM/PWD), not an empty stub.
         let esz = drive(&mut vfs, &mut procs, &mut pipes, pid, &req_simple(Op::EnvironSizesGet));
-        assert_eq!(read_u32_at(&esz, 2), 0);
-        assert!(resp_bytes(&drive(&mut vfs, &mut procs, &mut pipes, pid, &req_simple(Op::EnvironGet))).is_empty());
+        assert_eq!(read_u32_at(&esz, 2), 4); // four baseline entries
+        let env_blob = resp_bytes(&drive(&mut vfs, &mut procs, &mut pipes, pid, &req_simple(Op::EnvironGet)));
+        // count matches the bufsize (sum of len+1 per entry).
+        assert_eq!(read_u32_at(&esz, 6) as usize, env_blob.len());
+        let env = String::from_utf8_lossy(&env_blob);
+        assert!(env.contains("PATH=/bin\0"));
+        assert!(env.contains("HOME=/home\0"));
+        assert!(env.contains("TERM=xterm-256color\0"));
+        assert!(env.contains("PWD=/\0"));
+    }
+
+    #[test]
+    fn fd_filestat_get_reports_real_type_and_size() {
+        let (mut vfs, mut procs, mut pipes, pid) = setup();
+        vfs.write("/mnt/data", b"hello world".to_vec()).unwrap(); // 11 bytes
+        let fd = read_u32_at(
+            &drive(&mut vfs, &mut procs, &mut pipes, pid, &req_path_open(PREOPEN_FD, "/mnt/data", 0)),
+            2,
+        );
+        let resp = drive(
+            &mut vfs,
+            &mut procs,
+            &mut pipes,
+            pid,
+            &Writer::new().u8(Op::FdFilestatGet as u8).u32(fd).build(),
+        );
+        assert_eq!(read_u16(&resp), errno::SUCCESS);
+        assert_eq!(resp[2], filetype::REGULAR_FILE);
+        assert_eq!(u64::from_le_bytes(resp[3..11].try_into().unwrap()), 11); // real size
+        // A directory fd reports DIRECTORY + size 0.
+        let dfd = read_u32_at(
+            &drive(&mut vfs, &mut procs, &mut pipes, pid, &req_path_open(PREOPEN_FD, "/mnt", oflags::DIRECTORY)),
+            2,
+        );
+        let dresp = drive(
+            &mut vfs,
+            &mut procs,
+            &mut pipes,
+            pid,
+            &Writer::new().u8(Op::FdFilestatGet as u8).u32(dfd).build(),
+        );
+        assert_eq!(dresp[2], filetype::DIRECTORY);
+        // Unknown fd → BADF.
+        let bad = drive(
+            &mut vfs,
+            &mut procs,
+            &mut pipes,
+            pid,
+            &Writer::new().u8(Op::FdFilestatGet as u8).u32(4242).build(),
+        );
+        assert_eq!(read_u16(&bad), errno::BADF);
+    }
+
+    #[test]
+    fn fd_fdstat_set_flags_persists_and_append_writes_go_to_eof() {
+        let (mut vfs, mut procs, mut pipes, pid) = setup();
+        vfs.write("/mnt/log", b"AAA".to_vec()).unwrap();
+        // Open the existing file with CREAT (grants RW; no TRUNC keeps the content).
+        let fd = read_u32_at(
+            &drive(&mut vfs, &mut procs, &mut pipes, pid, &req_path_open(PREOPEN_FD, "/mnt/log", oflags::CREAT)),
+            2,
+        );
+        // Set O_APPEND; fd_fdstat_get must read it back (not the old hardcoded 0).
+        let set = Writer::new().u8(Op::FdFdstatSetFlags as u8).u32(fd).u16(fdflags::APPEND).build();
+        assert_eq!(read_u16(&drive(&mut vfs, &mut procs, &mut pipes, pid, &set)), errno::SUCCESS);
+        let st = drive(&mut vfs, &mut procs, &mut pipes, pid, &Writer::new().u8(Op::FdFdstatGet as u8).u32(fd).build());
+        assert_eq!(u16::from_le_bytes([st[3], st[4]]), fdflags::APPEND); // flags reflected
+        // The descriptor offset is 0, but O_APPEND forces the write to EOF.
+        assert_eq!(read_u16(&drive(&mut vfs, &mut procs, &mut pipes, pid, &req_fd_write(fd, b"BBB"))), errno::SUCCESS);
+        assert_eq!(vfs.read("/mnt/log").unwrap(), b"AAABBB");
+        // Setting flags on an unknown fd → BADF.
+        let bad = Writer::new().u8(Op::FdFdstatSetFlags as u8).u32(4242).u16(fdflags::APPEND).build();
+        assert_eq!(read_u16(&drive(&mut vfs, &mut procs, &mut pipes, pid, &bad)), errno::BADF);
+    }
+
+    #[test]
+    fn fd_ready_reports_readiness_for_files_stdin_and_pipes() {
+        let (mut vfs, mut procs, mut pipes, pid) = setup();
+        let ready_req = |fd: u32, w: u8| Writer::new().u8(Op::FdReady as u8).u32(fd).u8(w).build();
+        // Regular file: always ready to read; nbytes = bytes from the offset.
+        vfs.write("/mnt/f", b"abcdef".to_vec()).unwrap();
+        let fd = read_u32_at(&drive(&mut vfs, &mut procs, &mut pipes, pid, &req_path_open(PREOPEN_FD, "/mnt/f", 0)), 2);
+        let r = drive(&mut vfs, &mut procs, &mut pipes, pid, &ready_req(fd, 0));
+        assert_eq!(read_u16(&r), errno::SUCCESS);
+        assert_eq!(r[2], 1); // ready
+        assert_eq!(u64::from_le_bytes(r[3..11].try_into().unwrap()), 6); // bytes available
+
+        // stdin (fd 0): not ready while empty + open.
+        assert_eq!(drive(&mut vfs, &mut procs, &mut pipes, pid, &ready_req(0, 0))[2], 0);
+        // Buffered stdin → ready, with the byte count.
+        procs.push_stdin(pid, b"hi");
+        let s = drive(&mut vfs, &mut procs, &mut pipes, pid, &ready_req(0, 0));
+        assert_eq!(s[2], 1);
+        assert_eq!(u64::from_le_bytes(s[3..11].try_into().unwrap()), 2);
+        // Drained + closed → still "ready" (so a read returns EOF rather than blocks).
+        procs.read_stdin(pid, 99);
+        procs.close_stdin(pid);
+        assert_eq!(drive(&mut vfs, &mut procs, &mut pipes, pid, &ready_req(0, 0))[2], 1);
+
+        // A pipe read end is ready once bytes are buffered.
+        let id = pipes.create();
+        let prfd = procs
+            .open_fd(pid, Descriptor { kind: DescKind::PipeRead { id }, offset: 0, rights: Rights::R })
+            .unwrap();
+        assert_eq!(drive(&mut vfs, &mut procs, &mut pipes, pid, &ready_req(prfd, 0))[2], 0); // empty
+        pipes.add_writer(id);
+        pipes.write(id, b"x");
+        assert_eq!(drive(&mut vfs, &mut procs, &mut pipes, pid, &ready_req(prfd, 0))[2], 1); // has data
+
+        // Unknown fd → BADF.
+        assert_eq!(read_u16(&drive(&mut vfs, &mut procs, &mut pipes, pid, &ready_req(4242, 0))), errno::BADF);
+    }
+
+    #[test]
+    fn kspawn_child_inherits_env_with_pwd_set_to_its_cwd() {
+        let (mut vfs, mut procs, mut pipes, sh) = shell_setup();
+        // Give the shell a custom variable to prove inheritance (not just defaults).
+        let mut env = procs.env(sh);
+        env.push("EDITOR=editor".to_string());
+        procs.set_env(sh, env);
+        // Spawn a child with cwd=/home/user.
+        let mut w = Writer::new();
+        w.u8(Op::KSpawn as u8).bytes(b"/bin/echo").u32(1).bytes(b"echo");
+        for _ in 0..3 {
+            w.u8(0); // terminal stdio
+        }
+        w.bytes(b"/home/user"); // cwd
+        let child = read_u32_at(&dispatch(&mut vfs, &mut procs, &mut pipes, sh, &w.build()).reply.unwrap(), 2);
+        let cenv = procs.env(child);
+        assert!(cenv.iter().any(|e| e == "PATH=/bin"), "inherited PATH");
+        assert!(cenv.iter().any(|e| e == "EDITOR=editor"), "inherited custom var");
+        assert!(cenv.iter().any(|e| e == "PWD=/home/user"), "PWD repointed to cwd");
+        // PWD appears exactly once (the parent's PWD=/ was replaced, not duplicated).
+        assert_eq!(cenv.iter().filter(|e| e.starts_with("PWD=")).count(), 1);
     }
 
     #[test]
@@ -1317,26 +1551,6 @@ mod tests {
         let reqn = Writer::new().u8(Op::FdPrestatDirName as u8).u32(3).u32(16).build();
         let resp = drive(&mut vfs, &mut procs, &mut pipes, pid, &reqn);
         assert_eq!(resp_bytes(&resp), b"/");
-    }
-
-    #[test]
-    fn random_get_fills_len_bytes() {
-        let (mut vfs, mut procs, mut pipes, pid) = setup();
-        let req = Writer::new().u8(Op::RandomGet as u8).u32(16).build();
-        let resp = drive(&mut vfs, &mut procs, &mut pipes, pid, &req);
-        assert_eq!(read_u16(&resp), errno::SUCCESS);
-        assert_eq!(resp_bytes(&resp).len(), 16);
-    }
-
-    #[test]
-    fn clock_time_get_is_nonzero_deterministic() {
-        let (mut vfs, mut procs, mut pipes, pid) = setup();
-        let req = Writer::new().u8(Op::ClockTimeGet as u8).u32(0).u64(0).build();
-        let resp = drive(&mut vfs, &mut procs, &mut pipes, pid, &req);
-        assert_eq!(read_u16(&resp), errno::SUCCESS);
-        let t = u64::from_le_bytes([resp[2], resp[3], resp[4], resp[5], resp[6], resp[7], resp[8], resp[9]]);
-        assert_eq!(t, M1_CLOCK_NS);
-        assert!(t > 0);
     }
 
     #[test]
@@ -1571,6 +1785,33 @@ mod tests {
         let (mut vfs, mut procs, mut pipes, pid) = setup(); // no Spawn cap
         let out = dispatch(&mut vfs, &mut procs, &mut pipes, pid, &req_kspawn_term("/bin/echo", &["echo"]));
         assert_eq!(read_u16(&out.reply.unwrap()), errno::NOTCAPABLE);
+        assert!(out.spawn.is_none());
+    }
+
+    #[test]
+    fn kspawn_missing_image_returns_noent_without_allocating_a_child() {
+        // Regression: typing a non-existent command (e.g. a typo) used to allocate
+        // a child and emit a SpawnRequest, after which the host's fsRead(image_path)
+        // threw and crashed the ring pump while the parent's wait() hung forever.
+        // k_spawn now validates the image is a readable file up front.
+        let (mut vfs, mut procs, mut pipes, sh) = shell_setup();
+        let before = procs.count();
+        let out = dispatch(&mut vfs, &mut procs, &mut pipes, sh, &req_kspawn_term("/bin/nosuchcmd", &["nosuchcmd"]));
+        let resp = out.reply.expect("ready");
+        assert_eq!(read_u16(&resp), errno::NOENT);
+        assert_eq!(read_u32_at(&resp, 2), 0, "no child pid on failure");
+        assert!(out.spawn.is_none(), "no instantiation request for a missing image");
+        assert_eq!(procs.count(), before, "no child process leaked");
+    }
+
+    #[test]
+    fn kspawn_directory_path_returns_noent_not_a_spawn_request() {
+        // A directory is not a runnable image; spawning one must fail cleanly rather
+        // than reach the host where fsRead would error with IsDir.
+        let (mut vfs, mut procs, mut pipes, sh) = shell_setup();
+        vfs.mkdir("/bin/adir").unwrap();
+        let out = dispatch(&mut vfs, &mut procs, &mut pipes, sh, &req_kspawn_term("/bin/adir", &["adir"]));
+        assert_eq!(read_u16(&out.reply.expect("ready")), errno::NOENT);
         assert!(out.spawn.is_none());
     }
 
