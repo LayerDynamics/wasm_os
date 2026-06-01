@@ -76,6 +76,8 @@ export interface AsyncKernelControl {
   spawnEmulator(opts: EmulatorOptions): Promise<number>;
   /** Register a listener for the emulator's serial console (running text, M5). */
   onEmulatorSerial(cb: (pid: number, text: string) => void): void;
+  /** Deliver brokered keystrokes to the emulator's guest console (M5-T3). */
+  emulatorInput(pid: number, text: string): Promise<void>;
   /** Resolve when the process exits, with its exit code + isolation proof. */
   wait(pid: number): Promise<ProcExit>;
   /** Deliver input bytes to a process's stdin (terminal keystrokes, M2). */
@@ -235,6 +237,7 @@ export async function boot(): Promise<BootResult> {
     onEmulatorSerial: (cb) => {
       emulatorSerialListeners.push(cb);
     },
+    emulatorInput: (pid, text) => call("emulatorInput", { pid, text }),
     wait: (pid) => call("wait", { pid }),
     stdin: (pid, bytes) => call("stdin", { pid, bytes }),
     deliverInput: (pid, bytes) => call("deliverInput", { pid, bytes }),

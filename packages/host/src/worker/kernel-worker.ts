@@ -295,6 +295,13 @@ function spawnEmulator(name: string, boot: EmulatorBoot): number {
   return pid;
 }
 
+/** Deliver brokered keystrokes to the emulator's guest console (M5-T3). The text
+ * is written to the guest's ttyS0 (the shell's stdin) by the emulator worker. */
+function emulatorInput(pid: number, text: string): void {
+  const emu = emulators.get(pid);
+  if (emu && !emu.exited) emu.worker.postMessage({ type: "input", text });
+}
+
 /** Tear down the emulator worker + zombify its PID in the kernel (M5 kill/reap). */
 function reapEmulator(pid: number, emu: EmulatorRuntime): void {
   if (emu.exited) return;
@@ -443,6 +450,10 @@ ctx.onmessage = async (ev: MessageEvent) => {
         break;
       case "spawnEmulator":
         result = spawnEmulator(args.name as string, args.boot as EmulatorBoot);
+        break;
+      case "emulatorInput":
+        emulatorInput(args.pid as number, args.text as string);
+        result = undefined;
         break;
       case "wait":
         result = await waitFor(args.pid as number);
