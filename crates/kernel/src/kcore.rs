@@ -429,6 +429,9 @@ impl KernelCore {
         }
         let target = u32::from_le_bytes([req[1], req[2], req[3], req[4]]);
         let sig = req[5];
+        if target == 1 {
+            return err(syscall::errno::NOTCAPABLE);
+        }
         if self.procs.get(target).is_none() {
             return err(syscall::errno::SRCH);
         }
