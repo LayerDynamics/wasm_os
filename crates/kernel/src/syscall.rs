@@ -942,6 +942,13 @@ fn k_spawn(
         return SyscallOutcome::ready(resp(errno::NOTCAPABLE, 0));
     }
     let Some(path) = r.string() else { return SyscallOutcome::ready(resp(errno::INVAL, 0)) };
+    // Validate the image exists as a readable file BEFORE allocating a child and
+    // emitting a SpawnRequest. Otherwise the host's fsRead(image_path) throws and
+    // crashes the ring pump, and the never-started child leaves the parent's wait()
+    // hung. Returning NOENT lets the shell cleanly report "command not found".
+    if !vfs.is_file(&path) {
+        return SyscallOutcome::ready(resp(errno::NOENT, 0));
+    }
     let Some(argc) = r.u32() else { return SyscallOutcome::ready(resp(errno::INVAL, 0)) };
     let mut argv = Vec::with_capacity(argc as usize);
     for _ in 0..argc {
@@ -1148,6 +1155,13 @@ mod tests {
     fn setup() -> (Vfs, ProcTable, PipeTable, u32) {
         let mut vfs = Vfs::new(Box::new(MemStore::default()), Box::new(MemStore::default()));
         vfs.mount("/mnt", Backend::Idb).unwrap();
+        // Seed the guest images the spawn tests launch: k_spawn now validates the
+        // image exists in the VFS before requesting instantiation (a missing image
+        // returns NOENT instead of crashing the host fsRead). The bytes are a stub
+        // wasm magic — the unit tests never actually instantiate them.
+        for bin in ["/bin/echo", "/bin/x"] {
+            vfs.write(bin, b"\0asm".to_vec()).unwrap();
+        }
         let mut procs = ProcTable::new();
         let mut caps = CapabilitySet::default();
         caps.grant(Capability::FsPath { subtree: "/".into(), rights: Rights::RWX });
@@ -1571,6 +1585,33 @@ mod tests {
         let (mut vfs, mut procs, mut pipes, pid) = setup(); // no Spawn cap
         let out = dispatch(&mut vfs, &mut procs, &mut pipes, pid, &req_kspawn_term("/bin/echo", &["echo"]));
         assert_eq!(read_u16(&out.reply.unwrap()), errno::NOTCAPABLE);
+        assert!(out.spawn.is_none());
+    }
+
+    #[test]
+    fn kspawn_missing_image_returns_noent_without_allocating_a_child() {
+        // Regression: typing a non-existent command (e.g. a typo) used to allocate
+        // a child and emit a SpawnRequest, after which the host's fsRead(image_path)
+        // threw and crashed the ring pump while the parent's wait() hung forever.
+        // k_spawn now validates the image is a readable file up front.
+        let (mut vfs, mut procs, mut pipes, sh) = shell_setup();
+        let before = procs.count();
+        let out = dispatch(&mut vfs, &mut procs, &mut pipes, sh, &req_kspawn_term("/bin/nosuchcmd", &["nosuchcmd"]));
+        let resp = out.reply.expect("ready");
+        assert_eq!(read_u16(&resp), errno::NOENT);
+        assert_eq!(read_u32_at(&resp, 2), 0, "no child pid on failure");
+        assert!(out.spawn.is_none(), "no instantiation request for a missing image");
+        assert_eq!(procs.count(), before, "no child process leaked");
+    }
+
+    #[test]
+    fn kspawn_directory_path_returns_noent_not_a_spawn_request() {
+        // A directory is not a runnable image; spawning one must fail cleanly rather
+        // than reach the host where fsRead would error with IsDir.
+        let (mut vfs, mut procs, mut pipes, sh) = shell_setup();
+        vfs.mkdir("/bin/adir").unwrap();
+        let out = dispatch(&mut vfs, &mut procs, &mut pipes, sh, &req_kspawn_term("/bin/adir", &["adir"]));
+        assert_eq!(read_u16(&out.reply.expect("ready")), errno::NOENT);
         assert!(out.spawn.is_none());
     }
 

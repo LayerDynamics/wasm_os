@@ -177,7 +177,7 @@ impl Vfs {
             || !self.kv_keys(b, &dir_marker(&child_prefix)).is_empty()
     }
 
-    fn is_file(&self, path: &str) -> bool {
+    pub fn is_file(&self, path: &str) -> bool {
         self.resolve(path).map(|b| self.kv_get(b, path).is_some()).unwrap_or(false)
     }
 

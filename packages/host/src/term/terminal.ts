@@ -41,10 +41,26 @@ export function attachTerminal(
   control.onOutput((_pid, bytes) => write(dec.decode(bytes)));
 
   // Terminal → kernel (local echo, then deliver to the shell's stdin).
+  //
+  // We must NOT blindly echo raw input back into xterm: pressing an arrow/function
+  // key makes xterm emit an escape sequence (e.g. ESC[A), and writing that straight
+  // back into xterm's own parser produces "Parsing error" spam. The shell is also
+  // line-oriented and has no use for cursor-movement keys. So:
+  //   • Enter (CR)         → echo CRLF, send "\n" to the shell.
+  //   • escape sequences   → dropped (not echoed, not forwarded).
+  //   • printable text      → echoed and forwarded verbatim.
+  //   • other control bytes → forwarded to the shell (e.g. Ctrl-C) but not echoed.
+  const isPrintable = (s: string) =>
+    s.length > 0 && [...s].every((ch) => { const c = ch.charCodeAt(0); return c >= 0x20 && c !== 0x7f; });
   term.onData((data) => {
-    write(data === "\r" ? "\r\n" : data);
-    const toSend = data === "\r" ? "\n" : data;
-    void control.stdin(shellPid, enc.encode(toSend));
+    if (data === "\r") {
+      write("\r\n");
+      void control.stdin(shellPid, enc.encode("\n"));
+      return;
+    }
+    if (data.charCodeAt(0) === 0x1b) return; // ESC-prefixed: arrows, F-keys, etc.
+    if (isPrintable(data)) write(data);
+    void control.stdin(shellPid, enc.encode(data));
   });
 
   return { term, log: () => logText };
