@@ -43,6 +43,29 @@ export interface EmulatorOptions {
   memoryMb?: number;
 }
 
+/** A small JSON descriptor naming an image to boot, fetched at runtime (M5-T7). */
+export interface ImageManifest {
+  name?: string;
+  bzimage: string;
+  cmdline?: string;
+}
+
+// Fixed vendored v86 runtime + BIOS (GPLv2, third_party/v86/).
+const V86_BASE = "/third_party/v86";
+const DEFAULT_CMDLINE = "console=ttyS0 tsc=reliable mitigations=off random.trust_cpu=on";
+
+/** Build the emulator-worker boot message for a given kernel image (M5). */
+function emulatorBoot(bzimage: string, cmdline?: string, memoryMb = 128) {
+  return {
+    wasmPath: `${V86_BASE}/v86.wasm`,
+    bios: `${V86_BASE}/seabios.bin`,
+    vgaBios: `${V86_BASE}/vgabios.bin`,
+    bzimage,
+    cmdline: cmdline ?? DEFAULT_CMDLINE,
+    memoryMb,
+  };
+}
+
 /** A compositor surface a process created (M3): a shared RGBA framebuffer. */
 export interface SurfaceInfo {
   pid: number;
@@ -76,6 +99,9 @@ export interface AsyncKernelControl {
   /** Launch the privileged emulator process (M5, FR-27): a Native process whose
    * body is a dedicated v86 worker booting a real Linux. Returns its PID. */
   spawnEmulator(opts: EmulatorOptions): Promise<number>;
+  /** Boot the emulator from an image named by a manifest fetched at runtime
+   * (M5-T7) — the system loads + runs an image resolved at launch, not hardcoded. */
+  spawnEmulatorFromManifest(manifestUrl: string): Promise<number>;
   /** Register a listener for the emulator's serial console (running text, M5). */
   onEmulatorSerial(cb: (pid: number, text: string) => void): void;
   /** Deliver brokered keystrokes to the emulator's guest console (M5-T3). */
@@ -227,16 +253,18 @@ export async function boot(): Promise<BootResult> {
     spawnEmulator: (opts) =>
       call("spawnEmulator", {
         name: opts.name ?? "linux",
-        boot: {
-          // Fixed vendored v86 runtime + BIOS (GPLv2, third_party/v86/).
-          wasmPath: "/third_party/v86/v86.wasm",
-          bios: "/third_party/v86/seabios.bin",
-          vgaBios: "/third_party/v86/vgabios.bin",
-          bzimage: opts.bzimage,
-          cmdline: opts.cmdline ?? "console=ttyS0 tsc=reliable mitigations=off random.trust_cpu=on",
-          memoryMb: opts.memoryMb ?? 128,
-        },
+        boot: emulatorBoot(opts.bzimage, opts.cmdline, opts.memoryMb),
       }),
+    spawnEmulatorFromManifest: async (manifestUrl) => {
+      // Fetch a small image descriptor at runtime, then boot the image it names
+      // ("run the image from within it", M5-T7). The descriptor is small enough to
+      // travel any path; the kernel image itself is loaded by v86 from its URL.
+      const m = (await (await fetch(manifestUrl)).json()) as ImageManifest;
+      return call<number>("spawnEmulator", {
+        name: m.name ?? "linux",
+        boot: emulatorBoot(m.bzimage, m.cmdline),
+      });
+    },
     onEmulatorSerial: (cb) => {
       emulatorSerialListeners.push(cb);
     },
