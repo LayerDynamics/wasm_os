@@ -34,6 +34,9 @@ let emulator: V86 | undefined;
 /** Full serial console captured so far (boot log + shell I/O). */
 let serial = "";
 let flushQueued = false;
+/** Run-to-budget heartbeat (M5-T5): a periodic tick the kernel accounts as the
+ * emulator's CPU activity (it makes no syscalls of its own). */
+let heartbeat: ReturnType<typeof setInterval> | undefined;
 
 const ctx = self as unknown as Worker;
 
@@ -131,6 +134,9 @@ function boot(m: BootMessage): void {
     ctx.postMessage({ type: "started" });
   }) as (a: never) => void);
 
+  // Run-to-budget heartbeat (M5-T5): report a scheduling quantum while running.
+  heartbeat = setInterval(() => ctx.postMessage({ type: "tick" }), 250);
+
   // Framebuffer (M5-T4): mirror the VGA text console into the shared RGBA surface.
   initScreen();
   emulator.add_listener("screen-set-size", (([w, h, bpp]: [number, number, number]) => {
@@ -161,6 +167,8 @@ ctx.onmessage = (e: MessageEvent<InMessage>) => {
       emulator?.serial0_send(d.text);
       break;
     case "stop":
+      if (heartbeat !== undefined) clearInterval(heartbeat);
+      heartbeat = undefined;
       void emulator?.destroy();
       emulator = undefined;
       break;

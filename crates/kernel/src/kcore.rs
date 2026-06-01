@@ -201,6 +201,16 @@ impl KernelCore {
         self.procs.kind_of(pid)
     }
 
+    /// Account a run-to-budget quantum for the emulator (M5-T5, FR-28). The emulator
+    /// makes no syscalls, so its CPU activity surfaced in `top`/`proc_list` comes
+    /// from periodic wall-budget heartbeats its worker reports. Ignored for any pid
+    /// that is not the registered emulator (it cannot inflate another process).
+    pub fn account_emulator(&mut self, pid: u32, ticks: u64) {
+        if self.emulator_pid == Some(pid) {
+            self.sched.account(pid, ticks);
+        }
+    }
+
     /// Route one syscall for `pid` (FR-4). Returns a [`syscall::SyscallOutcome`]
     /// — a ready reply, or a park (M2) the kworker defers until a wakeup.
     pub fn service_syscall(&mut self, pid: u32, req: &[u8]) -> syscall::SyscallOutcome {

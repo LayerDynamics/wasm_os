@@ -169,6 +169,10 @@ mod component {
             KERNEL.with(|k| k.borrow_mut().spawn_emulator(&name))
         }
 
+        fn account_emulator(pid: u32, ticks: u64) {
+            KERNEL.with(|k| k.borrow_mut().account_emulator(pid, ticks));
+        }
+
         fn service_syscall(pid: u32, request: Vec<u8>) -> WSyscallOutcome {
             let out = KERNEL.with(|k| k.borrow_mut().service_syscall(pid, &request));
             WSyscallOutcome {

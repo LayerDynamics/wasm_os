@@ -45,6 +45,7 @@ interface KernelControl {
   listProcs(): Array<{ pid: number; name: string; state: string }>;
   spawn(spec: SpawnSpec): number;
   spawnEmulator(name: string): number;
+  accountEmulator(pid: number, ticks: bigint): void;
   serviceSyscall(pid: number, request: Uint8Array): SyscallOutcome;
   deliverStdin(pid: number, bytes: Uint8Array): Uint32Array;
   deliverInput(pid: number, bytes: Uint8Array): Uint32Array;
@@ -308,6 +309,10 @@ function spawnEmulator(name: string, boot: EmulatorBoot): number {
       ctx.postMessage({ type: "surface", pid, surfaceId: sid, width: d.width, height: d.height, sab: d.sab });
     } else if (d.type === "present" && emu.surfaceId !== undefined) {
       ctx.postMessage({ type: "present", surfaceId: emu.surfaceId });
+    } else if (d.type === "tick") {
+      // Run-to-budget accounting (M5-T5): the emulator is alive and consuming a
+      // scheduling budget — surface it as CPU activity in proc_list/top.
+      requireControl().accountEmulator(pid, 1n);
     }
   };
   worker.postMessage({ type: "boot", ...boot });
