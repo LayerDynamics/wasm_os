@@ -581,8 +581,8 @@ impl KernelCore {
     /// The host delivers a brokered fetch response (M5-T6); buffer it and wake the
     /// parked caller so its re-driven `net_request` returns the bytes.
     pub fn deliver_net(&mut self, pid: u32, ok: bool, body: Vec<u8>) -> Vec<u32> {
-        self.net_responses.insert(pid, (ok, body));
         if self.procs.blocked_on(pid) == Some(WaitReason::NetReq) {
+            self.net_responses.insert(pid, (ok, body));
             self.procs.clear_blocked(pid);
             vec![pid]
         } else {
