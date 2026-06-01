@@ -34,5 +34,7 @@ declare module "*/libv86.mjs" {
     serial0_send(data: string): void;
     keyboard_send_text(text: string): void;
     keyboard_send_scancodes(codes: number[]): void;
+    create_file(file: string, data: Uint8Array): Promise<void>;
+    read_file(file: string): Promise<Uint8Array>;
   }
 }

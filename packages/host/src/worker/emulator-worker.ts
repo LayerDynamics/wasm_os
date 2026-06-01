@@ -24,6 +24,8 @@ interface BootMessage {
   bzimage: string;
   cmdline: string;
   memoryMb?: number;
+  /** Files to seed into the 9p share (M5-T8) so the guest sees them in /mnt. */
+  shareSeed?: Array<{ name: string; data: Uint8Array }>;
 }
 type InMessage =
   | BootMessage
@@ -123,6 +125,10 @@ function boot(m: BootMessage): void {
     // surface is wired in M5-T4.
     memory_size: (m.memoryMb ?? 64) * 1024 * 1024,
     vga_memory_size: 2 * 1024 * 1024,
+    // virtio-9p shared folder (M5-T8, FR-29): an empty 9p fs the guest auto-mounts
+    // (the buildroot image mounts the `host9p` tag on /mnt). We seed it from the
+    // host VFS below and mirror guest writes back.
+    filesystem: {},
   });
   // Decode the guest's ttyS0 byte stream into the running console text.
   const decoder = new TextDecoder();
@@ -132,6 +138,23 @@ function boot(m: BootMessage): void {
   }) as (a: never) => void);
   emulator.add_listener("emulator-started", (() => {
     ctx.postMessage({ type: "started" });
+  }) as (a: never) => void);
+
+  // virtio-9p shared folder (M5-T8): seed the share AFTER the guest attaches to the
+  // 9p fs (mounts /mnt) — seeding before/during the attach handshake gives EBUSY.
+  emulator.add_listener("9p-attach", (() => {
+    for (const f of m.shareSeed ?? []) {
+      void emulator?.create_file(f.name, f.data);
+    }
+  }) as (a: never) => void);
+  // When the guest writes a file under the share, read it back and mirror it to the
+  // host VFS.
+  emulator.add_listener("9p-write-end", (([filename]: [string, number]) => {
+    const name = filename.replace(/^\/+/, "");
+    void emulator
+      ?.read_file(name)
+      .then((data) => ctx.postMessage({ type: "9pWrite", name, data }))
+      .catch(() => {});
   }) as (a: never) => void);
 
   // Run-to-budget heartbeat (M5-T5): report a scheduling quantum while running.

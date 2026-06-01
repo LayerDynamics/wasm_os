@@ -109,6 +109,29 @@ interface EmulatorBoot {
   bzimage: string;
   cmdline: string;
   memoryMb?: number;
+  shareSeed?: Array<{ name: string; data: Uint8Array }>;
+}
+
+/** The host /home subtree bridged into the guest's 9p share (M5-T8, FR-29). */
+const SHARE_DIR = "/home/shared";
+
+/** Read the files under the share dir to seed the guest's 9p mount (M5-T8). */
+function readShareSeed(): Array<{ name: string; data: Uint8Array }> {
+  const seed: Array<{ name: string; data: Uint8Array }> = [];
+  try {
+    // fsList returns FULL paths; the 9p file name is the basename.
+    for (const full of requireControl().fsList(SHARE_DIR)) {
+      const name = full.split("/").pop() ?? full;
+      try {
+        seed.push({ name, data: requireControl().fsRead(full) });
+      } catch {
+        /* a sub-directory or unreadable entry — skip */
+      }
+    }
+  } catch {
+    /* no share dir yet */
+  }
+  return seed;
 }
 /** The privileged emulator process (M5): a Native process whose body is a dedicated
  * v86 worker, tracked separately from the ring-driven `procs` so the wasi path is
@@ -300,6 +323,8 @@ function spawnEmulator(name: string, boot: EmulatorBoot): number {
       width?: number;
       height?: number;
       sab?: SharedArrayBuffer;
+      name?: string;
+      data?: Uint8Array;
     };
     if (d.type === "serial" && typeof d.text === "string") {
       emu.serial = d.text;
@@ -319,9 +344,13 @@ function spawnEmulator(name: string, boot: EmulatorBoot): number {
       // Run-to-budget accounting (M5-T5): the emulator is alive and consuming a
       // scheduling budget — surface it as CPU activity in proc_list/top.
       requireControl().accountEmulator(pid, 1n);
+    } else if (d.type === "9pWrite" && d.name && d.data) {
+      // A guest write under the 9p share — mirror it back to the host VFS (M5-T8).
+      requireControl().fsWrite(`${SHARE_DIR}/${d.name}`, d.data);
     }
   };
-  worker.postMessage({ type: "boot", ...boot });
+  // Seed the guest's 9p share with the current host /home/shared contents (M5-T8).
+  worker.postMessage({ type: "boot", ...boot, shareSeed: readShareSeed() });
   return pid;
 }
 
