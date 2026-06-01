@@ -112,8 +112,12 @@ interface EmulatorRuntime {
   worker: Worker;
   serial: string;
   exited: boolean;
+  surfaceId?: number;
 }
 const emulators = new Map<number, EmulatorRuntime>();
+/** Surface ids for emulator framebuffers, in a high namespace that can't collide
+ * with the kernel's win_surface ids (allocated from 1). */
+let nextEmulatorSurfaceId = 0x7000_0000;
 
 /**
  * Parked syscalls (M2): a pid → the request bytes it parked on. While parked,
@@ -283,12 +287,27 @@ function spawnEmulator(name: string, boot: EmulatorBoot): number {
   const emu: EmulatorRuntime = { worker, serial: "", exited: false };
   emulators.set(pid, emu);
   worker.onmessage = (e: MessageEvent) => {
-    const d = e.data as { type?: string; text?: string };
+    const d = e.data as {
+      type?: string;
+      text?: string;
+      width?: number;
+      height?: number;
+      sab?: SharedArrayBuffer;
+    };
     if (d.type === "serial" && typeof d.text === "string") {
       emu.serial = d.text;
       ctx.postMessage({ type: "emulatorSerial", pid, text: d.text });
     } else if (d.type === "started") {
       ctx.postMessage({ type: "emulatorStarted", pid });
+    } else if (d.type === "surface" && d.sab) {
+      // The emulator's framebuffer — relay it as a compositor surface (reusing the
+      // M3 surface/present path), with a high surface id owned by this process.
+      const sid = nextEmulatorSurfaceId++;
+      emu.surfaceId = sid;
+      surfaceOwners.set(sid, pid);
+      ctx.postMessage({ type: "surface", pid, surfaceId: sid, width: d.width, height: d.height, sab: d.sab });
+    } else if (d.type === "present" && emu.surfaceId !== undefined) {
+      ctx.postMessage({ type: "present", surfaceId: emu.surfaceId });
     }
   };
   worker.postMessage({ type: "boot", ...boot });

@@ -37,6 +37,66 @@ let flushQueued = false;
 
 const ctx = self as unknown as Worker;
 
+// --- Text-mode framebuffer (M5-T4): render v86's VGA console to an RGBA surface ---
+// v86 emits `screen-put-char(row,col,chr)` in text mode; we keep a character grid,
+// render it to an OffscreenCanvas, and copy the pixels into a shared RGBA buffer
+// that the compositor blits to a window (the same surface/present path the M3
+// canvas apps use). The console stays 80x25 text — graphics mode is not needed to
+// boot to a shell.
+const CELL_W = 9;
+const CELL_H = 16;
+let cols = 80;
+let rows = 25;
+let grid = new Uint16Array(cols * rows).fill(32);
+let screen: OffscreenCanvas | undefined;
+let screenCtx: OffscreenCanvasRenderingContext2D | undefined;
+let fbSab: SharedArrayBuffer | undefined;
+let fbView: Uint8Array | undefined;
+let renderQueued = false;
+
+function initScreen(): void {
+  const w = cols * CELL_W;
+  const h = rows * CELL_H;
+  screen = new OffscreenCanvas(w, h);
+  screenCtx = screen.getContext("2d") ?? undefined;
+  if (screenCtx) {
+    screenCtx.font = `${CELL_H}px monospace`;
+    screenCtx.textBaseline = "top";
+  }
+  fbSab = new SharedArrayBuffer(w * h * 4);
+  fbView = new Uint8Array(fbSab);
+  // Hand the shared framebuffer to the host, which opens the emulator's window.
+  ctx.postMessage({ type: "surface", width: w, height: h, sab: fbSab });
+  scheduleRender();
+}
+
+function scheduleRender(): void {
+  if (renderQueued) return;
+  renderQueued = true;
+  setTimeout(() => {
+    renderQueued = false;
+    renderScreen();
+  }, 50); // ~20fps coalesced
+}
+
+function renderScreen(): void {
+  if (!screen || !screenCtx || !fbView) return;
+  screenCtx.fillStyle = "#0b0e14";
+  screenCtx.fillRect(0, 0, screen.width, screen.height);
+  screenCtx.fillStyle = "#cdd3de";
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      const chr = grid[r * cols + c];
+      if (chr && chr !== 32) {
+        screenCtx.fillText(String.fromCharCode(chr), c * CELL_W, r * CELL_H);
+      }
+    }
+  }
+  const img = screenCtx.getImageData(0, 0, screen.width, screen.height);
+  fbView.set(img.data);
+  ctx.postMessage({ type: "present" });
+}
+
 function flushSerial(): void {
   if (flushQueued) return;
   flushQueued = true;
@@ -69,6 +129,24 @@ function boot(m: BootMessage): void {
   }) as (a: never) => void);
   emulator.add_listener("emulator-started", (() => {
     ctx.postMessage({ type: "started" });
+  }) as (a: never) => void);
+
+  // Framebuffer (M5-T4): mirror the VGA text console into the shared RGBA surface.
+  initScreen();
+  emulator.add_listener("screen-set-size", (([w, h, bpp]: [number, number, number]) => {
+    // Text mode only (bpp 0). Re-init if the console resized before any drawing.
+    if (bpp === 0 && w > 0 && h > 0 && w <= 240 && h <= 100 && (w !== cols || h !== rows)) {
+      cols = w;
+      rows = h;
+      grid = new Uint16Array(cols * rows).fill(32);
+      initScreen();
+    }
+  }) as (a: never) => void);
+  emulator.add_listener("screen-put-char", (([row, col, chr]: [number, number, number]) => {
+    if (row >= 0 && row < rows && col >= 0 && col < cols) {
+      grid[row * cols + col] = chr;
+      scheduleRender();
+    }
   }) as (a: never) => void);
 }
 

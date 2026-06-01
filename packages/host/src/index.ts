@@ -44,6 +44,28 @@ async function loadBin(control: BootResult["control"], name: string): Promise<Ar
   return bytes;
 }
 
+/** Translate a 12-byte brokered key record (see compositor/input.ts) into the
+ * text/escape sequence a serial console expects (M5-T4). Only key-down produces
+ * output; key-up and unmapped keys yield "". */
+function keyEventToConsoleText(bytes: Uint8Array): string {
+  const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const kind = dv.getUint8(0);
+  if (kind !== 4) return ""; // EV_KEY_DOWN only
+  const key = dv.getUint32(6, true);
+  if (key < 0x100) return String.fromCharCode(key); // printable (layout+shift applied)
+  switch (key) {
+    case 0x100: return "\n"; // Enter
+    case 0x101: return "\x7f"; // Backspace → DEL
+    case 0x102: return "\x1b[D"; // ArrowLeft
+    case 0x103: return "\x1b[C"; // ArrowRight
+    case 0x104: return "\x1b[A"; // ArrowUp
+    case 0x105: return "\x1b[B"; // ArrowDown
+    case 0x106: return "\t"; // Tab
+    case 0x107: return "\x1b"; // Escape
+    default: return "";
+  }
+}
+
 async function main() {
   const result = await boot();
   // Capture full cold-load (navigation start → kernel ready) BEFORE the userland
@@ -72,10 +94,22 @@ async function main() {
   // Desktop theme + wallpaper, persisted to /home (FR-26); applied on boot.
   new ThemeManager(control, desktop, taskbarEl);
 
+  // The emulator processes (M5) — their windows route keys to the guest console as
+  // text, not as brokered input-event records (they make no win_read_input syscall).
+  const emulatorPids = new Set<number>();
+
   // Brokered input (M3-T3): the focused canvas window's keyboard/mouse is routed
-  // to its owning process; keys target the active canvas window.
+  // to its owning process; keys target the active canvas window. For an emulator
+  // window, keystrokes are translated to console text and sent to the guest (M5-T4).
   const inputRouter = new InputRouter(
-    (pid, bytes) => void control.deliverInput(pid, bytes),
+    (pid, bytes) => {
+      if (emulatorPids.has(pid)) {
+        const text = keyEventToConsoleText(bytes);
+        if (text) void control.emulatorInput(pid, text);
+      } else {
+        void control.deliverInput(pid, bytes);
+      }
+    },
     () => {
       const w = compositor.activeWindow();
       return w && w.surface === "canvas" ? w.ownerPid : undefined;
@@ -94,7 +128,10 @@ async function main() {
     surfaces.closeByWindow(id);
     if (ownerPid !== undefined) void control.kill(ownerPid);
   };
-  control.onExit((pid) => compositor.closeByOwner(pid));
+  control.onExit((pid) => {
+    compositor.closeByOwner(pid);
+    emulatorPids.delete(pid);
+  });
 
   // Session snapshot/restore (M4-T9, FR-35): records open app windows + geometry
   // to /home/.session.json and re-opens them on the next boot.
@@ -115,7 +152,15 @@ async function main() {
   for (const app of APPS) {
     session.register(app.name, () => control.spawn(bins[app.name]!, { name: app.name, ...app.opts }));
   }
-  compositor.setLauncherApps(APPS.map((a) => ({ label: a.label, launch: () => void session.launch(a.name) })));
+  // Launch the privileged emulator process (M5): boots real Linux into a window.
+  const launchLinux = async () => {
+    const pid = await control.spawnEmulator({ name: "linux", bzimage: "/assets/linux/buildroot-bzimage.bin" });
+    emulatorPids.add(pid);
+  };
+  compositor.setLauncherApps([
+    ...APPS.map((a) => ({ label: a.label, launch: () => void session.launch(a.name) })),
+    { label: "Linux", launch: () => void launchLinux() },
+  ]);
 
   const termWin = compositor.open({ title: "Terminal — sh", width: 724, height: 460, ownerPid: shellPid, surface: "dom" });
   const termHost = document.createElement("div");
