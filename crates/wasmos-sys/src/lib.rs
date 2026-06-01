@@ -554,7 +554,7 @@ pub fn net_request(url: &str) -> Result<Vec<u8>, u16> {
     let n = unsafe { syscall(req.as_ptr(), req.len(), resp.as_mut_ptr(), resp.len()) };
     resp.truncate(n.min(resp.len()));
     if resp.len() < 6 {
-        return Err(rd_u16(&resp, 0));
+        return Err(if resp.len() >= 2 { rd_u16(&resp, 0) } else { 29 });
     }
     let errno = rd_u16(&resp, 0);
     if errno != 0 {
