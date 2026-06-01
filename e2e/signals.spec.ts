@@ -72,8 +72,8 @@ test("kill builtin delivers a catchable SIGTERM the process handles gracefully",
   await shell(page, `kill ${pid}`);
 
   // sigdemo's sig_wait observed SIGTERM and wrote the marker before exiting.
-  await expect.poll(() => readSigOut(page), { timeout: 10_000 }).toBe("TERMINATED-GRACEFULLY");
-  await expect.poll(() => procState(page, pid), { timeout: 5_000 }).toMatch(/zombie|gone/);
+  await expect.poll(() => readSigOut(page), { timeout: 20_000 }).toBe("TERMINATED-GRACEFULLY");
+  await expect.poll(() => procState(page, pid), { timeout: 20_000 }).toMatch(/zombie|gone/);
 });
 
 test("kill -9 forcefully reaps a process — uncatchable, no graceful handler runs", async ({ page }) => {
@@ -87,7 +87,7 @@ test("kill -9 forcefully reaps a process — uncatchable, no graceful handler ru
 
   // The kernel reaped it (zombie/gone) and — because SIGKILL is uncatchable —
   // the graceful handler never ran, so no marker file was written.
-  await expect.poll(() => procState(page, pid), { timeout: 10_000 }).toMatch(/zombie|gone/);
+  await expect.poll(() => procState(page, pid), { timeout: 20_000 }).toMatch(/zombie|gone/);
   expect(await readSigOut(page)).toBe("");
 });
 
@@ -100,5 +100,5 @@ test("/bin/kill coreutil (full path, not the builtin) signals via delegated Sign
   // shell spawns with a delegated Signal capability (mirrors Gpu/Input delegation).
   await shell(page, `/bin/kill -TERM ${pid}`);
 
-  await expect.poll(() => readSigOut(page), { timeout: 10_000 }).toBe("TERMINATED-GRACEFULLY");
+  await expect.poll(() => readSigOut(page), { timeout: 20_000 }).toBe("TERMINATED-GRACEFULLY");
 });

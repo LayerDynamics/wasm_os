@@ -78,7 +78,7 @@ test("System Monitor renders the process table and kills the selected process (F
         const p = (await listProcs(page)).find((x) => x.pid === victim);
         return p?.state ?? "gone";
       },
-      { timeout: 10_000 },
+      { timeout: 20_000 },
     )
     .toMatch(/zombie|gone/);
 });

@@ -1043,6 +1043,28 @@ mod tests {
         );
     }
 
+    #[test]
+    fn sigkill_reaps_a_process_currently_parked_in_sig_wait() {
+        // The exact scenario e2e/signals.spec.ts:79 exercises: a process is parked
+        // in sig_wait (no signal yet) and is SIGKILL'd while still blocked. It must
+        // become a zombie (and be reaped) regardless of the parked state.
+        let mut k = core();
+        k.boot();
+        let signaler = k.spawn("signaler", None, false, false, false);
+        k.grant_signal(signaler);
+        let victim = k.spawn("victim", None, false, false, false);
+
+        // Victim parks in sig_wait (no pending signal) — state becomes blocked.
+        assert!(k.service_syscall(victim, &[0x3Bu8]).reply.is_none());
+        assert_eq!(k.list_procs().iter().find(|i| i.pid == victim).unwrap().state.as_str(), "blocked");
+
+        // SIGKILL the still-parked victim → it zombifies + is reaped immediately.
+        let killed = k.service_syscall(signaler, &kill_req(victim, 9));
+        assert_eq!(read_u16(&killed.reply.unwrap()), 0);
+        assert_eq!(killed.reap, vec![victim]);
+        assert_eq!(k.list_procs().iter().find(|i| i.pid == victim).unwrap().state.as_str(), "zombie");
+    }
+
     // --- M5-T2: the emulator as a privileged (Native, non-ring) process ---
 
     #[test]
