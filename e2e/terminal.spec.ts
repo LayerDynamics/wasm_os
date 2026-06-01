@@ -140,6 +140,37 @@ test("arrow / navigation keys do not corrupt the xterm parser", async ({ page })
   expect(errors.join("\n")).not.toMatch(/Parsing error/i);
 });
 
+test("env prints the real per-process environment end-to-end (FR-18)", async ({ page }) => {
+  // The whole environ path runs for real: the `env` guest calls std::env::vars()
+  // → environ_sizes_get/environ_get → the shim → the kernel returns this process's
+  // actual env (PATH/HOME/TERM/PWD), inherited from the shell on spawn. No stub.
+  const errors = captureErrors(page);
+  await page.goto("/");
+  await waitReady(page, errors);
+  await page.waitForFunction(
+    () => ((window as unknown as { __wasmos: { term: { log(): string } } }).__wasmos.term.log()).includes("wasmos:"),
+    null,
+    { timeout: 10_000 },
+  );
+
+  await page.locator("#terminal").click();
+  await page.keyboard.type("env");
+  await page.keyboard.press("Enter");
+
+  const readLog = () =>
+    page.evaluate(() => (window as unknown as { __wasmos: { term: { log(): string } } }).__wasmos.term.log());
+  let log = "";
+  for (let i = 0; i < 50; i++) {
+    log = await readLog();
+    if (log.includes("PATH=/bin") && log.includes("HOME=/home")) break;
+    await page.waitForTimeout(150);
+  }
+  expect(log).toContain("PATH=/bin");
+  expect(log).toContain("HOME=/home");
+  expect(log).toContain("TERM=xterm-256color");
+  expect(log).toContain("PWD=");
+});
+
 test("the Zig coreutil (echo.zig) runs end-to-end through the terminal (FR-14)", async ({ page }) => {
   // The polyglot proof in the LIVE system: a Zig-built `wasm32-wasi` binary runs
   // through the identical terminal → shell → wasmos_kernel spawn → process path as
