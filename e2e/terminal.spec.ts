@@ -140,6 +140,45 @@ test("arrow / navigation keys do not corrupt the xterm parser", async ({ page })
   expect(errors.join("\n")).not.toMatch(/Parsing error/i);
 });
 
+test("Backspace deletes the last character in the terminal line", async ({ page }) => {
+  // Regression: the shell's read_line pushed the DEL byte into the command and the
+  // terminal never echoed a destructive backspace, so Backspace could not delete.
+  // Now the terminal erases visually (\b \b) and the shell drops the char, so a
+  // typo corrected with Backspace runs the intended command.
+  const errors = captureErrors(page);
+  await page.goto("/");
+  await waitReady(page, errors);
+  await page.waitForFunction(
+    () => ((window as unknown as { __wasmos: { term: { log(): string } } }).__wasmos.term.log()).includes("wasmos:"),
+    null,
+    { timeout: 10_000 },
+  );
+
+  await page.locator("#terminal").click();
+  // Type "lsX", delete the stray X, then run — the shell must execute `ls`, not `lsX`.
+  await page.keyboard.type("lsX", { delay: 30 });
+  await page.keyboard.press("Backspace");
+  await page.keyboard.press("Enter");
+
+  const readLog = () =>
+    page.evaluate(() => (window as unknown as { __wasmos: { term: { log(): string } } }).__wasmos.term.log());
+  let log = "";
+  for (let i = 0; i < 40; i++) {
+    log = await readLog();
+    if (/\bbin\b/.test(log)) break;
+    await page.waitForTimeout(150);
+  }
+  expect(log).toMatch(/\bbin\b/); // `ls` ran and listed /bin
+  expect(log).not.toContain("lsX: command not found"); // the X was truly deleted
+
+  // Backspace at an empty prompt must not eat the prompt or the previous output.
+  const before = await readLog();
+  await page.keyboard.press("Backspace");
+  await page.keyboard.press("Backspace");
+  await page.waitForTimeout(150);
+  expect(await readLog()).toBe(before); // nothing erased past the start of the line
+});
+
 test("env prints the real per-process environment end-to-end (FR-18)", async ({ page }) => {
   // The whole environ path runs for real: the `env` guest calls std::env::vars()
   // → environ_sizes_get/environ_get → the shim → the kernel returns this process's

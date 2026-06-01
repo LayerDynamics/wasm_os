@@ -287,6 +287,18 @@ fn read_line(stdin: &mut std::io::Stdin) -> Option<String> {
                 if byte[0] == b'\n' || byte[0] == b'\r' {
                     break;
                 }
+                // Backspace (DEL 0x7f / BS 0x08): erase the last character from the
+                // line buffer (a full UTF-8 char, not a single byte). The terminal
+                // does the matching visual erase.
+                if byte[0] == 0x7f || byte[0] == 0x08 {
+                    while let Some(&b) = buf.last() {
+                        buf.pop();
+                        if b & 0xC0 != 0x80 {
+                            break; // removed the lead byte (or an ASCII byte)
+                        }
+                    }
+                    continue;
+                }
                 buf.push(byte[0]);
             }
             Err(_) => break,
