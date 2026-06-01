@@ -121,6 +121,18 @@ export class Win {
     return { w: this.geom.w, h: this.geom.h - TITLEBAR_H };
   }
 
+  /** Current window geometry in CSS pixels (M4-T9 session persistence). */
+  geometry(): { x: number; y: number; w: number; h: number } {
+    return { ...this.geom };
+  }
+
+  /** Restore a saved geometry (M4-T9). Clamped to the minimum window size. */
+  setGeometry(g: { x: number; y: number; w: number; h: number }): void {
+    this.geom = { x: g.x, y: g.y, w: Math.max(MIN_W, g.w), h: Math.max(MIN_H, g.h) };
+    this.applyGeom();
+    this.delegate.onChanged(this.id);
+  }
+
   // --- state transitions ---
 
   minimize(): void {

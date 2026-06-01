@@ -25,6 +25,10 @@ export class Compositor {
 
   /** Notified when a window closes (so owners can reap a backing process). */
   onWindowClosed: (id: number, ownerPid?: number) => void = () => {};
+  /** Notified when a window opens (M4-T9 session: associate it with an app). */
+  onWindowOpened: (win: Win) => void = () => {};
+  /** Notified on any window lifecycle/geometry change (M4-T9 session save). */
+  onWindowsChanged: () => void = () => {};
 
   constructor(desktopEl: HTMLElement, taskbarEl: HTMLElement) {
     this.desktop = desktopEl;
@@ -37,7 +41,10 @@ export class Compositor {
   private delegate: WindowDelegate = {
     requestFocus: (id) => this.focus(id),
     requestClose: (id) => this.close(id),
-    onChanged: () => this.taskbar.render(this.windowList()),
+    onChanged: () => {
+      this.taskbar.render(this.windowList());
+      this.onWindowsChanged();
+    },
   };
 
   /** Open a window; returns it so the caller can mount content into `.content`. */
@@ -55,6 +62,8 @@ export class Compositor {
     this.zorder.push(id);
     this.desktop.appendChild(win.root);
     this.focus(id);
+    this.onWindowOpened(win);
+    this.onWindowsChanged();
     return win;
   }
 
@@ -79,6 +88,7 @@ export class Compositor {
     }
     this.taskbar.render(this.windowList());
     this.onWindowClosed(id, win.ownerPid);
+    this.onWindowsChanged();
   }
 
   focus(id: number): void {
