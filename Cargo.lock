@@ -65,6 +65,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "lisp"
+version = "0.0.0"
+dependencies = [
+ "wasmgfx",
+ "wasmos-sys",
+]
+
+[[package]]
 name = "paint"
 version = "0.0.0"
 dependencies = [

@@ -17,7 +17,7 @@ const BIN = [
   "echo.zig", "crash",
   // M3 graphical apps (canvas surfaces); launchable from the file manager.
   // "mandelbrot" is the Zig polyglot app (FR-14 on the graphics path).
-  "gfxspike", "filemanager", "paint", "editor", "mandelbrot", "sysmon", "spinner", "chandemo", "shmdemo", "sigdemo", "kill", "renice", "ps", "top", "fetch",
+  "gfxspike", "filemanager", "paint", "editor", "mandelbrot", "sysmon", "lisp", "spinner", "chandemo", "shmdemo", "sigdemo", "kill", "renice", "ps", "top", "fetch",
 ];
 const GUESTS = "/packages/host/guests";
 
@@ -149,6 +149,7 @@ async function main() {
     { name: "mandelbrot", label: "Mandelbrot", opts: { grantGpu: true, grantInput: true } },
     // System Monitor needs Signal (process control) in addition to Gpu+Input.
     { name: "sysmon", label: "Monitor", opts: { grantGpu: true, grantInput: true, grantSignal: true } },
+    { name: "lisp", label: "Lisp", opts: { grantGpu: true, grantInput: true, grantFsSubtree: "/home" } },
   ];
   for (const app of APPS) {
     session.register(app.name, () => control.spawn(bins[app.name]!, { name: app.name, ...app.opts }));
