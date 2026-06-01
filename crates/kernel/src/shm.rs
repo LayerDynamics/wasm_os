@@ -76,8 +76,10 @@ impl ShmTable {
                 if off < r.len() {
                     let end = (off + data.len()).min(r.len());
                     r[off..end].copy_from_slice(&data[..end - off]);
+                    true
+                } else {
+                    false
                 }
-                true
             }
             None => false,
         }
