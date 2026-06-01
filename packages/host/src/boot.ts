@@ -10,6 +10,12 @@ export interface ProcInfo {
   pid: number;
   name: string;
   state: string;
+  priority: number;
+  /** Scheduler ticks (one per serviced syscall) — kernel-activity metric (M4). */
+  cpuTicks: bigint;
+  memBytes: number;
+  /** Parent pid, or 0 for a host-spawned root. */
+  parent: number;
 }
 export interface SpawnOptions {
   name?: string;
@@ -20,6 +26,8 @@ export interface SpawnOptions {
   grantGpu?: boolean;
   /** Grant Input — required to receive brokered keyboard/mouse (M3-T3). */
   grantInput?: boolean;
+  /** Grant Signal — process-control authority for the `kill` builtin (M4-T5). */
+  grantSignal?: boolean;
 }
 
 /** A compositor surface a process created (M3): a shared RGBA framebuffer. */
@@ -185,6 +193,7 @@ export async function boot(): Promise<BootResult> {
           grantSpawn: opts?.grantSpawn ?? false,
           grantGpu: opts?.grantGpu ?? false,
           grantInput: opts?.grantInput ?? false,
+          grantSignal: opts?.grantSignal ?? false,
         },
       }),
     wait: (pid) => call("wait", { pid }),

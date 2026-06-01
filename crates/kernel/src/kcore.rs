@@ -7,18 +7,25 @@ use crate::pipe::PipeTable;
 use crate::sched::Scheduler;
 use crate::syscall;
 use crate::types::{
-    Backend, Capability, CapabilitySet, DescKind, ProcInfo, ProcState, ProcTable, Rights,
+    Backend, Capability, CapabilitySet, DescKind, ProcInfo, ProcState, ProcTable, Rights, WaitReason,
 };
 use crate::vfs::{Blockstore, FsError, Vfs};
 
 /// Default scheduling priority for user processes spawned at M1 (init is 10).
 const USER_PRIORITY: u8 = 5;
 
+/// Signals (M4-T5). SIGTERM is catchable (cooperative graceful shutdown); SIGKILL
+/// is uncatchable + forceful (the kernel reaps the process). Values match POSIX.
+const SIGKILL: u8 = 9;
+const SIGTERM: u8 = 15;
+
 pub struct KernelCore {
     vfs: Vfs,
     procs: ProcTable,
     sched: Scheduler,
     pipes: PipeTable,
+    chans: crate::chan::ChannelTable,
+    shm: crate::shm::ShmTable,
     booted: bool,
 }
 
@@ -29,6 +36,8 @@ impl KernelCore {
             procs: ProcTable::new(),
             sched: Scheduler::new(),
             pipes: PipeTable::new(),
+            chans: crate::chan::ChannelTable::new(),
+            shm: crate::shm::ShmTable::new(),
             booted: false,
         }
     }
@@ -82,10 +91,35 @@ impl KernelCore {
 
     // --- Process/scheduler/capability surface ---
     pub fn list_procs(&self) -> Vec<ProcInfo> {
-        self.procs.list()
+        // Enrich the process table projection with scheduler CPU accounting (M4).
+        let mut infos = self.procs.list();
+        for i in infos.iter_mut() {
+            i.cpu_ticks = self.sched.time_of(i.pid);
+        }
+        infos
+    }
+
+    /// Record a process's reported guest memory size (M4 `top`).
+    pub fn set_proc_mem(&mut self, pid: u32, bytes: u32) {
+        self.procs.set_mem(pid, bytes);
+    }
+
+    /// Change a process's scheduling priority at runtime (FR-8). Re-buckets it in
+    /// the scheduler if it is currently ready.
+    pub fn set_priority(&mut self, pid: u32, priority: u8) {
+        if self.procs.set_priority(pid, priority).is_some() {
+            self.sched.reprioritize(pid, priority);
+        }
     }
     pub fn proc_count(&self) -> usize {
         self.procs.count()
+    }
+
+    /// Confer the Signal (process-control) capability on a process after spawn
+    /// (M4-T5). The host grants it to the shell so its `kill` builtin can signal
+    /// other processes, and the shell may delegate it to a spawned `kill`.
+    pub fn grant_signal(&mut self, pid: u32) {
+        self.procs.grant_cap(pid, Capability::Signal);
     }
     pub fn ready_count(&self) -> usize {
         self.sched.ready_len()
@@ -133,7 +167,329 @@ impl KernelCore {
     /// Route one syscall for `pid` (FR-4). Returns a [`syscall::SyscallOutcome`]
     /// — a ready reply, or a park (M2) the kworker defers until a wakeup.
     pub fn service_syscall(&mut self, pid: u32, req: &[u8]) -> syscall::SyscallOutcome {
-        syscall::dispatch(&mut self.vfs, &mut self.procs, &mut self.pipes, pid, req)
+        // Account one scheduler tick per serviced syscall — a deterministic
+        // kernel-activity metric powering `ps`/`top` (FR-3 time accounting, FR-33).
+        self.sched.account(pid, 1);
+        // proc_list / set_priority need the scheduler (cpu accounting, re-bucketing)
+        // so they are serviced here rather than in the (scheduler-free) router.
+        match req.first().copied() {
+            Some(0x30) => syscall::SyscallOutcome::ready(self.encode_proc_list()),
+            Some(0x31) => self.set_priority_syscall(pid, req),
+            Some(0x32) => self.chan_open_syscall(pid, req),
+            Some(0x33) => self.chan_send_syscall(pid, req),
+            Some(0x34) => self.chan_recv_syscall(pid, req),
+            Some(0x35) => self.shm_create_syscall(pid, req),
+            Some(0x36) => self.shm_map_syscall(pid, req),
+            Some(0x37) => self.shm_read_syscall(pid, req),
+            Some(0x38) => self.shm_write_syscall(pid, req),
+            Some(0x39) => self.shm_grant_syscall(pid, req),
+            Some(0x3A) => self.kill_syscall(pid, req),
+            Some(0x3B) => self.sig_wait_syscall(pid),
+            _ => {
+                let mut out =
+                    syscall::dispatch(&mut self.vfs, &mut self.procs, &mut self.pipes, pid, req);
+                // proc_exit (0x10): also release this process's channel endpoints and
+                // shm regions so parked peers observe EOF / freed memory (sibling of
+                // the pipe/surface cleanup).
+                if req.first() == Some(&0x10) {
+                    out.wakeups.extend(self.close_proc_channels(pid));
+                    self.shm.free_owned(pid);
+                }
+                out
+            }
+        }
+    }
+
+    /// `proc_list()` (M4 `ps`/`top`, FR-33). Reply: `[errno u16][count u32]` then,
+    /// per process: `pid u32, name(len-prefixed), state u8, priority u8,
+    /// cpu_ticks u64, mem_bytes u32, parent u32`.
+    fn encode_proc_list(&self) -> Vec<u8> {
+        let infos = self.list_procs();
+        let mut b = Vec::new();
+        b.extend_from_slice(&syscall::errno::SUCCESS.to_le_bytes());
+        b.extend_from_slice(&(infos.len() as u32).to_le_bytes());
+        for i in &infos {
+            b.extend_from_slice(&i.pid.to_le_bytes());
+            let name = i.name.as_bytes();
+            b.extend_from_slice(&(name.len() as u32).to_le_bytes());
+            b.extend_from_slice(name);
+            b.push(match i.state.as_str() {
+                "new" => 0,
+                "ready" => 1,
+                "running" => 2,
+                "blocked" => 3,
+                _ => 4, // zombie
+            });
+            b.push(i.priority);
+            b.extend_from_slice(&i.cpu_ticks.to_le_bytes());
+            b.extend_from_slice(&i.mem_bytes.to_le_bytes());
+            b.extend_from_slice(&i.parent.to_le_bytes());
+        }
+        b
+    }
+
+    /// `set_priority(target, prio)` (FR-8). A process may renice itself freely;
+    /// renicing another requires the Signal (process-control) capability.
+    fn set_priority_syscall(&mut self, pid: u32, req: &[u8]) -> syscall::SyscallOutcome {
+        let err = |e: u16| syscall::SyscallOutcome::ready(e.to_le_bytes().to_vec());
+        if req.len() < 6 {
+            return err(syscall::errno::INVAL);
+        }
+        let target = u32::from_le_bytes([req[1], req[2], req[3], req[4]]);
+        let prio = req[5];
+        if self.procs.get(target).is_none() {
+            return err(syscall::errno::SRCH);
+        }
+        if target != pid && !self.procs.has_cap(pid, &Capability::Signal) {
+            return err(syscall::errno::NOTCAPABLE);
+        }
+        self.set_priority(target, prio);
+        err(syscall::errno::SUCCESS)
+    }
+
+    // --- M4-T3: message channels (opaque handles, not WASI fds) ---
+
+    /// `chan_open(name)` — rendezvous by name. Reply: `[errno u16][chan_id u32][end u8]`.
+    fn chan_open_syscall(&mut self, pid: u32, req: &[u8]) -> syscall::SyscallOutcome {
+        let name = String::from_utf8_lossy(&req[1..]).into_owned();
+        let (id, end) = self.chans.open(&name);
+        self.procs.add_channel(pid, id, end);
+        let mut b = Vec::with_capacity(7);
+        b.extend_from_slice(&syscall::errno::SUCCESS.to_le_bytes());
+        b.extend_from_slice(&id.to_le_bytes());
+        b.push(end);
+        syscall::SyscallOutcome::ready(b)
+    }
+
+    /// `chan_send(chan_id, msg)` — `[0x33][chan_id u32][msg...]`. Reply: `[errno u16]`.
+    /// The whole request payload after the id IS the message (boundaries preserved).
+    fn chan_send_syscall(&mut self, pid: u32, req: &[u8]) -> syscall::SyscallOutcome {
+        let err = |e: u16| syscall::SyscallOutcome::ready(e.to_le_bytes().to_vec());
+        if req.len() < 5 {
+            return err(syscall::errno::INVAL);
+        }
+        let id = u32::from_le_bytes([req[1], req[2], req[3], req[4]]);
+        let Some(end) = self.procs.channel_end(pid, id) else {
+            return err(syscall::errno::BADF); // caller does not hold this channel
+        };
+        if !self.chans.send(id, end, req[5..].to_vec()) {
+            return err(syscall::errno::PIPE); // peer permanently gone
+        }
+        // Wake a receiver parked on the PEER endpoint.
+        let wakeups = self.procs.take_blocked_on(&WaitReason::ChanRecv(id, 1 - end));
+        syscall::SyscallOutcome {
+            reply: Some(syscall::errno::SUCCESS.to_le_bytes().to_vec()),
+            wakeups,
+            term_output: Vec::new(),
+            spawn: None,
+            reap: Vec::new(),
+        }
+    }
+
+    /// `chan_recv(chan_id)` — `[0x34][chan_id u32]`. Parks on an empty inbox whose
+    /// peer is still open; a closed-peer empty inbox is EOF (a zero-length reply).
+    /// Reply: `[errno u16][len u32][msg]`.
+    fn chan_recv_syscall(&mut self, pid: u32, req: &[u8]) -> syscall::SyscallOutcome {
+        if req.len() < 5 {
+            return syscall::SyscallOutcome::ready(syscall::errno::INVAL.to_le_bytes().to_vec());
+        }
+        let id = u32::from_le_bytes([req[1], req[2], req[3], req[4]]);
+        let Some(end) = self.procs.channel_end(pid, id) else {
+            return syscall::SyscallOutcome::ready(syscall::errno::BADF.to_le_bytes().to_vec());
+        };
+        if self.chans.inbox_len(id, end) > 0 {
+            let msg = self.chans.recv(id, end).unwrap_or_default();
+            let mut b = Vec::with_capacity(6 + msg.len());
+            b.extend_from_slice(&syscall::errno::SUCCESS.to_le_bytes());
+            b.extend_from_slice(&(msg.len() as u32).to_le_bytes());
+            b.extend_from_slice(&msg);
+            syscall::SyscallOutcome::ready(b)
+        } else if !self.chans.peer_open(id, end) {
+            // EOF: peer gone, inbox drained → empty message.
+            let mut b = Vec::with_capacity(6);
+            b.extend_from_slice(&syscall::errno::SUCCESS.to_le_bytes());
+            b.extend_from_slice(&0u32.to_le_bytes());
+            syscall::SyscallOutcome::ready(b)
+        } else {
+            self.procs.set_blocked(pid, WaitReason::ChanRecv(id, end));
+            syscall::SyscallOutcome::parked()
+        }
+    }
+
+    /// Release every channel endpoint a dying process holds; returns the pids whose
+    /// parked receives are now runnable (they will observe EOF).
+    fn close_proc_channels(&mut self, pid: u32) -> Vec<u32> {
+        let mut wakeups = Vec::new();
+        for (id, end) in self.procs.channels_of(pid) {
+            self.chans.close(id, end);
+            wakeups.extend(self.procs.take_blocked_on(&WaitReason::ChanRecv(id, 1 - end)));
+        }
+        wakeups
+    }
+
+    // --- M4-T4: shared memory (kernel-arbitrated, capability-gated region, FR-6) ---
+
+    /// `shm_create(size)` — `[0x35][size u32]`. Reply: `[errno u16][shm_id u32]`.
+    /// Any process may create a region (it owns + may grant it); size is capped.
+    fn shm_create_syscall(&mut self, pid: u32, req: &[u8]) -> syscall::SyscallOutcome {
+        if req.len() < 5 {
+            return syscall::SyscallOutcome::ready(syscall::errno::INVAL.to_le_bytes().to_vec());
+        }
+        let size = u32::from_le_bytes([req[1], req[2], req[3], req[4]]) as usize;
+        let id = self.shm.create(pid, size);
+        let mut b = syscall::errno::SUCCESS.to_le_bytes().to_vec();
+        b.extend_from_slice(&id.to_le_bytes());
+        syscall::SyscallOutcome::ready(b)
+    }
+
+    /// `shm_map(shm_id)` — `[0x36][shm_id u32]`. Confirms this process holds access
+    /// (granted by the owner). Reply: `[errno u16]` (NOTCAPABLE if not granted).
+    fn shm_map_syscall(&mut self, pid: u32, req: &[u8]) -> syscall::SyscallOutcome {
+        let err = |e: u16| syscall::SyscallOutcome::ready(e.to_le_bytes().to_vec());
+        if req.len() < 5 {
+            return err(syscall::errno::INVAL);
+        }
+        let id = u32::from_le_bytes([req[1], req[2], req[3], req[4]]);
+        if !self.shm.exists(id) {
+            return err(syscall::errno::INVAL);
+        }
+        if !self.shm.has_access(id, pid) {
+            return err(syscall::errno::NOTCAPABLE);
+        }
+        err(syscall::errno::SUCCESS)
+    }
+
+    /// `shm_read(shm_id, off, len)` — `[0x37][shm_id u32][off u32][len u32]`.
+    /// Reply: `[errno u16][len u32][bytes]` (NOTCAPABLE if access not granted).
+    fn shm_read_syscall(&mut self, pid: u32, req: &[u8]) -> syscall::SyscallOutcome {
+        if req.len() < 13 {
+            return syscall::SyscallOutcome::ready(syscall::errno::INVAL.to_le_bytes().to_vec());
+        }
+        let id = u32::from_le_bytes([req[1], req[2], req[3], req[4]]);
+        let off = u32::from_le_bytes([req[5], req[6], req[7], req[8]]) as usize;
+        let len = u32::from_le_bytes([req[9], req[10], req[11], req[12]]) as usize;
+        if !self.shm.has_access(id, pid) {
+            return syscall::SyscallOutcome::ready(syscall::errno::NOTCAPABLE.to_le_bytes().to_vec());
+        }
+        let data = self.shm.read(id, off, len);
+        let mut b = syscall::errno::SUCCESS.to_le_bytes().to_vec();
+        b.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        b.extend_from_slice(&data);
+        syscall::SyscallOutcome::ready(b)
+    }
+
+    /// `shm_write(shm_id, off, data)` — `[0x38][shm_id u32][off u32][data...]`.
+    /// Reply: `[errno u16]` (NOTCAPABLE if access not granted).
+    fn shm_write_syscall(&mut self, pid: u32, req: &[u8]) -> syscall::SyscallOutcome {
+        let err = |e: u16| syscall::SyscallOutcome::ready(e.to_le_bytes().to_vec());
+        if req.len() < 9 {
+            return err(syscall::errno::INVAL);
+        }
+        let id = u32::from_le_bytes([req[1], req[2], req[3], req[4]]);
+        let off = u32::from_le_bytes([req[5], req[6], req[7], req[8]]) as usize;
+        if !self.shm.has_access(id, pid) {
+            return err(syscall::errno::NOTCAPABLE);
+        }
+        if !self.shm.write(id, off, &req[9..]) {
+            return err(syscall::errno::INVAL);
+        }
+        err(syscall::errno::SUCCESS)
+    }
+
+    /// `shm_grant(shm_id, target_pid)` — `[0x39][shm_id u32][target_pid u32]`.
+    /// The owner shares access with another process. Reply: `[errno u16]`
+    /// (NOTCAPABLE if the caller is not the region's owner).
+    fn shm_grant_syscall(&mut self, pid: u32, req: &[u8]) -> syscall::SyscallOutcome {
+        let err = |e: u16| syscall::SyscallOutcome::ready(e.to_le_bytes().to_vec());
+        if req.len() < 9 {
+            return err(syscall::errno::INVAL);
+        }
+        let id = u32::from_le_bytes([req[1], req[2], req[3], req[4]]);
+        let target = u32::from_le_bytes([req[5], req[6], req[7], req[8]]);
+        if self.shm.grant(id, pid, target) {
+            err(syscall::errno::SUCCESS)
+        } else {
+            err(syscall::errno::NOTCAPABLE)
+        }
+    }
+
+    // --- M4-T5: signals (SIGTERM cooperative + SIGKILL forceful, Signal cap) ---
+
+    /// `kill(target, sig)` — `[0x3A][target u32][sig u8]`. Reply: `[errno u16]`.
+    /// Signalling another process requires the Signal capability (self always
+    /// allowed). SIGKILL (9) is uncatchable + forceful: the kernel runs the
+    /// target's full exit teardown (pipes/channels/shm released, waiters woken) and
+    /// asks the host to terminate its worker (`reap`). SIGTERM (15) is catchable +
+    /// cooperative: it queues a pending signal and wakes the target if it is parked
+    /// in `sig_wait()`, so the guest can observe it and exit gracefully.
+    fn kill_syscall(&mut self, pid: u32, req: &[u8]) -> syscall::SyscallOutcome {
+        let err = |e: u16| syscall::SyscallOutcome::ready(e.to_le_bytes().to_vec());
+        if req.len() < 6 {
+            return err(syscall::errno::INVAL);
+        }
+        let target = u32::from_le_bytes([req[1], req[2], req[3], req[4]]);
+        let sig = req[5];
+        if target == 1 {
+            return err(syscall::errno::NOTCAPABLE);
+        }
+        if self.procs.get(target).is_none() {
+            return err(syscall::errno::SRCH);
+        }
+        if target != pid && !self.procs.has_cap(pid, &Capability::Signal) {
+            return err(syscall::errno::NOTCAPABLE);
+        }
+        match sig {
+            SIGKILL => {
+                // Forge the target's own proc_exit (exit code 128+SIGKILL) so it
+                // releases pipes/surfaces and wakes its waiters exactly as a clean
+                // exit would, then release its channels + shm (the kcore-level
+                // siblings of that teardown) and ask the host to reap its worker.
+                let mut exit_req = vec![0x10u8];
+                exit_req.extend_from_slice(&(128u32 + SIGKILL as u32).to_le_bytes());
+                let mut out =
+                    syscall::dispatch(&mut self.vfs, &mut self.procs, &mut self.pipes, target, &exit_req);
+                out.wakeups.extend(self.close_proc_channels(target));
+                self.shm.free_owned(target);
+                out.reap.push(target);
+                // The forged exit's SUCCESS reply belongs to `target`'s (now dead)
+                // ring; replace it with this caller's kill reply.
+                out.reply = Some(syscall::errno::SUCCESS.to_le_bytes().to_vec());
+                out
+            }
+            SIGTERM => {
+                self.procs.push_signal(target, SIGTERM);
+                // Zero-CPU delivery: wake the target only if it is parked in
+                // sig_wait (its re-driven wait then drains the pending signal).
+                let mut wakeups = Vec::new();
+                if self.procs.blocked_on(target) == Some(WaitReason::SigWait) {
+                    self.procs.clear_blocked(target);
+                    wakeups.push(target);
+                }
+                syscall::SyscallOutcome {
+                    reply: Some(syscall::errno::SUCCESS.to_le_bytes().to_vec()),
+                    wakeups,
+                    term_output: Vec::new(),
+                    spawn: None,
+                    reap: Vec::new(),
+                }
+            }
+            _ => err(syscall::errno::INVAL), // unsupported signal
+        }
+    }
+
+    /// `sig_wait()` — `[0x3B]`. Blocks until at least one signal is pending, then
+    /// drains + returns them. Reply: `[errno u16][count u32][sig u8 ...]`. Parks on
+    /// an empty signal queue (woken by a SIGTERM delivery) — no busy-poll.
+    fn sig_wait_syscall(&mut self, pid: u32) -> syscall::SyscallOutcome {
+        let sigs = self.procs.take_signals(pid);
+        if sigs.is_empty() {
+            self.procs.set_blocked(pid, WaitReason::SigWait);
+            return syscall::SyscallOutcome::parked();
+        }
+        let mut b = syscall::errno::SUCCESS.to_le_bytes().to_vec();
+        b.extend_from_slice(&(sigs.len() as u32).to_le_bytes());
+        b.extend_from_slice(&sigs);
+        syscall::SyscallOutcome::ready(b)
     }
 
     /// Bind a process's stdout + stderr (fd 1/2) to the interactive terminal so
@@ -380,5 +736,212 @@ mod tests {
         let req = vec![0x25u8, 120, 0, 0, 0];
         assert!(k.service_syscall(with, &req).reply.is_none());
         assert_eq!(k.deliver_input(with, &[0u8; 12]), vec![with]);
+    }
+
+    // --- M4: process metrics + proc_list + runtime priority ---
+
+    #[test]
+    fn proc_list_carries_metrics_and_priority_is_capability_gated() {
+        let mut k = core();
+        k.boot();
+        let pid = k.spawn("worker", Some(("/", Rights::RW)), false, false, false);
+        k.set_proc_mem(pid, 1_114_112); // a worker reports its memory size
+
+        // A serviced syscall accounts a CPU tick; list_procs surfaces the metrics.
+        k.service_syscall(pid, &fd_write_req(1, b"x"));
+        let infos = k.list_procs();
+        let me = infos.iter().find(|i| i.pid == pid).unwrap();
+        assert!(me.cpu_ticks >= 1);
+        assert_eq!(me.priority, USER_PRIORITY);
+        assert_eq!(me.mem_bytes, 1_114_112);
+
+        // proc_list() syscall returns [errno][count] + the encoded table.
+        let resp = k.service_syscall(pid, &[0x30]).reply.unwrap();
+        assert_eq!(read_u16(&resp), 0); // SUCCESS
+        let count = u32::from_le_bytes([resp[2], resp[3], resp[4], resp[5]]);
+        assert!(count >= 2); // init + worker
+
+        // set_priority on SELF is allowed and re-buckets.
+        let mut self_req = vec![0x31u8];
+        self_req.extend_from_slice(&pid.to_le_bytes());
+        self_req.push(9);
+        assert_eq!(read_u16(&k.service_syscall(pid, &self_req).reply.unwrap()), 0);
+        assert_eq!(k.list_procs().iter().find(|i| i.pid == pid).unwrap().priority, 9);
+
+        // Renicing ANOTHER process without the Signal capability is denied.
+        let mut other_req = vec![0x31u8];
+        other_req.extend_from_slice(&1u32.to_le_bytes()); // init
+        other_req.push(3);
+        assert_eq!(read_u16(&k.service_syscall(pid, &other_req).reply.unwrap()), 76); // NOTCAPABLE
+    }
+
+    // --- M4-T3: message channels through the kernel core ---
+
+    fn chan_open_req(name: &str) -> Vec<u8> {
+        let mut v = vec![0x32u8];
+        v.extend_from_slice(name.as_bytes());
+        v
+    }
+    fn chan_send_req(id: u32, msg: &[u8]) -> Vec<u8> {
+        let mut v = vec![0x33u8];
+        v.extend_from_slice(&id.to_le_bytes());
+        v.extend_from_slice(msg);
+        v
+    }
+    fn chan_recv_req(id: u32) -> Vec<u8> {
+        let mut v = vec![0x34u8];
+        v.extend_from_slice(&id.to_le_bytes());
+        v
+    }
+
+    #[test]
+    fn channel_open_send_recv_park_resume_and_exit_eof() {
+        let mut k = core();
+        k.boot();
+        let a = k.spawn("a", None, false, false, false);
+        let b = k.spawn("b", None, false, false, false);
+
+        // a opens "demo" (creator, end 0); b connects (end 1) to the same channel.
+        let ra = k.service_syscall(a, &chan_open_req("demo")).reply.unwrap();
+        assert_eq!(read_u16(&ra), 0);
+        let id = u32::from_le_bytes([ra[2], ra[3], ra[4], ra[5]]);
+        assert_eq!(ra[6], 0);
+        let rb = k.service_syscall(b, &chan_open_req("demo")).reply.unwrap();
+        assert_eq!(u32::from_le_bytes([rb[2], rb[3], rb[4], rb[5]]), id);
+        assert_eq!(rb[6], 1);
+
+        // b receives on an empty inbox (peer open) → parks.
+        assert!(k.service_syscall(b, &chan_recv_req(id)).reply.is_none());
+        // a sends → wakes b.
+        let send = k.service_syscall(a, &chan_send_req(id, b"HELLO"));
+        assert_eq!(read_u16(&send.reply.unwrap()), 0);
+        assert_eq!(send.wakeups, vec![b]);
+        // Re-driving b's receive returns the message.
+        let r = k.service_syscall(b, &chan_recv_req(id)).reply.unwrap();
+        assert_eq!(read_u16(&r), 0);
+        let len = u32::from_le_bytes([r[2], r[3], r[4], r[5]]) as usize;
+        assert_eq!(&r[6..6 + len], b"HELLO");
+
+        // a exits → b's next receive is EOF (zero-length).
+        k.service_syscall(a, &proc_exit_req(0));
+        let eof = k.service_syscall(b, &chan_recv_req(id)).reply.unwrap();
+        assert_eq!(read_u16(&eof), 0);
+        assert_eq!(u32::from_le_bytes([eof[2], eof[3], eof[4], eof[5]]), 0);
+
+        // A process cannot receive on a channel it never opened.
+        let c = k.spawn("c", None, false, false, false);
+        assert_eq!(read_u16(&k.service_syscall(c, &chan_recv_req(id)).reply.unwrap()), 8); // BADF
+    }
+
+    // --- M4-T4: shared memory through the kernel core ---
+
+    fn shm_create_req(size: u32) -> Vec<u8> {
+        let mut v = vec![0x35u8];
+        v.extend_from_slice(&size.to_le_bytes());
+        v
+    }
+    fn shm_read_req(id: u32, off: u32, len: u32) -> Vec<u8> {
+        let mut v = vec![0x37u8];
+        v.extend_from_slice(&id.to_le_bytes());
+        v.extend_from_slice(&off.to_le_bytes());
+        v.extend_from_slice(&len.to_le_bytes());
+        v
+    }
+    fn shm_write_req(id: u32, off: u32, data: &[u8]) -> Vec<u8> {
+        let mut v = vec![0x38u8];
+        v.extend_from_slice(&id.to_le_bytes());
+        v.extend_from_slice(&off.to_le_bytes());
+        v.extend_from_slice(data);
+        v
+    }
+
+    #[test]
+    fn shm_create_grant_share_and_isolation_then_exit_frees() {
+        let mut k = core();
+        k.boot();
+        let owner = k.spawn("owner", None, false, false, false);
+        let peer = k.spawn("peer", None, false, false, false);
+
+        // owner creates a region (reply [errno][shm_id]) and writes into it.
+        let rc = k.service_syscall(owner, &shm_create_req(64)).reply.unwrap();
+        assert_eq!(read_u16(&rc), 0);
+        let id = u32::from_le_bytes([rc[2], rc[3], rc[4], rc[5]]);
+        assert_eq!(read_u16(&k.service_syscall(owner, &shm_write_req(id, 8, b"SHARED-MEM")).reply.unwrap()), 0);
+
+        // Default-deny: peer cannot map/read/write before being granted.
+        let mut map_req = vec![0x36u8];
+        map_req.extend_from_slice(&id.to_le_bytes());
+        assert_eq!(read_u16(&k.service_syscall(peer, &map_req).reply.unwrap()), 76); // NOTCAPABLE
+        assert_eq!(read_u16(&k.service_syscall(peer, &shm_read_req(id, 8, 10)).reply.unwrap()), 76);
+
+        // A non-owner cannot grant; the owner can.
+        let mut steal = vec![0x39u8];
+        steal.extend_from_slice(&id.to_le_bytes());
+        steal.extend_from_slice(&peer.to_le_bytes());
+        assert_eq!(read_u16(&k.service_syscall(peer, &steal).reply.unwrap()), 76); // peer isn't owner
+        let mut grant = vec![0x39u8];
+        grant.extend_from_slice(&id.to_le_bytes());
+        grant.extend_from_slice(&peer.to_le_bytes());
+        assert_eq!(read_u16(&k.service_syscall(owner, &grant).reply.unwrap()), 0);
+
+        // Now peer maps + reads exactly what the owner wrote (shared region).
+        assert_eq!(read_u16(&k.service_syscall(peer, &map_req).reply.unwrap()), 0);
+        let rr = k.service_syscall(peer, &shm_read_req(id, 8, 10)).reply.unwrap();
+        assert_eq!(read_u16(&rr), 0);
+        let n = u32::from_le_bytes([rr[2], rr[3], rr[4], rr[5]]) as usize;
+        assert_eq!(&rr[6..6 + n], b"SHARED-MEM");
+
+        // owner exits → region is freed; peer's access is revoked.
+        k.service_syscall(owner, &proc_exit_req(0));
+        assert_eq!(read_u16(&k.service_syscall(peer, &shm_read_req(id, 8, 10)).reply.unwrap()), 76);
+    }
+
+    // --- M4-T5: signals (SIGTERM cooperative + SIGKILL forceful) ---
+
+    fn kill_req(target: u32, sig: u8) -> Vec<u8> {
+        let mut v = vec![0x3Au8];
+        v.extend_from_slice(&target.to_le_bytes());
+        v.push(sig);
+        v
+    }
+
+    #[test]
+    fn signals_are_capability_gated_sigterm_wakes_sig_wait_sigkill_reaps() {
+        let mut k = core();
+        k.boot();
+        let signaler = k.spawn("signaler", None, false, false, false);
+        k.grant_signal(signaler); // process-control authority
+        let victim = k.spawn("victim", None, false, false, false);
+        let bystander = k.spawn("bystander", None, false, false, false);
+
+        // Default-deny: a process without Signal cannot signal another.
+        assert_eq!(read_u16(&k.service_syscall(bystander, &kill_req(victim, 15)).reply.unwrap()), 76); // NOTCAPABLE
+        // Unknown pid → SRCH.
+        assert_eq!(read_u16(&k.service_syscall(signaler, &kill_req(9999, 15)).reply.unwrap()), 71); // SRCH
+        // Self-signalling is always allowed (no Signal cap required).
+        assert_eq!(read_u16(&k.service_syscall(victim, &kill_req(victim, 15)).reply.unwrap()), 0);
+        // (drain the self-delivered signal so the park test below starts clean)
+        let drained = k.service_syscall(victim, &[0x3Bu8]).reply.unwrap();
+        assert_eq!(read_u16(&drained), 0);
+
+        // SIGTERM delivery wakes a process parked in sig_wait (zero-CPU path).
+        assert!(k.service_syscall(victim, &[0x3Bu8]).reply.is_none()); // parks (no pending)
+        let term = k.service_syscall(signaler, &kill_req(victim, 15));
+        assert_eq!(read_u16(&term.reply.unwrap()), 0);
+        assert_eq!(term.wakeups, vec![victim]); // the parked sig_wait is runnable
+        let got = k.service_syscall(victim, &[0x3Bu8]).reply.unwrap(); // re-driven
+        assert_eq!(read_u16(&got), 0);
+        let count = u32::from_le_bytes([got[2], got[3], got[4], got[5]]) as usize;
+        assert_eq!(&got[6..6 + count], &[15u8]); // SIGTERM observed
+
+        // SIGKILL is forceful: the kernel zombifies the target and asks the host
+        // to reap its worker.
+        let killed = k.service_syscall(signaler, &kill_req(victim, 9));
+        assert_eq!(read_u16(&killed.reply.unwrap()), 0);
+        assert_eq!(killed.reap, vec![victim]);
+        assert_eq!(
+            k.list_procs().iter().find(|i| i.pid == victim).unwrap().state.as_str(),
+            "zombie"
+        );
     }
 }

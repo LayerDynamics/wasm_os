@@ -6,9 +6,11 @@
 // design — the process table, scheduler, capability system, and VFS are the
 // kernel's surface — and it means items reached only by the wasm-gated
 // `component` or by M1 callers are not miscounted as dead on the host build.
+pub mod chan;
 pub mod kcore;
 pub mod pipe;
 pub mod sched;
+pub mod shm;
 pub mod syscall;
 pub mod types;
 pub mod vfs;
@@ -128,7 +130,15 @@ mod component {
                 k.borrow()
                     .list_procs()
                     .into_iter()
-                    .map(|p| WProcInfo { pid: p.pid, name: p.name, state: p.state })
+                    .map(|p| WProcInfo {
+                        pid: p.pid,
+                        name: p.name,
+                        state: p.state,
+                        priority: p.priority,
+                        cpu_ticks: p.cpu_ticks,
+                        mem_bytes: p.mem_bytes,
+                        parent: p.parent,
+                    })
                     .collect()
             })
         }
@@ -143,8 +153,15 @@ mod component {
                 Some((spec.grant_fs_subtree.as_str(), Rights::RW))
             };
             KERNEL.with(|k| {
-                k.borrow_mut()
-                    .spawn(&spec.name, grant_fs, spec.grant_spawn, spec.grant_gpu, spec.grant_input)
+                let mut k = k.borrow_mut();
+                let pid =
+                    k.spawn(&spec.name, grant_fs, spec.grant_spawn, spec.grant_gpu, spec.grant_input);
+                // Signal (process-control) authority — the shell holds it so its
+                // `kill` builtin can signal other processes (M4-T5).
+                if spec.grant_signal {
+                    k.grant_signal(pid);
+                }
+                pid
             })
         }
 
@@ -155,6 +172,7 @@ mod component {
                 wakeups: out.wakeups,
                 term_output: out.term_output,
                 spawn: out.spawn.map(|s| WSpawnRequest { pid: s.pid, image_path: s.image_path }),
+                reap: out.reap,
             }
         }
 
@@ -168,6 +186,14 @@ mod component {
 
         fn bind_terminal(pid: u32) {
             KERNEL.with(|k| k.borrow_mut().bind_terminal(pid));
+        }
+
+        fn set_proc_mem(pid: u32, bytes: u32) {
+            KERNEL.with(|k| k.borrow_mut().set_proc_mem(pid, bytes));
+        }
+
+        fn set_priority(pid: u32, priority: u8) {
+            KERNEL.with(|k| k.borrow_mut().set_priority(pid, priority));
         }
 
         fn exit_code(pid: u32) -> Option<i32> {

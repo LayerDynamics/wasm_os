@@ -2,6 +2,7 @@ import { boot, type BootResult } from "./boot.js";
 import { attachTerminal, type TerminalSession } from "./term/terminal.js";
 import { Compositor } from "./compositor/compositor.js";
 import { SurfaceManager } from "./compositor/surface.js";
+import { SessionManager } from "./compositor/session.js";
 import { InputRouter } from "./compositor/input.js";
 import { ThemeManager } from "./compositor/theme.js";
 
@@ -16,7 +17,7 @@ const BIN = [
   "echo.zig", "crash",
   // M3 graphical apps (canvas surfaces); launchable from the file manager.
   // "mandelbrot" is the Zig polyglot app (FR-14 on the graphics path).
-  "gfxspike", "filemanager", "paint", "editor", "mandelbrot",
+  "gfxspike", "filemanager", "paint", "editor", "mandelbrot", "sysmon", "spinner", "chandemo", "shmdemo", "sigdemo", "kill", "renice", "ps", "top",
 ];
 const GUESTS = "/packages/host/guests";
 
@@ -27,6 +28,7 @@ export type ReadyState = BootResult & {
   term: TerminalSession;
   compositor: Compositor;
   surfaces: SurfaceManager;
+  session: SessionManager;
 };
 
 declare global {
@@ -52,7 +54,12 @@ async function main() {
   // Populate /bin, then launch the shell as a terminal-bound process.
   const bins: Record<string, ArrayBuffer> = {};
   for (const name of BIN) bins[name] = await loadBin(control, name);
-  const shellPid = await control.spawn(bins.sh!, { name: "sh", grantSpawn: true, grantFsSubtree: "/" });
+  const shellPid = await control.spawn(bins.sh!, {
+    name: "sh",
+    grantSpawn: true,
+    grantFsSubtree: "/",
+    grantSignal: true, // the user's process-control authority: enables `kill` (M4-T5)
+  });
   await control.bindTerminal(shellPid);
 
   // Bring up the desktop compositor and run the terminal inside its first window
@@ -89,15 +96,26 @@ async function main() {
   };
   control.onExit((pid) => compositor.closeByOwner(pid));
 
-  // Taskbar launcher: spawn each graphical app with its minimal capability set.
-  const launch = (name: string, opts: { grantGpu?: boolean; grantInput?: boolean; grantSpawn?: boolean; grantFsSubtree?: string }) =>
-    void control.spawn(bins[name]!, { name, ...opts });
-  compositor.setLauncherApps([
-    { label: "Files", launch: () => launch("filemanager", { grantGpu: true, grantInput: true, grantSpawn: true, grantFsSubtree: "/" }) },
-    { label: "Paint", launch: () => launch("paint", { grantGpu: true, grantInput: true, grantFsSubtree: "/" }) },
-    { label: "Editor", launch: () => launch("editor", { grantGpu: true, grantInput: true, grantFsSubtree: "/" }) },
-    { label: "Mandelbrot", launch: () => launch("mandelbrot", { grantGpu: true, grantInput: true }) },
-  ]);
+  // Session snapshot/restore (M4-T9, FR-35): records open app windows + geometry
+  // to /home/.session.json and re-opens them on the next boot.
+  const session = new SessionManager(control, compositor);
+
+  // The launchable graphical apps + their minimal capability sets. Registered
+  // with the SessionManager so the taskbar launcher AND session restore spawn
+  // them the same way (and each launch is tagged for persistence).
+  type AppOpts = { grantGpu?: boolean; grantInput?: boolean; grantSpawn?: boolean; grantSignal?: boolean; grantFsSubtree?: string };
+  const APPS: Array<{ name: string; label: string; opts: AppOpts }> = [
+    { name: "filemanager", label: "Files", opts: { grantGpu: true, grantInput: true, grantSpawn: true, grantFsSubtree: "/" } },
+    { name: "paint", label: "Paint", opts: { grantGpu: true, grantInput: true, grantFsSubtree: "/" } },
+    { name: "editor", label: "Editor", opts: { grantGpu: true, grantInput: true, grantFsSubtree: "/" } },
+    { name: "mandelbrot", label: "Mandelbrot", opts: { grantGpu: true, grantInput: true } },
+    // System Monitor needs Signal (process control) in addition to Gpu+Input.
+    { name: "sysmon", label: "Monitor", opts: { grantGpu: true, grantInput: true, grantSignal: true } },
+  ];
+  for (const app of APPS) {
+    session.register(app.name, () => control.spawn(bins[app.name]!, { name: app.name, ...app.opts }));
+  }
+  compositor.setLauncherApps(APPS.map((a) => ({ label: a.label, launch: () => void session.launch(a.name) })));
 
   const termWin = compositor.open({ title: "Terminal — sh", width: 724, height: 460, ownerPid: shellPid, surface: "dom" });
   const termHost = document.createElement("div");
@@ -105,7 +123,7 @@ async function main() {
   termWin.content.appendChild(termHost);
   const term = attachTerminal(termHost, control, shellPid);
 
-  const state: ReadyState = { ...result, coldLoadMillis, shellPid, term, compositor, surfaces };
+  const state: ReadyState = { ...result, coldLoadMillis, shellPid, term, compositor, surfaces, session };
   window.__wasmos = state;
 
   const status = document.getElementById("status");
@@ -115,6 +133,10 @@ async function main() {
   window.dispatchEvent(
     new CustomEvent("wasmos:ready", { detail: { bootMillis: result.bootMillis, coldLoadMillis, features: result.features } }),
   );
+
+  // Re-open the apps from the previous session (FR-35). Fire-and-forget: their
+  // windows stream in as each process boots and requests its surface.
+  void session.restore();
 }
 
 main().catch((e) => {

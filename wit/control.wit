@@ -8,6 +8,15 @@ interface control {
     pid: u32,
     name: string,
     state: string,
+    /// Scheduling priority (FR-8) and accounting for `ps`/`top` (FR-33).
+    priority: u8,
+    /// Scheduler ticks accounted (one per serviced syscall) — a deterministic
+    /// kernel-activity metric (not literal CPU%).
+    cpu-ticks: u64,
+    /// Reported guest memory size in bytes (0 until the worker reports it).
+    mem-bytes: u32,
+    /// Parent pid, or 0 for a host-spawned root.
+    parent: u32,
   }
 
   record feature-report {
@@ -54,6 +63,9 @@ interface control {
     /// Grant the Input capability — required to receive brokered keyboard/mouse
     /// for its focused window (M3-T3). Default-deny.
     grant-input: bool,
+    /// Grant the Signal capability — process-control authority (the `kill`
+    /// builtin signals other processes, M4-T5). Default-deny; the shell holds it.
+    grant-signal: bool,
   }
 
   /// Allocate a process: PID + per-process fd table (0/1/2 preopened) + capset.
@@ -82,6 +94,9 @@ interface control {
     term-output: list<u8>,
     /// set when a guest spawned a child — the kworker brings it to life.
     spawn: option<spawn-request>,
+    /// pids the kworker must force-terminate (SIGKILL, M4-T5): the kernel has
+    /// already zombified them; the host tears down their worker + ring.
+    reap: list<u32>,
   }
 
   /// Route one WASI Preview 1 (or wasmos_kernel) syscall for `pid`. `request`
@@ -103,6 +118,12 @@ interface control {
   /// Bind a process's stdout/stderr to the interactive terminal: subsequent
   /// writes stream out as `syscall-outcome.term-output` (M2).
   bind-terminal: func(pid: u32);
+
+  /// Record a process's reported guest memory size (M4 `top`), from the worker.
+  set-proc-mem: func(pid: u32, bytes: u32);
+
+  /// Change a process's scheduling priority at runtime (FR-8).
+  set-priority: func(pid: u32, priority: u8);
 
   /// Has the process exited? Returns the exit code if it is a zombie.
   exit-code: func(pid: u32) -> option<s32>;

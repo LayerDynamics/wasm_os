@@ -30,6 +30,7 @@ interface SpawnSpec {
   grantSpawn: boolean;
   grantGpu: boolean;
   grantInput: boolean;
+  grantSignal: boolean;
 }
 
 /** Synchronous kernel control surface (jco-generated export shape). */
@@ -45,6 +46,7 @@ interface KernelControl {
   serviceSyscall(pid: number, request: Uint8Array): SyscallOutcome;
   deliverStdin(pid: number, bytes: Uint8Array): Uint32Array;
   deliverInput(pid: number, bytes: Uint8Array): Uint32Array;
+  setProcMem(pid: number, bytes: number): void;
   bindTerminal(pid: number): void;
   exitCode(pid: number): number | undefined;
   takeCapture(pid: number): [Uint8Array, Uint8Array];
@@ -57,6 +59,8 @@ interface SyscallOutcome {
   termOutput: Uint8Array;
   /** Set when a guest spawned a child the kworker must instantiate (M2-T5). */
   spawn?: { pid: number; imagePath: string };
+  /** pids the kworker must force-terminate (SIGKILL, M4-T5). */
+  reap: Uint32Array;
 }
 
 interface KernelModule {
@@ -113,6 +117,9 @@ function driveSyscall(pid: number, request: Uint8Array): void {
   } else {
     rt.server.complete(outcome.reply);
   }
+  // SIGKILL (M4-T5): the kernel zombified these; tear down their workers. Done
+  // AFTER completing this caller's reply so a self-kill's reply lands first.
+  for (const r of outcome.reap) killProcess(r);
   processWakeups(outcome.wakeups);
 }
 
@@ -141,6 +148,7 @@ function processWakeups(wakeups: Uint32Array | number[]): void {
     } else {
       rt.server.complete(outcome.reply);
     }
+    for (const r of outcome.reap) killProcess(r); // SIGKILL reap (M4-T5)
     for (const nw of outcome.wakeups) if (!queue.includes(nw)) queue.push(nw);
   }
 }
@@ -274,7 +282,13 @@ function instantiateProcess(pid: number, wasmBytes: ArrayBuffer | Uint8Array): v
       width?: number;
       height?: number;
       sab?: SharedArrayBuffer;
+      bytes?: number;
     };
+    // M4 ps/top: the worker reported its guest memory size.
+    if (d.type === "mem" && d.bytes !== undefined) {
+      requireControl().setProcMem(pid, d.bytes);
+      return;
+    }
     // M3 compositor surfaces: a process worker created a surface or published a
     // frame. Track ownership (surface_id -> pid) and relay to the main thread,
     // which drives the canvas window + blits the shared framebuffer.

@@ -13,6 +13,11 @@ members = [
     "crates/apps/filemanager",
     "crates/apps/paint",
     "crates/apps/editor",
+    "crates/apps/sysmon",
+    "crates/spinner",
+    "crates/chandemo",
+    "crates/shmdemo",
+    "crates/sigdemo",
 ]
 
 [workspace.package]

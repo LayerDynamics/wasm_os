@@ -13,8 +13,18 @@ name = "catfile"
 version = "0.0.0"
 
 [[package]]
+name = "chandemo"
+version = "0.0.0"
+dependencies = [
+ "wasmos-sys",
+]
+
+[[package]]
 name = "coreutils"
 version = "0.0.0"
+dependencies = [
+ "wasmos-sys",
+]
 
 [[package]]
 name = "crash"
@@ -66,6 +76,32 @@ dependencies = [
 name = "sh"
 version = "0.0.0"
 dependencies = [
+ "wasmos-sys",
+]
+
+[[package]]
+name = "shmdemo"
+version = "0.0.0"
+dependencies = [
+ "wasmos-sys",
+]
+
+[[package]]
+name = "sigdemo"
+version = "0.0.0"
+dependencies = [
+ "wasmos-sys",
+]
+
+[[package]]
+name = "spinner"
+version = "0.0.0"
+
+[[package]]
+name = "sysmon"
+version = "0.0.0"
+dependencies = [
+ "wasmgfx",
  "wasmos-sys",
 ]
 

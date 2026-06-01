@@ -6,7 +6,9 @@
 //! `exit`, and `$?` expansion.
 
 use std::io::{Read, Write};
-use wasmos_sys::{close, pipe, spawn, wait, Stdio, FILE_APPEND, FILE_READ, FILE_TRUNC};
+use wasmos_sys::{
+    close, kill, pipe, spawn, wait, Stdio, FILE_APPEND, FILE_READ, FILE_TRUNC, SIGKILL, SIGTERM,
+};
 
 fn main() {
     let mut stdin = std::io::stdin();
@@ -100,7 +102,56 @@ fn try_builtin(s: &str, cwd: &mut String) -> Option<i32> {
             *cwd = resolve_path(cwd, target);
             Some(0)
         }
+        // `kill [-SIG] <pid>` (M4-T5) — a builtin because it runs in the shell's
+        // own process, using the shell's Signal capability directly. `-9`/`-KILL`
+        // force; default (or `-15`/`-TERM`) requests a cooperative SIGTERM.
+        "kill" => Some(builtin_kill(&toks[1..])),
         _ => None,
+    }
+}
+
+/// `kill [-SIG] <pid>` builtin. Returns a shell exit status.
+fn builtin_kill(args: &[&str]) -> i32 {
+    let mut sig = SIGTERM;
+    let mut pid_tok: Option<&str> = None;
+    for a in args {
+        if let Some(spec) = a.strip_prefix('-') {
+            sig = match spec {
+                "9" | "KILL" | "SIGKILL" => SIGKILL,
+                "15" | "TERM" | "SIGTERM" => SIGTERM,
+                other => match other.parse::<u8>() {
+                    Ok(n) => n,
+                    Err(_) => {
+                        eprintln!("kill: invalid signal `{a}`");
+                        return 2;
+                    }
+                },
+            };
+        } else {
+            pid_tok = Some(a);
+        }
+    }
+    let pid = match pid_tok.and_then(|p| p.parse::<u32>().ok()) {
+        Some(p) => p,
+        None => {
+            eprintln!("usage: kill [-SIG] <pid>");
+            return 2;
+        }
+    };
+    match kill(pid, sig) {
+        0 => 0,
+        76 => {
+            eprintln!("kill: ({pid}) - operation not permitted");
+            1
+        }
+        71 => {
+            eprintln!("kill: ({pid}) - no such process");
+            1
+        }
+        e => {
+            eprintln!("kill: ({pid}) - errno {e}");
+            1
+        }
     }
 }
 
@@ -141,8 +192,11 @@ fn run_pipeline(stages: &[Stage], cwd: &str) -> i32 {
             Stdio::Terminal
         };
 
-        // Coreutils don't draw: no Gpu/Input delegation.
-        match spawn(&path, &stage.argv, &[stdin, stdout, Stdio::Terminal], cwd, false, false) {
+        // Coreutils don't draw: no Gpu/Input delegation. The `kill` coreutil is
+        // the exception — the shell delegates its Signal capability so `/bin/kill`
+        // (used in pipelines / by full path) can signal other processes (M4-T5).
+        let want_signal = matches!(prog, "kill" | "renice") || path.ends_with("/kill") || path.ends_with("/renice");
+        match spawn(&path, &stage.argv, &[stdin, stdout, Stdio::Terminal], cwd, false, false, want_signal) {
             Ok(pid) => pids.push(Some(pid)),
             Err(_) => {
                 eprintln!("{prog}: command not found");
