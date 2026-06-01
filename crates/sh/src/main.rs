@@ -196,7 +196,9 @@ fn run_pipeline(stages: &[Stage], cwd: &str) -> i32 {
         // the exception — the shell delegates its Signal capability so `/bin/kill`
         // (used in pipelines / by full path) can signal other processes (M4-T5).
         let want_signal = matches!(prog, "kill" | "renice") || path.ends_with("/kill") || path.ends_with("/renice");
-        match spawn(&path, &stage.argv, &[stdin, stdout, Stdio::Terminal], cwd, false, false, want_signal) {
+        // `fetch` is the brokered-networking exception — delegate Net to it (M5-T6).
+        let want_net = prog == "fetch" || path.ends_with("/fetch");
+        match spawn(&path, &stage.argv, &[stdin, stdout, Stdio::Terminal], cwd, false, false, want_signal, want_net) {
             Ok(pid) => pids.push(Some(pid)),
             Err(_) => {
                 eprintln!("{prog}: command not found");

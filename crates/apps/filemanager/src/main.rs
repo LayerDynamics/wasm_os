@@ -98,9 +98,9 @@ fn launch(path: &str) {
     let stdio = [Stdio::Terminal, Stdio::Terminal, Stdio::Terminal];
     if path.ends_with(".txt") {
         // Open with the associated app (the editor): `editor <path>`.
-        let _ = spawn("/bin/editor", &["editor", path], &stdio, "/", true, true, false);
+        let _ = spawn("/bin/editor", &["editor", path], &stdio, "/", true, true, false, false);
     } else {
-        let _ = spawn(path, &[path], &stdio, "/", true, true, false);
+        let _ = spawn(path, &[path], &stdio, "/", true, true, false, false);
     }
 }
 

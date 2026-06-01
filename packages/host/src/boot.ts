@@ -28,6 +28,42 @@ export interface SpawnOptions {
   grantInput?: boolean;
   /** Grant Signal — process-control authority for the `kill` builtin (M4-T5). */
   grantSignal?: boolean;
+  /** Grant Net — brokered networking for the `fetch` coreutil (M5-T6). */
+  grantNet?: boolean;
+}
+
+/** Options for launching the emulator process (M5). The v86 runtime + BIOS are
+ * fixed vendored assets; the caller chooses the kernel image + cmdline. */
+export interface EmulatorOptions {
+  name?: string;
+  /** Same-origin URL of the Linux kernel (bzImage) to boot. */
+  bzimage: string;
+  /** Kernel boot cmdline (default routes the console to ttyS0 for serial). */
+  cmdline?: string;
+  memoryMb?: number;
+}
+
+/** A small JSON descriptor naming an image to boot, fetched at runtime (M5-T7). */
+export interface ImageManifest {
+  name?: string;
+  bzimage: string;
+  cmdline?: string;
+}
+
+// Fixed vendored v86 runtime + BIOS (GPLv2, third_party/v86/).
+const V86_BASE = "/third_party/v86";
+const DEFAULT_CMDLINE = "console=ttyS0 tsc=reliable mitigations=off random.trust_cpu=on";
+
+/** Build the emulator-worker boot message for a given kernel image (M5). */
+function emulatorBoot(bzimage: string, cmdline?: string, memoryMb = 128) {
+  return {
+    wasmPath: `${V86_BASE}/v86.wasm`,
+    bios: `${V86_BASE}/seabios.bin`,
+    vgaBios: `${V86_BASE}/vgabios.bin`,
+    bzimage,
+    cmdline: cmdline ?? DEFAULT_CMDLINE,
+    memoryMb,
+  };
 }
 
 /** A compositor surface a process created (M3): a shared RGBA framebuffer. */
@@ -60,6 +96,16 @@ export interface AsyncKernelControl {
   takeCapture(pid: number): Promise<[Uint8Array, Uint8Array]>;
   /** Spawn a guest `.wasm` as a process; returns its PID. */
   spawn(wasmBytes: ArrayBuffer, opts?: SpawnOptions): Promise<number>;
+  /** Launch the privileged emulator process (M5, FR-27): a Native process whose
+   * body is a dedicated v86 worker booting a real Linux. Returns its PID. */
+  spawnEmulator(opts: EmulatorOptions): Promise<number>;
+  /** Boot the emulator from an image named by a manifest fetched at runtime
+   * (M5-T7) — the system loads + runs an image resolved at launch, not hardcoded. */
+  spawnEmulatorFromManifest(manifestUrl: string): Promise<number>;
+  /** Register a listener for the emulator's serial console (running text, M5). */
+  onEmulatorSerial(cb: (pid: number, text: string) => void): void;
+  /** Deliver brokered keystrokes to the emulator's guest console (M5-T3). */
+  emulatorInput(pid: number, text: string): Promise<void>;
   /** Resolve when the process exits, with its exit code + isolation proof. */
   wait(pid: number): Promise<ProcExit>;
   /** Deliver input bytes to a process's stdin (terminal keystrokes, M2). */
@@ -107,6 +153,7 @@ export async function boot(): Promise<BootResult> {
   const surfaceListeners: Array<(info: SurfaceInfo) => void> = [];
   const presentListeners: Array<(surfaceId: number) => void> = [];
   const exitListeners: Array<(pid: number) => void> = [];
+  const emulatorSerialListeners: Array<(pid: number, text: string) => void> = [];
 
   worker.onmessage = (e: MessageEvent) => {
     const data = e.data as {
@@ -122,6 +169,7 @@ export async function boot(): Promise<BootResult> {
       width?: number;
       height?: number;
       sab?: SharedArrayBuffer;
+      text?: string;
     };
     // Streaming (non-RPC) messages: terminal output as processes write it.
     if (data.type === "output") {
@@ -146,6 +194,11 @@ export async function boot(): Promise<BootResult> {
     }
     if (data.type === "exit" && data.pid !== undefined) {
       for (const cb of exitListeners) cb(data.pid);
+      return;
+    }
+    // M5: the emulator process's serial console (running text).
+    if (data.type === "emulatorSerial" && data.pid !== undefined) {
+      for (const cb of emulatorSerialListeners) cb(data.pid, data.text ?? "");
       return;
     }
     if (typeof data.id !== "number") return; // unknown message
@@ -194,8 +247,28 @@ export async function boot(): Promise<BootResult> {
           grantGpu: opts?.grantGpu ?? false,
           grantInput: opts?.grantInput ?? false,
           grantSignal: opts?.grantSignal ?? false,
+          grantNet: opts?.grantNet ?? false,
         },
       }),
+    spawnEmulator: (opts) =>
+      call("spawnEmulator", {
+        name: opts.name ?? "linux",
+        boot: emulatorBoot(opts.bzimage, opts.cmdline, opts.memoryMb),
+      }),
+    spawnEmulatorFromManifest: async (manifestUrl) => {
+      // Fetch a small image descriptor at runtime, then boot the image it names
+      // ("run the image from within it", M5-T7). The descriptor is small enough to
+      // travel any path; the kernel image itself is loaded by v86 from its URL.
+      const m = (await (await fetch(manifestUrl)).json()) as ImageManifest;
+      return call<number>("spawnEmulator", {
+        name: m.name ?? "linux",
+        boot: emulatorBoot(m.bzimage, m.cmdline),
+      });
+    },
+    onEmulatorSerial: (cb) => {
+      emulatorSerialListeners.push(cb);
+    },
+    emulatorInput: (pid, text) => call("emulatorInput", { pid, text }),
     wait: (pid) => call("wait", { pid }),
     stdin: (pid, bytes) => call("stdin", { pid, bytes }),
     deliverInput: (pid, bytes) => call("deliverInput", { pid, bytes }),

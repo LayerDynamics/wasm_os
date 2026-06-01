@@ -7,7 +7,8 @@ use crate::pipe::PipeTable;
 use crate::sched::Scheduler;
 use crate::syscall;
 use crate::types::{
-    Backend, Capability, CapabilitySet, DescKind, ProcInfo, ProcState, ProcTable, Rights, WaitReason,
+    Backend, Capability, CapabilitySet, DescKind, ProcInfo, ProcKind, ProcState, ProcTable, Rights,
+    WaitReason,
 };
 use crate::vfs::{Blockstore, FsError, Vfs};
 
@@ -26,6 +27,12 @@ pub struct KernelCore {
     pipes: PipeTable,
     chans: crate::chan::ChannelTable,
     shm: crate::shm::ShmTable,
+    /// The privileged emulator process (M5), if one is running — special-cased by
+    /// the scheduler (run-to-budget, FR-28).
+    emulator_pid: Option<u32>,
+    /// Brokered `net_request` responses awaiting their parked caller (M5-T6):
+    /// `pid -> (ok, body)`. Filled by `deliver_net`, drained on the re-driven call.
+    net_responses: std::collections::BTreeMap<u32, (bool, Vec<u8>)>,
     booted: bool,
 }
 
@@ -38,6 +45,8 @@ impl KernelCore {
             pipes: PipeTable::new(),
             chans: crate::chan::ChannelTable::new(),
             shm: crate::shm::ShmTable::new(),
+            emulator_pid: None,
+            net_responses: std::collections::BTreeMap::new(),
             booted: false,
         }
     }
@@ -121,6 +130,12 @@ impl KernelCore {
     pub fn grant_signal(&mut self, pid: u32) {
         self.procs.grant_cap(pid, Capability::Signal);
     }
+
+    /// Confer the Net (brokered-networking) capability on a process after spawn
+    /// (M5-T6). The host grants it to the shell, which delegates it to `fetch`.
+    pub fn grant_net(&mut self, pid: u32) {
+        self.procs.grant_cap(pid, Capability::Net);
+    }
     pub fn ready_count(&self) -> usize {
         self.sched.ready_len()
     }
@@ -164,6 +179,48 @@ impl KernelCore {
         pid
     }
 
+    /// Register the **privileged emulator process** (M5, FR-27/FR-28): a `Native`
+    /// process that runs its own CPU loop in a dedicated host worker rather than
+    /// making WASI syscalls over the ring. It is a first-class PID — it appears in
+    /// `proc_list`/`top`, holds a capability set (Gpu+Input+Net+FS for the
+    /// framebuffer, brokered input, image fetch, and the 9p shared folder), and is
+    /// killable via the normal signal/reap path — but is **never** enqueued on the
+    /// ring scheduler. It is marked `Running` (it runs continuously in its worker)
+    /// and special-cased for run-to-budget accounting (T5). Isolation (FR-6) holds:
+    /// it is a separate worker with no access to other processes' memory.
+    pub fn spawn_emulator(&mut self, name: &str) -> u32 {
+        let mut caps = CapabilitySet::default();
+        caps.grant(Capability::FsPath { subtree: "/".into(), rights: Rights::RWX });
+        caps.grant(Capability::Gpu);
+        caps.grant(Capability::Input);
+        caps.grant(Capability::Net);
+        let pid = self.procs.spawn(name, USER_PRIORITY, caps);
+        self.procs.set_kind(pid, ProcKind::Native);
+        self.procs.set_state(pid, ProcState::Running);
+        self.emulator_pid = Some(pid);
+        pid
+    }
+
+    /// The running emulator process's pid, if any (M5 scheduling/lifecycle).
+    pub fn emulator_pid(&self) -> Option<u32> {
+        self.emulator_pid
+    }
+
+    /// The execution kind of a process (M5 — `Native` for the emulator).
+    pub fn proc_kind(&self, pid: u32) -> ProcKind {
+        self.procs.kind_of(pid)
+    }
+
+    /// Account a run-to-budget quantum for the emulator (M5-T5, FR-28). The emulator
+    /// makes no syscalls, so its CPU activity surfaced in `top`/`proc_list` comes
+    /// from periodic wall-budget heartbeats its worker reports. Ignored for any pid
+    /// that is not the registered emulator (it cannot inflate another process).
+    pub fn account_emulator(&mut self, pid: u32, ticks: u64) {
+        if self.emulator_pid == Some(pid) {
+            self.sched.account(pid, ticks);
+        }
+    }
+
     /// Route one syscall for `pid` (FR-4). Returns a [`syscall::SyscallOutcome`]
     /// — a ready reply, or a park (M2) the kworker defers until a wakeup.
     pub fn service_syscall(&mut self, pid: u32, req: &[u8]) -> syscall::SyscallOutcome {
@@ -185,6 +242,7 @@ impl KernelCore {
             Some(0x39) => self.shm_grant_syscall(pid, req),
             Some(0x3A) => self.kill_syscall(pid, req),
             Some(0x3B) => self.sig_wait_syscall(pid),
+            Some(0x40) => self.net_request_syscall(pid, req),
             _ => {
                 let mut out =
                     syscall::dispatch(&mut self.vfs, &mut self.procs, &mut self.pipes, pid, req);
@@ -283,6 +341,7 @@ impl KernelCore {
             term_output: Vec::new(),
             spawn: None,
             reap: Vec::new(),
+            net: None,
         }
     }
 
@@ -471,6 +530,7 @@ impl KernelCore {
                     term_output: Vec::new(),
                     spawn: None,
                     reap: Vec::new(),
+                    net: None,
                 }
             }
             _ => err(syscall::errno::INVAL), // unsupported signal
@@ -490,6 +550,44 @@ impl KernelCore {
         b.extend_from_slice(&(sigs.len() as u32).to_le_bytes());
         b.extend_from_slice(&sigs);
         syscall::SyscallOutcome::ready(b)
+    }
+
+    // --- M5-T6: brokered networking (the Net capability, OQ-2) ---
+
+    /// `net_request(url)` — `[0x40][url bytes]`. Capability-gated (default-deny):
+    /// without `Net`, returns NOTCAPABLE immediately. Otherwise it parks on the
+    /// host's brokered fetch (the kernel cannot fetch) and the re-driven call drains
+    /// the response. Reply: `[errno u16][len u32][body]` (IO on a fetch failure).
+    fn net_request_syscall(&mut self, pid: u32, req: &[u8]) -> syscall::SyscallOutcome {
+        if !self.procs.has_cap(pid, &Capability::Net) {
+            return syscall::SyscallOutcome::ready(syscall::errno::NOTCAPABLE.to_le_bytes().to_vec());
+        }
+        // The host delivered the response → drain + return it.
+        if let Some((ok, body)) = self.net_responses.remove(&pid) {
+            let errno = if ok { syscall::errno::SUCCESS } else { syscall::errno::IO };
+            let mut b = errno.to_le_bytes().to_vec();
+            b.extend_from_slice(&(body.len() as u32).to_le_bytes());
+            b.extend_from_slice(&body);
+            return syscall::SyscallOutcome::ready(b);
+        }
+        // First call: park and ask the host to perform the fetch.
+        let url = String::from_utf8_lossy(&req[1..]).into_owned();
+        self.procs.set_blocked(pid, WaitReason::NetReq);
+        let mut out = syscall::SyscallOutcome::parked();
+        out.net = Some(syscall::NetRequest { pid, url });
+        out
+    }
+
+    /// The host delivers a brokered fetch response (M5-T6); buffer it and wake the
+    /// parked caller so its re-driven `net_request` returns the bytes.
+    pub fn deliver_net(&mut self, pid: u32, ok: bool, body: Vec<u8>) -> Vec<u32> {
+        if self.procs.blocked_on(pid) == Some(WaitReason::NetReq) {
+            self.net_responses.insert(pid, (ok, body));
+            self.procs.clear_blocked(pid);
+            vec![pid]
+        } else {
+            Vec::new()
+        }
     }
 
     /// Bind a process's stdout + stderr (fd 1/2) to the interactive terminal so
@@ -943,5 +1041,69 @@ mod tests {
             k.list_procs().iter().find(|i| i.pid == victim).unwrap().state.as_str(),
             "zombie"
         );
+    }
+
+    // --- M5-T2: the emulator as a privileged (Native, non-ring) process ---
+
+    #[test]
+    fn emulator_is_a_killable_native_process_in_proc_list_and_isolated() {
+        let mut k = core();
+        k.boot();
+        // A normal wasi process running alongside the emulator.
+        let peer = k.spawn("peer", Some(("/", Rights::RW)), false, false, false);
+
+        // Register the privileged emulator process.
+        let emu = k.spawn_emulator("linux");
+        assert_eq!(k.emulator_pid(), Some(emu));
+        assert_eq!(k.proc_kind(emu), crate::types::ProcKind::Native);
+
+        // It is a first-class PID in proc_list, shown running.
+        let me = k.list_procs().into_iter().find(|i| i.pid == emu).unwrap();
+        assert_eq!(me.state.as_str(), "running");
+        assert_eq!(me.name, "linux");
+
+        // The System Monitor (Signal-capable) reaps it from `top`.
+        let mon = k.spawn("sysmon", None, false, false, false);
+        k.grant_signal(mon);
+        let killed = k.service_syscall(mon, &kill_req(emu, 9));
+        assert_eq!(read_u16(&killed.reply.unwrap()), 0);
+        assert_eq!(killed.reap, vec![emu]); // host tears down the emulator worker
+
+        // The emulator is reaped; the unrelated peer is untouched (FR-6 isolation).
+        let infos = k.list_procs();
+        assert_eq!(infos.iter().find(|i| i.pid == emu).unwrap().state.as_str(), "zombie");
+        assert_ne!(infos.iter().find(|i| i.pid == peer).unwrap().state.as_str(), "zombie");
+    }
+
+    // --- M5-T6: brokered networking (net_request) ---
+
+    #[test]
+    fn net_request_is_capability_gated_and_parks_until_delivered() {
+        let mut k = core();
+        k.boot();
+        let mut req = vec![0x40u8];
+        req.extend_from_slice(b"https://example/data");
+
+        // Default-deny: a process without Net cannot use the broker.
+        let nonet = k.spawn("nonet", Some(("/", Rights::RW)), false, false, false);
+        assert_eq!(read_u16(&k.service_syscall(nonet, &req).reply.unwrap()), 76); // NOTCAPABLE
+
+        // A Net-capable process parks and asks the host to perform the fetch.
+        let net = k.spawn_emulator("linux"); // the emulator holds Net
+        let out = k.service_syscall(net, &req);
+        assert!(out.reply.is_none());
+        let nr = out.net.expect("a brokered net request");
+        assert_eq!(nr.pid, net);
+        assert_eq!(nr.url, "https://example/data");
+
+        // The host delivers the response → wakes the parked caller.
+        let wakeups = k.deliver_net(net, true, b"HELLO-NET".to_vec());
+        assert_eq!(wakeups, vec![net]);
+
+        // The re-driven call returns [SUCCESS][len][body].
+        let r = k.service_syscall(net, &req).reply.unwrap();
+        assert_eq!(read_u16(&r), 0);
+        let len = u32::from_le_bytes([r[2], r[3], r[4], r[5]]) as usize;
+        assert_eq!(&r[6..6 + len], b"HELLO-NET");
     }
 }

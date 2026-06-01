@@ -42,7 +42,7 @@ fn writer() {
         Err(_) => std::process::exit(3),
     };
     let stdio = [Stdio::Terminal, Stdio::Terminal, Stdio::Terminal];
-    let child = match spawn("/bin/shmdemo", &["shmdemo", "reader", &id.to_string()], &stdio, "/", false, false, false) {
+    let child = match spawn("/bin/shmdemo", &["shmdemo", "reader", &id.to_string()], &stdio, "/", false, false, false, false) {
         Ok(p) => p,
         Err(_) => std::process::exit(4),
     };

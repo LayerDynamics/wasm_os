@@ -35,7 +35,7 @@ mod component {
 
     use bindings::exports::wasmos::abi::control::{
         Backend as WBackend, BootStatus, FeatureReport, FsError as WFsError, Guest,
-        ProcInfo as WProcInfo, SpawnRequest as WSpawnRequest, SpawnSpec,
+        NetRequest as WNetRequest, ProcInfo as WProcInfo, SpawnRequest as WSpawnRequest, SpawnSpec,
         SyscallOutcome as WSyscallOutcome,
     };
     use bindings::wasmos::abi::{home_store, mnt_store};
@@ -161,8 +161,19 @@ mod component {
                 if spec.grant_signal {
                     k.grant_signal(pid);
                 }
+                if spec.grant_net {
+                    k.grant_net(pid);
+                }
                 pid
             })
+        }
+
+        fn spawn_emulator(name: String) -> u32 {
+            KERNEL.with(|k| k.borrow_mut().spawn_emulator(&name))
+        }
+
+        fn account_emulator(pid: u32, ticks: u64) {
+            KERNEL.with(|k| k.borrow_mut().account_emulator(pid, ticks));
         }
 
         fn service_syscall(pid: u32, request: Vec<u8>) -> WSyscallOutcome {
@@ -173,7 +184,12 @@ mod component {
                 term_output: out.term_output,
                 spawn: out.spawn.map(|s| WSpawnRequest { pid: s.pid, image_path: s.image_path }),
                 reap: out.reap,
+                net: out.net.map(|n| WNetRequest { pid: n.pid, url: n.url }),
             }
+        }
+
+        fn deliver_net(pid: u32, ok: bool, body: Vec<u8>) -> Vec<u32> {
+            KERNEL.with(|k| k.borrow_mut().deliver_net(pid, ok, body))
         }
 
         fn deliver_stdin(pid: u32, bytes: Vec<u8>) -> Vec<u32> {

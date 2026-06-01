@@ -34,7 +34,7 @@ The four "kinds of web OS" the project set out to build are not competing design
 | **L2 — Userland & terminal** | Rust shell + 13 coreutils + xterm terminal; kernel pipes, redirection, exit codes; polyglot proof (Zig `echo`) | [M2](docs/M2-STATUS.md) | ✅ Complete |
 | **L3 — Compositor & desktop** | Host compositor: real windows (move/resize/focus/min/max/z-order), taskbar, process-owned canvas surfaces, brokered input; file manager + Paint + Editor + Mandelbrot apps | [M3](docs/M3-STATUS.md) | ✅ Complete |
 | **L4 — Multi-process, IPC, persistence** | ≥32 concurrent processes, message channels + shared memory, signals, live `ps`/`top`, runtime priority, session restore | [M4](docs/M4-STATUS.md) | ✅ Complete |
-| **L5 — Emulator** | An x86/RISC-V emulator running *as a single privileged process* (boot a real Linux) | M5 | ⏳ Future |
+| **L5 — Emulator** | A v86 x86 emulator running *as a single privileged process* — boots a real Linux to a shell in a framebuffer window; brokered networking + a 9p shared folder; killable; session-restored | [M5](docs/M5-STATUS.md) | ✅ Complete |
 
 Each `docs/MX-STATUS.md` records that milestone's exit criteria, the verified
 `npm run verify` gate breakdown (rust / host / e2e), and every as-built deviation

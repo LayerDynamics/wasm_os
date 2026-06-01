@@ -22,6 +22,7 @@ import type { ExitMessage } from "./process-worker.js";
 
 const ABI_BASE = "/packages/abi/generated";
 const PROCESS_WORKER_URL = "/dist/worker/process-worker.js";
+const EMULATOR_WORKER_URL = "/dist/worker/emulator-worker.js";
 
 type Backend = "tmpfs" | "opfs" | "idb";
 interface SpawnSpec {
@@ -31,6 +32,7 @@ interface SpawnSpec {
   grantGpu: boolean;
   grantInput: boolean;
   grantSignal: boolean;
+  grantNet: boolean;
 }
 
 /** Synchronous kernel control surface (jco-generated export shape). */
@@ -43,6 +45,9 @@ interface KernelControl {
   fsDelete(path: string): void;
   listProcs(): Array<{ pid: number; name: string; state: string }>;
   spawn(spec: SpawnSpec): number;
+  spawnEmulator(name: string): number;
+  accountEmulator(pid: number, ticks: bigint): void;
+  deliverNet(pid: number, ok: boolean, body: Uint8Array): Uint32Array;
   serviceSyscall(pid: number, request: Uint8Array): SyscallOutcome;
   deliverStdin(pid: number, bytes: Uint8Array): Uint32Array;
   deliverInput(pid: number, bytes: Uint8Array): Uint32Array;
@@ -61,6 +66,8 @@ interface SyscallOutcome {
   spawn?: { pid: number; imagePath: string };
   /** pids the kworker must force-terminate (SIGKILL, M4-T5). */
   reap: Uint32Array;
+  /** Set when a guest parked on net_request (M5-T6) — the kworker fetches the URL. */
+  net?: { pid: number; url: string };
 }
 
 interface KernelModule {
@@ -94,6 +101,52 @@ interface ProcRuntime {
 }
 const procs = new Map<number, ProcRuntime>();
 
+/** Boot options for the emulator worker (same-origin asset URLs + kernel cmdline). */
+interface EmulatorBoot {
+  wasmPath: string;
+  bios: string;
+  vgaBios: string;
+  bzimage: string;
+  cmdline: string;
+  memoryMb?: number;
+  shareSeed?: Array<{ name: string; data: Uint8Array }>;
+}
+
+/** The host /home subtree bridged into the guest's 9p share (M5-T8, FR-29). */
+const SHARE_DIR = "/home/shared";
+
+/** Read the files under the share dir to seed the guest's 9p mount (M5-T8). */
+function readShareSeed(): Array<{ name: string; data: Uint8Array }> {
+  const seed: Array<{ name: string; data: Uint8Array }> = [];
+  try {
+    // fsList returns FULL paths; the 9p file name is the basename.
+    for (const full of requireControl().fsList(SHARE_DIR)) {
+      const name = full.split("/").pop() ?? full;
+      try {
+        seed.push({ name, data: requireControl().fsRead(full) });
+      } catch {
+        /* a sub-directory or unreadable entry — skip */
+      }
+    }
+  } catch {
+    /* no share dir yet */
+  }
+  return seed;
+}
+/** The privileged emulator process (M5): a Native process whose body is a dedicated
+ * v86 worker, tracked separately from the ring-driven `procs` so the wasi path is
+ * untouched. Killing it (window close or SIGKILL/reap) terminates this worker. */
+interface EmulatorRuntime {
+  worker: Worker;
+  serial: string;
+  exited: boolean;
+  surfaceId?: number;
+}
+const emulators = new Map<number, EmulatorRuntime>();
+/** Surface ids for emulator framebuffers, in a high namespace that can't collide
+ * with the kernel's win_surface ids (allocated from 1). */
+let nextEmulatorSurfaceId = 0x7000_0000;
+
 /**
  * Parked syscalls (M2): a pid → the request bytes it parked on. While parked,
  * the guest stays blocked in `Atomics.wait`; a wakeup re-drives the request.
@@ -112,6 +165,7 @@ function driveSyscall(pid: number, request: Uint8Array): void {
     ctx.postMessage({ type: "output", pid, bytes: outcome.termOutput });
   }
   if (outcome.spawn) handleSpawnRequest(outcome.spawn);
+  if (outcome.net) handleNetRequest(outcome.net);
   if (outcome.reply === undefined) {
     parked.set(pid, request); // park — do NOT complete the ring
   } else {
@@ -143,6 +197,7 @@ function processWakeups(wakeups: Uint32Array | number[]): void {
       ctx.postMessage({ type: "output", pid: w, bytes: outcome.termOutput });
     }
     if (outcome.spawn) handleSpawnRequest(outcome.spawn);
+    if (outcome.net) handleNetRequest(outcome.net);
     if (outcome.reply === undefined) {
       parked.set(w, request); // parked again (e.g. wait on a not-yet-exited child)
     } else {
@@ -242,9 +297,83 @@ function onProcExit(pid: number, msg: ExitMessage): void {
  * (zombifies + releases pipes/surfaces + wakes waiters) then tears the worker
  * down via onProcExit. A no-op if the process already exited. */
 function killProcess(pid: number): void {
+  // The emulator (M5) is a Native process with no ring — reap its worker directly.
+  const emu = emulators.get(pid);
+  if (emu) {
+    reapEmulator(pid, emu);
+    return;
+  }
   const rt = procs.get(pid);
   if (!rt || rt.exited) return;
   onProcExit(pid, { pid, exit: { kind: "exit", code: 137 }, sharedMemory: rt.sharedMemory });
+}
+
+/** Register + boot the privileged emulator process (M5, FR-27/FR-28): the kernel
+ * allocates a Native PID, then a dedicated v86 worker runs it. Serial output is
+ * relayed to the main thread; killing the PID terminates this worker. */
+function spawnEmulator(name: string, boot: EmulatorBoot): number {
+  const pid = requireControl().spawnEmulator(name);
+  const worker = new Worker(EMULATOR_WORKER_URL, { type: "module" });
+  const emu: EmulatorRuntime = { worker, serial: "", exited: false };
+  emulators.set(pid, emu);
+  worker.onmessage = (e: MessageEvent) => {
+    const d = e.data as {
+      type?: string;
+      text?: string;
+      width?: number;
+      height?: number;
+      sab?: SharedArrayBuffer;
+      name?: string;
+      data?: Uint8Array;
+    };
+    if (d.type === "serial" && typeof d.text === "string") {
+      emu.serial = d.text;
+      ctx.postMessage({ type: "emulatorSerial", pid, text: d.text });
+    } else if (d.type === "started") {
+      ctx.postMessage({ type: "emulatorStarted", pid });
+    } else if (d.type === "surface" && d.sab) {
+      // The emulator's framebuffer — relay it as a compositor surface (reusing the
+      // M3 surface/present path), with a high surface id owned by this process.
+      const sid = nextEmulatorSurfaceId++;
+      emu.surfaceId = sid;
+      surfaceOwners.set(sid, pid);
+      ctx.postMessage({ type: "surface", pid, surfaceId: sid, width: d.width, height: d.height, sab: d.sab });
+    } else if (d.type === "present" && emu.surfaceId !== undefined) {
+      ctx.postMessage({ type: "present", surfaceId: emu.surfaceId });
+    } else if (d.type === "tick") {
+      // Run-to-budget accounting (M5-T5): the emulator is alive and consuming a
+      // scheduling budget — surface it as CPU activity in proc_list/top.
+      requireControl().accountEmulator(pid, 1n);
+    } else if (d.type === "9pWrite" && d.name && d.data) {
+      // A guest write under the 9p share — mirror it back to the host VFS (M5-T8).
+      requireControl().fsWrite(`${SHARE_DIR}/${d.name}`, d.data);
+    }
+  };
+  // Seed the guest's 9p share with the current host /home/shared contents (M5-T8).
+  worker.postMessage({ type: "boot", ...boot, shareSeed: readShareSeed() });
+  return pid;
+}
+
+/** Deliver brokered keystrokes to the emulator's guest console (M5-T3). The text
+ * is written to the guest's ttyS0 (the shell's stdin) by the emulator worker. */
+function emulatorInput(pid: number, text: string): void {
+  const emu = emulators.get(pid);
+  if (emu && !emu.exited) emu.worker.postMessage({ type: "input", text });
+}
+
+/** Tear down the emulator worker + zombify its PID in the kernel (M5 kill/reap). */
+function reapEmulator(pid: number, emu: EmulatorRuntime): void {
+  if (emu.exited) return;
+  emu.exited = true;
+  // If the kernel doesn't already know it exited (e.g. window-close, not SIGKILL),
+  // record it so proc_list zombifies it and any waiter wakes.
+  if (requireControl().exitCode(pid) === undefined) {
+    const outcome = requireControl().serviceSyscall(pid, encodeProcExit(137));
+    processWakeups(outcome.wakeups);
+  }
+  emu.worker.terminate();
+  for (const [sid, owner] of surfaceOwners) if (owner === pid) surfaceOwners.delete(sid);
+  ctx.postMessage({ type: "exit", pid });
 }
 
 /**
@@ -327,6 +456,19 @@ function handleSpawnRequest(req: { pid: number; imagePath: string }): void {
   instantiateProcess(req.pid, image);
 }
 
+/** Perform a guest's brokered network request (M5-T6): the kernel parked the
+ * caller after checking its Net capability; we fetch the URL and deliver the
+ * body back (waking the caller). A failure delivers ok=false (guest sees IO). */
+function handleNetRequest(req: { pid: number; url: string }): void {
+  void fetch(req.url)
+    .then((r) => r.arrayBuffer())
+    .then((buf) => requireControl().deliverNet(req.pid, true, new Uint8Array(buf)))
+    .catch(() => requireControl().deliverNet(req.pid, false, new Uint8Array()))
+    .then((wakeups) => {
+      if (wakeups) processWakeups(wakeups);
+    });
+}
+
 function waitFor(pid: number): Promise<{ exitCode: number; sharedMemory: boolean }> {
   const rt = procs.get(pid);
   if (!rt) {
@@ -377,6 +519,13 @@ ctx.onmessage = async (ev: MessageEvent) => {
         break;
       case "spawn":
         result = spawn(args.spec as SpawnSpec, args.wasmBytes as ArrayBuffer);
+        break;
+      case "spawnEmulator":
+        result = spawnEmulator(args.name as string, args.boot as EmulatorBoot);
+        break;
+      case "emulatorInput":
+        emulatorInput(args.pid as number, args.text as string);
+        result = undefined;
         break;
       case "wait":
         result = await waitFor(args.pid as number);

@@ -1,0 +1,14 @@
+{
+  "name": "@wasmos/abi",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Generated WASI / wasmos_kernel ABI bindings. The contents of generated/ (kernel.js + .core*.wasm + .d.ts) are jco-transpiled build output (gitignored) produced by `npm run binder gen` from the kernel component, and loaded at runtime by the kernel worker via /packages/abi/generated/kernel.js. This manifest exists so the directory is a well-formed npm workspace member (root workspaces: packages/*).",
+  "exports": {
+    "./kernel": "./generated/kernel.js"
+  },
+  "files": [
+    "generated/"
+  ],
+  "license": "MIT"
+}

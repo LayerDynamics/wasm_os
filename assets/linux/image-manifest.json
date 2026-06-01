@@ -1,0 +1,5 @@
+{
+  "name": "buildroot",
+  "bzimage": "/assets/linux/buildroot-bzimage.bin",
+  "cmdline": "console=ttyS0 tsc=reliable mitigations=off random.trust_cpu=on"
+}

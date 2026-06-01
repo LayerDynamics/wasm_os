@@ -1,2 +1,5 @@
 * text=auto eol=lf
 *.wasm binary
+third_party/v86/*.wasm filter=lfs diff=lfs merge=lfs -text
+third_party/v86/*.bin filter=lfs diff=lfs merge=lfs -text
+assets/linux/*.bin filter=lfs diff=lfs merge=lfs -text

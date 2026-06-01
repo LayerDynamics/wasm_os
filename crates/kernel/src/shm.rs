@@ -72,16 +72,12 @@ impl ShmTable {
     /// if the region does not exist.
     pub fn write(&mut self, id: u32, off: usize, data: &[u8]) -> bool {
         match self.regions.get_mut(&id) {
-            Some(r) => {
-                if off < r.len() {
-                    let end = (off + data.len()).min(r.len());
-                    r[off..end].copy_from_slice(&data[..end - off]);
-                    true
-                } else {
-                    false
-                }
+            Some(r) if off < r.len() => {
+                let end = (off + data.len()).min(r.len());
+                r[off..end].copy_from_slice(&data[..end - off]);
+                true
             }
-            None => false,
+            _ => false,
         }
     }
 
