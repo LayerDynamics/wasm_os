@@ -9,6 +9,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Materialize the git-lfs binaries (vendored v86 runtime + the Linux
+          # bzImage under third_party/v86 + assets/linux) the M5 emulator needs.
+          lfs: true
       - uses: dtolnay/rust-toolchain@stable
         with:
           # wasm32-unknown-unknown: the kernel component. wasm32-wasip1: guests.
@@ -59,5 +63,9 @@ jobs:
         run: npm run build:guests
       - name: Host tests
         run: npm run test:host
-      - name: E2E (real browser)
+      - name: E2E fast lane (M0–M4 + light M5)
         run: npm run test:e2e
+      - name: E2E slow lane (boot real Linux in the v86 emulator, M5)
+        # A separate lane (multi-second, multi-MB boots) so it can never flake the
+        # fast suite. Reuses the webServer the fast lane built.
+        run: npm run test:e2e:slow
