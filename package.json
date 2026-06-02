@@ -26,7 +26,8 @@
     "test:e2e:slow": "playwright test --project=slow",
     "dev:web": "npm run build && npm run build:guests && npm run bundle && npm -w @wasmos/web run dev",
     "build:web": "npm -w @wasmos/web run build",
-    "typecheck:web": "tsc -p apps/web/tsconfig.json --noEmit"
+    "typecheck:web": "tsc -p apps/web/tsconfig.json --noEmit",
+    "start": "node tools/prod-server.mjs"
   },
   "devDependencies": {
     "@bytecodealliance/jco": "^1.4.0",
