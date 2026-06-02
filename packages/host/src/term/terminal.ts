@@ -41,39 +41,51 @@ export function attachTerminal(
   control.onOutput((_pid, bytes) => write(dec.decode(bytes)));
 
   // Terminal → kernel: a minimal line discipline (local echo + Backspace), then
-  // deliver to the shell's stdin. Only ordinary line input reaches the shell:
-  //   • Enter (CR)       → echo CRLF, send "\n", reset the line.
-  //   • Backspace / DEL  → visually erase the last typed char (never into the
-  //                        prompt) and send DEL so the shell drops it from its line.
-  //   • printable text    → echoed and forwarded verbatim.
-  //   • everything else   → dropped. Escape sequences (arrows/F-keys) would corrupt
-  //                        xterm's own parser if echoed, and raw control bytes would
-  //                        be pushed into the command by the line-oriented shell.
+  // deliver to the shell's stdin. A single `onData` chunk can carry many characters
+  // at once — most importantly a PASTE such as "ls\n" or text containing tabs — so
+  // we process it character-by-character, batching runs of printable text and
+  // handling control characters individually:
+  //   • CR / LF          → flush pending text, echo CRLF, send "\n", reset the line.
+  //   • Backspace / DEL  → flush pending text, visually erase the last typed char
+  //                        (never into the prompt) and send DEL so the shell drops it.
+  //   • printable text    → batched, then echoed + forwarded verbatim.
+  //   • other control bytes (tab, Ctrl-keys, …) → dropped (a line-oriented shell has
+  //                        no use for them and they would corrupt the command).
+  // A chunk that begins with ESC is an escape sequence (arrow/F-key); we drop the
+  // whole chunk so its "[A"/"[B" tail is never inserted into the command line.
   //
   // `lineLen` tracks how many chars the user has typed on the CURRENT input line so
   // Backspace erases only that, staying in lockstep with the shell's line buffer.
-  const isPrintable = (s: string) =>
-    s.length > 0 && [...s].every((ch) => { const c = ch.charCodeAt(0); return c >= 0x20 && c !== 0x7f; });
   let lineLen = 0;
   term.onData((data) => {
-    if (data === "\r") {
-      write("\r\n");
-      lineLen = 0;
-      void control.stdin(shellPid, enc.encode("\n"));
-      return;
-    }
-    if (data === "\x7f" || data === "\b") {
-      if (lineLen > 0) {
-        write("\b \b"); // cursor back, overwrite with space, cursor back
-        lineLen -= 1;
-        void control.stdin(shellPid, enc.encode("\x7f"));
+    if (data.charCodeAt(0) === 0x1b) return; // ESC-prefixed: arrows, F-keys, etc.
+    let pending = "";
+    const flush = () => {
+      if (pending.length === 0) return;
+      write(pending);
+      lineLen += [...pending].length;
+      void control.stdin(shellPid, enc.encode(pending));
+      pending = "";
+    };
+    for (const ch of data) {
+      if (ch === "\r" || ch === "\n") {
+        flush();
+        write("\r\n");
+        lineLen = 0;
+        void control.stdin(shellPid, enc.encode("\n"));
+      } else if (ch === "\x7f" || ch === "\b") {
+        flush();
+        if (lineLen > 0) {
+          write("\b \b"); // cursor back, overwrite with space, cursor back
+          lineLen -= 1;
+          void control.stdin(shellPid, enc.encode("\x7f"));
+        }
+      } else {
+        const code = ch.charCodeAt(0);
+        if (code >= 0x20 && code !== 0x7f) pending += ch; // printable; drop other control bytes
       }
-      return;
     }
-    if (!isPrintable(data)) return; // ESC sequences + other control bytes
-    write(data);
-    lineLen += [...data].length;
-    void control.stdin(shellPid, enc.encode(data));
+    flush();
   });
 
   return { term, log: () => logText };
