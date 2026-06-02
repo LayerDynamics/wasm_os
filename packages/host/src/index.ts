@@ -87,9 +87,18 @@ export async function startDesktop(opts: StartOptions = {}): Promise<ReadyState>
   const coldLoadMillis = Math.round(performance.now());
   const { control } = result;
 
-  // Populate /bin, then launch the shell as a terminal-bound process.
+  // Populate /bin, then launch the shell as a terminal-bound process. Load every
+  // guest CONCURRENTLY: the fetches multiplex over one HTTP/2 connection and the
+  // fsWrite calls multiplex over the kernel ring (each carries a unique request id),
+  // so this collapses ~34 sequential round-trips into one batch — the dominant cost
+  // of the cold desktop boot on higher-latency links.
+  const tGuests = performance.now();
   const bins: Record<string, ArrayBuffer> = {};
-  for (const name of BIN) bins[name] = await loadBin(control, name);
+  await Promise.all(BIN.map(async (name) => { bins[name] = await loadBin(control, name); }));
+  console.info(
+    `[wasmos boot] kernel-ready: ${coldLoadMillis}ms · guest load (${BIN.length} bins): ` +
+      `${Math.round(performance.now() - tGuests)}ms`,
+  );
   const shellPid = await control.spawn(bins.sh!, {
     name: "sh",
     grantSpawn: true,

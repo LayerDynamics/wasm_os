@@ -232,8 +232,9 @@ async function init(features: FeatureReport): Promise<{ bootMillis: number; feat
     ? await OpfsBlockstore.create("home")
     : await IdbBlockstore.create("home");
   const mntBacking: Blockstore = await IdbBlockstore.create("mnt");
-  home = await CachedStore.load(homeBacking);
-  mnt = await CachedStore.load(mntBacking);
+  const tStore = performance.now();
+  [home, mnt] = await Promise.all([CachedStore.load(homeBacking), CachedStore.load(mntBacking)]);
+  console.info(`[wasmos boot] persisted store load: ${Math.round(performance.now() - tStore)}ms`);
 
   // Dynamic import via a non-literal path so the bundler keeps it external; the
   // browser fetches the generated component + its core modules at runtime.

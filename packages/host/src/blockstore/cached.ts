@@ -23,10 +23,14 @@ export class CachedStore {
   static async load(backing: Blockstore): Promise<CachedStore> {
     const store = new CachedStore(backing);
     const keys = await backing.list("");
-    for (const key of keys) {
-      const value = await backing.get(key);
+    // Read every persisted block CONCURRENTLY — this runs before the kernel boots on
+    // every reload, and a sequential await-per-key walk over a grown OPFS/IndexedDB
+    // store is a dominant cold-boot cost. The backends serve concurrent gets fine.
+    const values = await Promise.all(keys.map((key) => backing.get(key)));
+    keys.forEach((key, i) => {
+      const value = values[i];
       if (value) store.mirror.set(key, value);
-    }
+    });
     return store;
   }
 
