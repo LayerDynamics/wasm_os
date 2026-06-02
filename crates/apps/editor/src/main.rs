@@ -7,8 +7,8 @@
 
 use wasmgfx::{rgb, Color, Framebuffer};
 use wasmos_sys::{
-    win_present, win_read_input, win_surface, EV_KEY_DOWN, KEY_BACKSPACE, KEY_DOWN, KEY_ENTER,
-    KEY_LEFT, KEY_RIGHT, KEY_UP,
+    win_present, win_read_input, win_surface, EV_KEY_DOWN, KEY_BACKSPACE, KEY_DELETE, KEY_DOWN,
+    KEY_ENTER, KEY_LEFT, KEY_RIGHT, KEY_UP,
 };
 
 const W: u32 = 540;
@@ -83,6 +83,19 @@ impl Editor {
             self.row -= 1;
             self.col = self.lines[self.row].len();
             self.lines[self.row].push_str(&cur);
+        }
+        self.modified = true;
+    }
+
+    fn delete_forward(&mut self) {
+        let len = self.lines[self.row].len();
+        if self.col < len {
+            self.lines[self.row].remove(self.col); // erase the char under the cursor
+        } else if self.row + 1 < self.lines.len() {
+            let next = self.lines.remove(self.row + 1); // at line end: pull up the next line
+            self.lines[self.row].push_str(&next);
+        } else {
+            return; // end of buffer: nothing to delete
         }
         self.modified = true;
     }
@@ -178,6 +191,7 @@ fn main() {
             match ev.key {
                 KEY_ENTER => ed.newline(),
                 KEY_BACKSPACE => ed.backspace(),
+                KEY_DELETE => ed.delete_forward(),
                 KEY_LEFT | KEY_RIGHT | KEY_UP | KEY_DOWN => ed.move_cursor(ev.key),
                 k if k < 0x100 => {
                     if let Some(c) = char::from_u32(k) {

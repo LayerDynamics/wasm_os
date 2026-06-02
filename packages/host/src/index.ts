@@ -186,6 +186,11 @@ export async function startDesktop(opts: StartOptions = {}): Promise<ReadyState>
   termHost.id = "terminal";
   termWin.content.appendChild(termHost);
   const term = attachTerminal(termHost, control, shellPid);
+  // Restore xterm keyboard focus whenever the terminal window is (re)activated —
+  // otherwise switching to another window and clicking back leaves the terminal
+  // visually active but keyboard-dead (typing/Backspace/Delete silently lost).
+  termWin.onActivate = () => term.focus();
+  term.focus();
 
   const state: ReadyState = { ...result, coldLoadMillis, shellPid, term, compositor, surfaces, session };
   window.__wasmos = state;

@@ -179,6 +179,57 @@ test("Backspace deletes the last character in the terminal line", async ({ page 
   expect(await readLog()).toBe(before); // nothing erased past the start of the line
 });
 
+test("terminal keeps working after switching to another window and back (focus restore)", async ({ page }) => {
+  // Regression: the compositor marked a re-clicked window active + raised it, but
+  // never restored DOM focus to a DOM window's content. So after launching another
+  // window and clicking back to the terminal, the xterm textarea stayed blurred —
+  // the terminal looked active but was keyboard-DEAD (typing/Backspace/Delete all
+  // silently lost). Now `Win.onActivate` re-focuses the xterm textarea on activate.
+  //
+  // The bug only reproduces through the *titlebar* click: clicking the content
+  // (#terminal) natively focuses the textarea and hides the defect; the titlebar's
+  // beginMove() calls preventDefault(), suppressing that native focus.
+  const errors = captureErrors(page);
+  await page.goto("/");
+  await waitReady(page, errors);
+  await page.waitForFunction(
+    () => ((window as unknown as { __wasmos: { term: { log(): string } } }).__wasmos.term.log()).includes("wasmos:"),
+    null,
+    { timeout: 10_000 },
+  );
+
+  // Launch a second window (the editor, a canvas app) so it becomes the active
+  // window and the terminal's textarea loses focus.
+  await page.evaluate(() =>
+    (window as unknown as { __wasmos: { session: { launch(n: string): Promise<unknown> } } }).__wasmos.session.launch("editor"),
+  );
+  await page.waitForFunction(() => document.querySelectorAll("#desktop canvas").length >= 1, null, { timeout: 20_000 });
+  await page.waitForTimeout(500);
+
+  // Switch BACK to the terminal by clicking its titlebar (not its content).
+  const termTitlebar = page.locator(".wasmos-window", { has: page.locator("#terminal") }).locator(".wasmos-titlebar");
+  await termTitlebar.click();
+  await page.waitForTimeout(200);
+
+  // The xterm textarea must have regained keyboard focus.
+  expect(await page.evaluate(() => !!document.getElementById("terminal")?.contains(document.activeElement))).toBe(true);
+
+  // And real typing + Backspace must now reach the shell: "lsX" → Backspace → `ls`.
+  await page.keyboard.type("lsX", { delay: 30 });
+  await page.keyboard.press("Backspace");
+  await page.keyboard.press("Enter");
+  const readLog = () =>
+    page.evaluate(() => (window as unknown as { __wasmos: { term: { log(): string } } }).__wasmos.term.log());
+  let log = "";
+  for (let i = 0; i < 40; i++) {
+    log = await readLog();
+    if (/\bbin\b/.test(log)) break;
+    await page.waitForTimeout(150);
+  }
+  expect(log).toMatch(/\bbin\b/); // `ls` ran — the terminal was NOT keyboard-dead
+  expect(log).not.toContain("lsX: command not found");
+});
+
 test("pasting a multi-character command ending in a newline runs it", async ({ page }) => {
   // Regression: onData used to drop the WHOLE chunk if it contained any
   // non-printable character, so a paste like "ls\n" (printable text + newline)

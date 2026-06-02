@@ -108,8 +108,20 @@ export class Win {
     return this.state;
   }
 
+  /**
+   * Invoked when this window becomes the active (focused) window. A DOM window
+   * uses it to restore keyboard focus to its content — e.g. the terminal's xterm
+   * textarea — which is otherwise lost when focus moves to another window and is
+   * NOT recovered by a click (the titlebar's `beginMove` calls `preventDefault`,
+   * suppressing the browser's native focus). The compositor is the single focus
+   * authority (FR-22), so DOM focus must be driven from here to stay in lockstep
+   * with z-order/active state.
+   */
+  onActivate?: () => void;
+
   setActive(active: boolean): void {
     this.root.classList.toggle("wasmos-window-active", active);
+    if (active) this.onActivate?.();
   }
 
   setZ(z: number): void {

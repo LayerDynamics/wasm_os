@@ -16,6 +16,9 @@ export interface TerminalSession {
   term: Terminal;
   /** All text written to the terminal so far (for tests/inspection). */
   log(): string;
+  /** Move keyboard focus to the terminal's xterm textarea. The compositor calls
+   *  this when the terminal window is (re)activated so typing reaches the shell. */
+  focus(): void;
 }
 
 export function attachTerminal(
@@ -88,5 +91,5 @@ export function attachTerminal(
     flush();
   });
 
-  return { term, log: () => logText };
+  return { term, log: () => logText, focus: () => term.focus() };
 }
