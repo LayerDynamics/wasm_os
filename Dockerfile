@@ -58,9 +58,10 @@ WORKDIR /app
 # just the manifests), install node deps, then build everything from source.
 COPY . .
 RUN npm ci
-RUN --mount=type=cache,target=/app/target,id=wasmos-cargo-target \
-    --mount=type=cache,target=/usr/local/cargo/registry,id=wasmos-cargo-registry \
-    npm run build \
+# Build everything from source. (No BuildKit cache mounts: Railway's managed builder
+# rejects `RUN --mount=type=cache`, failing BUILD_IMAGE before any step runs. The
+# toolchain layers above still cache across source-only changes.)
+RUN npm run build \
     && npm run build:guests \
     && npm run bundle \
     && npm run build:web
