@@ -132,8 +132,9 @@ function scheduleRender(): void {
 
 function renderScreen(): void {
   if (!screen || !screenCtx || !fbView) return;
-  // Strip ANSI escapes + carriage returns, keep the last ROWS lines as a log view.
-  const clean = serial.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "").replace(/\r/g, "");
+  // Strip ANSI escapes + carriage returns from the end of the serial stream to avoid O(N) regex overhead on a growing history.
+  const tail = serial.slice(-8000);
+  const clean = tail.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "").replace(/\r/g, "");
   const lines = clean.split("\n");
   const view = lines.slice(-ROWS);
   screenCtx.fillStyle = "#0b0e14";
