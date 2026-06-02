@@ -1,0 +1,27 @@
+# Keep the Docker build context lean + reproducible.
+.git
+**/node_modules
+target
+.riscv-build
+dist
+apps/web/dist
+playwright-report
+test-results
+test-results.json
+*.log
+probe-*.mjs
+.DS_Store
+
+# Generated build outputs (regenerated in the build stage).
+packages/abi/generated
+crates/kernel/src/bindings.rs
+packages/host/guests
+.zig-cache
+
+# The emulator binaries + riscv64 image are rebuilt from source in the emu/image
+# stages — exclude the committed (git-LFS) copies so a non-materialized LFS pointer
+# can never leak into the build, and the context stays small.
+third_party/tinyemu/riscvemu64-wasm.wasm
+third_party/tinyemu/riscvemu64-wasm.js
+assets/linux/*.bin
+assets/linux/riscv64-rootfs

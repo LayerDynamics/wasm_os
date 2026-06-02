@@ -70,6 +70,9 @@ function repoAssets(): Plugin {
 
 export default defineConfig({
   plugins: [react(), repoAssets()],
+  // The built SPA's own bundle MUST NOT live under /assets/ — that path is the
+  // repo-root prefix serving the riscv64 guest image. Emit it under /spa-assets/.
+  build: { assetsDir: "spa-assets" },
   // Let Vite import the @wasmos/host TypeScript source (+ its CSS) from the repo.
   server: { headers: ISOLATION_HEADERS, fs: { allow: [ROOT] } },
   preview: { headers: ISOLATION_HEADERS },

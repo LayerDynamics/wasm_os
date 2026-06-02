@@ -20,6 +20,8 @@ SRC_SHA256="be8351f2121819b3172fcedce5cb1826fa12c87da1b7ed98f269d3e802a05555"
 SRC_DIR="tinyemu-2019-12-21"
 
 command -v emcc >/dev/null || { echo "error: emcc (emscripten) not on PATH"; exit 1; }
+# Portable SHA-256 (Linux sha256sum / macOS shasum).
+sha256() { if command -v sha256sum >/dev/null; then sha256sum "$@"; else shasum -a 256 "$@"; fi; }
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
@@ -27,7 +29,7 @@ cd "$WORK"
 
 echo ">> download $SRC_URL"
 curl -fsSL -o src.tar.gz "$SRC_URL"
-echo "$SRC_SHA256  src.tar.gz" | shasum -a 256 -c -
+echo "$SRC_SHA256  src.tar.gz" | sha256 -c -
 tar xzf src.tar.gz
 cd "$SRC_DIR"
 
@@ -76,4 +78,4 @@ emcc "${LDFLAGS[@]}" -o riscvemu64-wasm.js \
 
 cp -f riscvemu64-wasm.js riscvemu64-wasm.wasm MIT-LICENSE.txt "$HERE/"
 echo "=== wrote artifacts to $HERE ==="
-shasum -a 256 "$HERE/riscvemu64-wasm.wasm" "$HERE/riscvemu64-wasm.js"
+sha256 "$HERE/riscvemu64-wasm.wasm" "$HERE/riscvemu64-wasm.js"
