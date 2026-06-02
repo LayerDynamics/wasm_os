@@ -31,6 +31,14 @@ echo "$SRC_SHA256  src.tar.gz" | shasum -a 256 -c -
 tar xzf src.tar.gz
 cd "$SRC_DIR"
 
+# WASM_OS patch (FR-29): back the 9p share (fs0) with an in-memory MEMFS directory
+# via the proven POSIX fs_disk backend, instead of the jslinux network filesystem.
+# The host seeds /share through emscripten FS before boot and mirrors guest writes
+# back (see packages/host/src/worker/emulator-worker.ts). fs_disk_init is synchronous,
+# so we call init_vm_drive directly (fs_net_init used an async load callback).
+perl -0pi -e 's/p->tab_fs\[0\]\.fs_dev = fs_net_init\(p->tab_fs\[0\]\.filename,\s*init_vm_drive, s\);\s*if \(s->pwd\) \{\s*fs_net_set_pwd\(p->tab_fs\[0\]\.fs_dev, s->pwd\);\s*\}/p->tab_fs[0].fs_dev = fs_disk_init(p->tab_fs[0].filename); init_vm_drive(s);/s' jsemu.c
+grep -q "fs_disk_init(p->tab_fs\[0\]" jsemu.c || { echo "error: 9p fs_disk patch did not apply"; exit 1; }
+
 # -DEMSCRIPTEN: route fs_wget/fs_net to TinyEMU's BUILTIN crypto (bundled aes.h +
 # sha256.h), NOT openssl. Modern emscripten only defines __EMSCRIPTEN__, so the
 # source's `#if defined(EMSCRIPTEN)` guards would otherwise take the openssl path.
@@ -40,27 +48,30 @@ CFLAGS=(-O2 -DEMSCRIPTEN -D_FILE_OFFSET_BITS=64 -D_LARGEFILE_SOURCE -fno-strict-
         -DCONFIG_FS_NET -Wno-implicit-function-declaration -Wno-incompatible-pointer-types
         -Wno-int-conversion -Wno-implicit-int -Wno-deprecated-pragma)
 
-OBJS=(jsemu softfp virtio fs fs_net fs_wget fs_utils simplefb pci json block_net
+OBJS=(jsemu softfp virtio fs fs_disk fs_net fs_wget fs_utils simplefb pci json block_net
       iomem cutils aes sha256 riscv_machine machine)
 for o in "${OBJS[@]}"; do emcc "${CFLAGS[@]}" -c -o "$o.js.o" "$o.c"; done
 emcc "${CFLAGS[@]}" -DMAX_XLEN=64 -DCONFIG_RISCV_MAX_XLEN=64 -c -o riscv_cpu64.js.o riscv_cpu.c
 
 # Exported C entrypoints driven from JS (see emulator-worker.ts), plus ccall/cwrap.
 LDFLAGS=(-O3 --closure 0
-  -sEXIT_RUNTIME=0 -sFILESYSTEM=0 -sWASM=1 -sINITIAL_MEMORY=67108864 -sALLOW_MEMORY_GROWTH=1
+  -sEXIT_RUNTIME=0 -sWASM=1 -sINITIAL_MEMORY=67108864 -sALLOW_MEMORY_GROWTH=1
   -sERROR_ON_UNDEFINED_SYMBOLS=0
+  # MEMFS: the FR-29 9p share is an in-memory directory the host seeds + mirrors via
+  # Module.FS; fs_disk serves the guest's 9p ops against it.
+  -sFORCE_FILESYSTEM=1
   # ES6 module factory: emulator-worker.ts is a module worker that imports it; the
   # repo is "type":"module" so a CommonJS output would be mis-parsed as ESM.
   -sMODULARIZE=1 -sEXPORT_ES6=1 -sEXPORT_NAME=createTinyEmu
   "-sEXPORTED_FUNCTIONS=['_console_queue_char','_vm_start','_fs_import_file','_display_key_event','_display_mouse_event','_display_wheel_event','_net_write_packet','_net_set_carrier']"
-  "-sEXPORTED_RUNTIME_METHODS=['ccall','cwrap']"
+  "-sEXPORTED_RUNTIME_METHODS=['ccall','cwrap','FS']"
   # Worker glue (vendored next to this script), NOT upstream js/lib.js which targets
   # the jslinux HTML page (globals term/Browser/document). Ours delegates the C
   # imports to hooks emulator-worker.ts installs (serial/framebuffer/9p, no DOM).
   --js-library "$HERE/lib.js")
 emcc "${LDFLAGS[@]}" -o riscvemu64-wasm.js \
   riscv_cpu64.js.o riscv_machine.js.o machine.js.o jsemu.js.o softfp.js.o virtio.js.o \
-  fs.js.o fs_net.js.o fs_wget.js.o fs_utils.js.o simplefb.js.o pci.js.o json.js.o \
+  fs.js.o fs_disk.js.o fs_net.js.o fs_wget.js.o fs_utils.js.o simplefb.js.o pci.js.o json.js.o \
   block_net.js.o iomem.js.o cutils.js.o aes.js.o sha256.js.o
 
 cp -f riscvemu64-wasm.js riscvemu64-wasm.wasm MIT-LICENSE.txt "$HERE/"

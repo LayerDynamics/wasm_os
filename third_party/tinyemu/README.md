@@ -46,10 +46,11 @@ WASM core):
 third_party/tinyemu/build-from-source.sh
 ```
 
-The recipe downloads the pinned MIT source, builds **only** the riscv64 wasm target with
-modern-emscripten flags (`-DEMSCRIPTEN` routes crypto to TinyEMU's builtin AES/SHA, so
-there is **no openssl dependency**), links our worker `lib.js`, and writes the artifacts
-here. No patches are applied to upstream source.
+The recipe downloads the pinned MIT source, applies one small documented patch (the
+FR-29 9p backend: back `fs0` with the MEMFS-backed `fs_disk` instead of the network
+filesystem), builds **only** the riscv64 wasm target with modern-emscripten flags
+(`-DEMSCRIPTEN` routes crypto to TinyEMU's builtin AES/SHA, so there is **no openssl
+dependency**), links our worker `lib.js`, and writes the artifacts here.
 
 The guest riscv64 Linux image is vendored separately under `assets/linux/` with its own
 from-source recipe.

@@ -94,7 +94,7 @@ export interface AsyncKernelControl {
   /** Spawn a guest `.wasm` as a process; returns its PID. */
   spawn(wasmBytes: ArrayBuffer, opts?: SpawnOptions): Promise<number>;
   /** Launch the privileged emulator process (M5, FR-27): a Native process whose
-   * body is a dedicated v86 worker booting a real Linux. Returns its PID. */
+   * body is a dedicated TinyEMU worker booting a real Linux. Returns its PID. */
   spawnEmulator(opts: EmulatorOptions): Promise<number>;
   /** Boot the emulator from an image named by a manifest fetched at runtime
    * (M5-T7) — the system loads + runs an image resolved at launch, not hardcoded. */

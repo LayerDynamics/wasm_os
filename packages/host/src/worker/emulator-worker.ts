@@ -28,12 +28,59 @@ interface BootMessage {
 }
 type InMessage = BootMessage | { type: "input"; text: string } | { type: "stop" };
 
-/** The instantiated TinyEMU module (emscripten Module with ccall + heap views). */
+/** The instantiated TinyEMU module (emscripten Module with ccall + heap + MEMFS). */
+interface EmuFS {
+  mkdir(path: string): void;
+  writeFile(path: string, data: Uint8Array | string): void;
+  readFile(path: string): Uint8Array;
+  readdir(path: string): string[];
+  stat(path: string): { size: number; mtime: Date; mode: number };
+}
 interface EmuModule {
   ccall(name: string, ret: string | null, argTypes: string[], args: unknown[]): unknown;
   HEAPU8: Uint8Array;
+  FS: EmuFS;
 }
 let emu: EmuModule | undefined;
+
+/** The in-memory MEMFS dir backing the FR-29 9p share (cfg fs0 file = /share). */
+const SHARE_DIR = "/share";
+/** Whether we've auto-mounted the 9p share in the guest (once, at first prompt). */
+let mounted = false;
+/** Last-seen size+mtime of each shared file, to detect guest write-backs to mirror. */
+const shareSnapshot = new Map<string, string>();
+let shareWatch: ReturnType<typeof setInterval> | undefined;
+
+/** Send text to the guest console (hvc0) one byte at a time. */
+function sendInput(text: string): void {
+  if (!emu) return;
+  for (const b of new TextEncoder().encode(text)) {
+    emu.ccall("console_queue_char", null, ["number"], [b]);
+  }
+}
+
+/** Mirror any guest writes under the 9p share back to the host VFS (FR-29). */
+function pollShareWriteback(): void {
+  if (!emu) return;
+  let names: string[];
+  try {
+    names = emu.FS.readdir(SHARE_DIR).filter((n) => n !== "." && n !== "..");
+  } catch {
+    return;
+  }
+  for (const name of names) {
+    try {
+      const st = emu.FS.stat(`${SHARE_DIR}/${name}`);
+      const tag = `${st.size}:${st.mtime.getTime()}`;
+      if (shareSnapshot.get(name) === tag) continue;
+      shareSnapshot.set(name, tag);
+      const data = emu.FS.readFile(`${SHARE_DIR}/${name}`);
+      ctx.postMessage({ type: "9pWrite", name, data });
+    } catch {
+      /* a file vanished mid-poll; skip */
+    }
+  }
+}
 
 /** Full serial console captured so far (boot log + shell I/O). */
 let serial = "";
@@ -119,6 +166,13 @@ async function boot(m: BootMessage): Promise<void> {
       serial += dec.decode(bytes, { stream: true });
       flushSerial();
       scheduleRender();
+      // FR-29: once the guest shell is up, auto-mount the host 9p share on /mnt and
+      // start mirroring guest writes back to the host VFS.
+      if (!mounted && /~ #/.test(serial)) {
+        mounted = true;
+        sendInput("mount -t 9p host9p /mnt -o trans=virtio,version=9p2000.L\n");
+        shareWatch = setInterval(pollShareWriteback, 1500);
+      }
     },
     consoleSize: () => [COLS, ROWS],
     fb: () => {}, // serial-only boot: no graphics device in the cfg
@@ -134,6 +188,22 @@ async function boot(m: BootMessage): Promise<void> {
     locateFile: (p: string) => `/third_party/tinyemu/${p}`,
     printErr: () => {},
   })) as EmuModule;
+
+  // FR-29: create the in-memory 9p share dir (cfg fs0 = /share, served by fs_disk)
+  // and seed it from the host VFS BEFORE boot, so it exists when fs_disk_init runs.
+  try {
+    emu.FS.mkdir(SHARE_DIR);
+  } catch {
+    /* already exists */
+  }
+  for (const f of m.shareSeed ?? []) {
+    try {
+      emu.FS.writeFile(`${SHARE_DIR}/${f.name}`, f.data);
+      shareSnapshot.set(f.name, ""); // seeded files are host-origin; don't mirror back
+    } catch {
+      /* skip an unwritable seed entry */
+    }
+  }
 
   // vm_start(url, ram_mb, cmdline, pwd, width, height, has_network). Width/height 0 =
   // serial-only (no framebuffer device). The cfg paths resolve against this URL.
@@ -155,14 +225,13 @@ ctx.onmessage = (e: MessageEvent<InMessage>) => {
       break;
     case "input":
       // The guest console is on hvc0; feed each byte to TinyEMU's input fifo.
-      if (emu) {
-        const bytes = new TextEncoder().encode(d.text);
-        for (const b of bytes) emu.ccall("console_queue_char", null, ["number"], [b]);
-      }
+      sendInput(d.text);
       break;
     case "stop":
       if (heartbeat !== undefined) clearInterval(heartbeat);
       heartbeat = undefined;
+      if (shareWatch !== undefined) clearInterval(shareWatch);
+      shareWatch = undefined;
       // The emscripten run loop self-schedules; dropping our reference + clearing the
       // heartbeat stops our involvement. The worker is terminated by the host (M5-T9).
       emu = undefined;

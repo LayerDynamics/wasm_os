@@ -11,7 +11,7 @@ export default defineConfig({
   retries: process.env.CI ? 2 : 0,
   use: { baseURL: "http://localhost:8080", ...devices["Desktop Chrome"] },
   // Two lanes (M5-T10): the "fast" suite is the M0–M4 + light M5 checks that run in
-  // seconds; the "slow" suite boots a real Linux in the v86 emulator (multi-second,
+  // seconds; the "slow" suite boots a real Linux in the TinyEMU RISC-V emulator (multi-second,
   // multi-MB) — run separately so a slow boot can never flake the fast suite.
   projects: [
     { name: "fast", testIgnore: /emulator-.*\.spec\.ts/ },

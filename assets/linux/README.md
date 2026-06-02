@@ -35,7 +35,7 @@ satisfies the GPL written-offer for the kernel/rootfs binaries above.
 Vendored via git-LFS — a clone/deploy just needs `scripts/setup-vendored-assets.sh`
 (no toolchain). See `third_party/tinyemu/README.md` for the emulator-core build.
 
-## x86 (retired)
+## x86 (removed)
 
-`buildroot-bzimage.bin` was the x86 guest for the GPLv2 v86 core. It is retired together
-with `third_party/v86/` in the switch to the MIT RISC-V core.
+The x86 `buildroot-bzimage.bin` guest and the GPLv2 v86 core (`third_party/v86/`) were
+**removed** in the switch to the MIT RISC-V core — see git history for the prior x86 setup.
