@@ -46,7 +46,8 @@ mergeInto(LibraryManager.library, {
     }
     var handle = wasmosWget.nextHandle++;
     http.onload = function () {
-      if (http.status === 200 || http.status === 206 || _url.substr(0, 4).toLowerCase() !== 'http') {
+      var success = http.status === 200 || http.status === 206 || (http.status === 0 && _url.substr(0, 4).toLowerCase() !== 'http');
+      if (success) {
         var bytes = new Uint8Array(http.response);
         var buffer = _malloc(bytes.length);
         HEAPU8.set(bytes, buffer);
