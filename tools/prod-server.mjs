@@ -103,8 +103,9 @@ const server = createServer(async (req, res) => {
     }
 
     // 1) Repo-root build artifacts (workers, bindings, guests, emulator, image).
-    if (ASSET_PREFIXES.some((p) => urlPath.startsWith(p))) {
-      const hit = await resolveFile(ROOT, urlPath);
+    const prefix = ASSET_PREFIXES.find((p) => urlPath.startsWith(p));
+    if (prefix) {
+      const hit = await resolveFile(join(ROOT, prefix), urlPath.slice(prefix.length));
       if (hit) return send(req, res, hit.file, hit.size, { immutable: true });
       res.statusCode = 404;
       setBaseHeaders(res, "text/plain");
