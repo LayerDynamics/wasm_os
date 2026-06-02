@@ -7,7 +7,7 @@ import { test, expect, type Page } from "@playwright/test";
 // running and stays isolated; killing the emulator (the userland kill path, the
 // CLI counterpart of the System Monitor) reaps it, and the peer + desktop survive.
 
-const IMAGE = "/assets/linux/buildroot-bzimage.bin";
+const IMAGE = "/assets/linux/wasmos-riscv64.cfg";
 test.setTimeout(120_000);
 
 type Proc = { pid: number; name: string; state: string; cpu: number };
@@ -17,7 +17,7 @@ type Win = {
     control: {
       stdin(pid: number, bytes: Uint8Array): Promise<void>;
       spawn(b: ArrayBuffer, o?: { name?: string; grantFsSubtree?: string }): Promise<number>;
-      spawnEmulator(o: { name?: string; bzimage: string }): Promise<number>;
+      spawnEmulator(o: { name?: string; configUrl: string }): Promise<number>;
       onEmulatorSerial(cb: (pid: number, text: string) => void): void;
       listProcs(): Promise<Array<{ pid: number; name: string; state: string; cpuTicks: bigint }>>;
     };
@@ -53,7 +53,7 @@ test("the emulator accrues CPU in top, is killable, and peers keep running (FR-2
     });
     const bytes = await (await fetch("/packages/host/guests/sigdemo.wasm")).arrayBuffer();
     const peerPid = await w.control.spawn(bytes, { name: "sigdemo", grantFsSubtree: "/" });
-    const emuPid = await w.control.spawnEmulator({ name: "linux", bzimage: image });
+    const emuPid = await w.control.spawnEmulator({ name: "linux", configUrl: image });
     return { peer: peerPid, emu: emuPid };
   }, IMAGE);
 
@@ -63,7 +63,7 @@ test("the emulator accrues CPU in top, is killable, and peers keep running (FR-2
       timeout: 90_000,
       intervals: [1000],
     })
-    .toContain("~%");
+    .toContain("~ #");
 
   // Run-to-budget accounting: the emulator accrues CPU activity in top.
   await expect.poll(async () => (await procs(page)).find((p) => p.pid === emu)?.cpu ?? 0, { timeout: 10_000 }).toBeGreaterThan(0);

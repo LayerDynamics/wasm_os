@@ -1,12 +1,12 @@
 import { test, expect, type Page } from "@playwright/test";
 
 // M5-T8 — virtio-9p shared folder (FR-29). The host /home/shared subtree is bridged
-// into the guest's 9p mount (the buildroot image auto-mounts the host9p tag on
+// into the guest's 9p mount (the emulator worker auto-mounts the host9p tag on
 // /mnt). Files cross BOTH ways: a file written in host /home/shared is seeded into
 // the 9p fs and read inside the guest; a file the guest writes under /mnt is
 // mirrored back to the host VFS.
 
-const IMAGE = "/assets/linux/buildroot-bzimage.bin";
+const IMAGE = "/assets/linux/wasmos-riscv64.cfg";
 test.setTimeout(120_000);
 
 type Win = {
@@ -14,7 +14,7 @@ type Win = {
     control: {
       fsWrite(path: string, bytes: Uint8Array): Promise<void>;
       fsRead(path: string): Promise<Uint8Array>;
-      spawnEmulator(o: { name?: string; bzimage: string }): Promise<number>;
+      spawnEmulator(o: { name?: string; configUrl: string }): Promise<number>;
       onEmulatorSerial(cb: (pid: number, text: string) => void): void;
       emulatorInput(pid: number, text: string): Promise<void>;
     };
@@ -42,10 +42,10 @@ test("files cross the host VFS and the guest Linux via the 9p shared folder (FR-
     w.control.onEmulatorSerial((_p, text) => {
       (window as unknown as { __emuSerial: string }).__emuSerial = text;
     });
-    return w.control.spawnEmulator({ name: "linux", bzimage: image });
+    return w.control.spawnEmulator({ name: "linux", configUrl: image });
   }, IMAGE);
 
-  await expect.poll(() => serial(page), { timeout: 90_000, intervals: [1000] }).toContain("~%");
+  await expect.poll(() => serial(page), { timeout: 90_000, intervals: [1000] }).toContain("~ #");
 
   // host → guest: the guest reads the file the host placed in the share.
   await page.evaluate((p) => (window as unknown as Win).__wasmos.control.emulatorInput(p, "cat /mnt/host-greeting.txt\n"), emu);

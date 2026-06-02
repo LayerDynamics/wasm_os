@@ -1,5 +1,7 @@
 * text=auto eol=lf
 *.wasm binary
-third_party/v86/*.wasm filter=lfs diff=lfs merge=lfs -text
-third_party/v86/*.bin filter=lfs diff=lfs merge=lfs -text
+# RISC-V (TinyEMU MIT core + riscv64 Linux image) — vendored binaries, same as v86.
+third_party/tinyemu/*.wasm filter=lfs diff=lfs merge=lfs -text
 assets/linux/*.bin filter=lfs diff=lfs merge=lfs -text
+# The split rootfs block chunks (web block device) live in a subdir.
+assets/linux/riscv64-rootfs/*.bin filter=lfs diff=lfs merge=lfs -text

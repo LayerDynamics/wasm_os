@@ -103,10 +103,7 @@ const procs = new Map<number, ProcRuntime>();
 
 /** Boot options for the emulator worker (same-origin asset URLs + kernel cmdline). */
 interface EmulatorBoot {
-  wasmPath: string;
-  bios: string;
-  vgaBios: string;
-  bzimage: string;
+  configUrl: string;
   cmdline: string;
   memoryMb?: number;
   shareSeed?: Array<{ name: string; data: Uint8Array }>;
@@ -134,7 +131,7 @@ function readShareSeed(): Array<{ name: string; data: Uint8Array }> {
   return seed;
 }
 /** The privileged emulator process (M5): a Native process whose body is a dedicated
- * v86 worker, tracked separately from the ring-driven `procs` so the wasi path is
+ * TinyEMU worker, tracked separately from the ring-driven `procs` so the wasi path is
  * untouched. Killing it (window close or SIGKILL/reap) terminates this worker. */
 interface EmulatorRuntime {
   worker: Worker;
@@ -309,7 +306,7 @@ function killProcess(pid: number): void {
 }
 
 /** Register + boot the privileged emulator process (M5, FR-27/FR-28): the kernel
- * allocates a Native PID, then a dedicated v86 worker runs it. Serial output is
+ * allocates a Native PID, then a dedicated TinyEMU worker runs it. Serial output is
  * relayed to the main thread; killing the PID terminates this worker. */
 function spawnEmulator(name: string, boot: EmulatorBoot): number {
   const pid = requireControl().spawnEmulator(name);
@@ -355,7 +352,7 @@ function spawnEmulator(name: string, boot: EmulatorBoot): number {
 }
 
 /** Deliver brokered keystrokes to the emulator's guest console (M5-T3). The text
- * is written to the guest's ttyS0 (the shell's stdin) by the emulator worker. */
+ * is written to the guest's hvc0 console (the shell's stdin) by the emulator worker. */
 function emulatorInput(pid: number, text: string): void {
   const emu = emulators.get(pid);
   if (emu && !emu.exited) emu.worker.postMessage({ type: "input", text });

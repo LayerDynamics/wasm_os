@@ -7,7 +7,7 @@ type Phase = "booting" | "ready" | "error";
  * The WASM_OS web client shell. React owns the page chrome — a boot splash, the
  * status readout, and the desktop/taskbar containers — and on mount hands those
  * containers to the host runtime's `startDesktop`, which boots the kernel and brings
- * up the full OS (compositor windows, terminal, app launcher, the v86 emulator).
+ * up the full OS (compositor windows, terminal, app launcher, the TinyEMU RISC-V emulator).
  * The compositor renders real DOM/canvas windows into the desktop container.
  */
 export function App() {

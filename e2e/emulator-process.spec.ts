@@ -5,7 +5,7 @@ import { test, expect, type Page } from "@playwright/test";
 // worker, shows up in proc_list/top, and is killable — all while a normal
 // wasm32-wasi process keeps running and stays isolated (FR-6/FR-27/FR-28).
 
-const IMAGE = "/assets/linux/buildroot-bzimage.bin";
+const IMAGE = "/assets/linux/wasmos-riscv64.cfg";
 test.setTimeout(120_000);
 
 type Proc = { pid: number; name: string; state: string };
@@ -13,7 +13,7 @@ type Win = {
   __wasmos: {
     control: {
       spawn(b: ArrayBuffer, o?: { name?: string; grantFsSubtree?: string }): Promise<number>;
-      spawnEmulator(o: { name?: string; bzimage: string }): Promise<number>;
+      spawnEmulator(o: { name?: string; configUrl: string }): Promise<number>;
       onEmulatorSerial(cb: (pid: number, text: string) => void): void;
       listProcs(): Promise<Proc[]>;
       kill(pid: number): Promise<void>;
@@ -47,7 +47,7 @@ test("the emulator runs as a killable privileged process while a peer stays isol
     const bytes = await (await fetch("/packages/host/guests/sigdemo.wasm")).arrayBuffer();
     const peerPid = await w.control.spawn(bytes, { name: "sigdemo", grantFsSubtree: "/" });
     // Launch the privileged emulator process.
-    const emuPid = await w.control.spawnEmulator({ name: "linux", bzimage: image });
+    const emuPid = await w.control.spawnEmulator({ name: "linux", configUrl: image });
     return { peer: peerPid, emu: emuPid };
   }, IMAGE);
   expect(emu).toBeGreaterThan(0);
@@ -64,7 +64,7 @@ test("the emulator runs as a killable privileged process while a peer stays isol
       timeout: 90_000,
       intervals: [1000],
     })
-    .toContain("~%");
+    .toContain("~ #");
 
   // The unrelated wasm process kept running throughout (isolation/concurrency).
   expect((await listProcs(page)).find((p) => p.pid === peer)?.state).not.toBe("gone");

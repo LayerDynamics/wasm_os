@@ -2,7 +2,7 @@ import { test, expect, type Page } from "@playwright/test";
 
 // M5-T7 — boot an image resolved at runtime. Rather than a hardcoded launcher URL,
 // the system fetches a small image manifest at launch and boots the kernel it
-// names ("run the image from within it"). The kernel image itself is loaded by v86
+// names ("run the image from within it"). The bios/kernel/rootfs are loaded by TinyEMU
 // from its URL (it is far larger than a syscall-ring payload); the manifest is the
 // small, runtime-fetched indirection.
 
@@ -39,11 +39,11 @@ test("the emulator boots an image resolved from a runtime-fetched manifest (run 
   }, MANIFEST);
   expect(pid).toBeGreaterThan(0);
 
-  // The manifest named buildroot's bzImage; v86 fetched + booted it to a shell.
+  // The manifest named the riscv64 VM config; TinyEMU booted it to a shell.
   await expect
     .poll(() => page.evaluate(() => (window as unknown as { __emuSerial: string }).__emuSerial), {
       timeout: 90_000,
       intervals: [1000],
     })
-    .toContain("~%");
+    .toContain("~ #");
 });

@@ -1,7 +1,7 @@
 import { test, expect, type Page, type Locator } from "@playwright/test";
 
 // M5-T4 — the emulator framebuffer window (FR-23/FR-27). Launching "Linux" from the
-// taskbar opens a canvas window; the emulator worker renders the guest's VGA text
+// taskbar opens a canvas window; the emulator worker renders the guest's serial
 // console into a shared RGBA framebuffer (the same surface/present path the M3
 // canvas apps use), which the compositor blits. We assert the window appears and
 // becomes non-blank as the console renders — presence/update, NOT pixel-exact.
@@ -45,7 +45,7 @@ test("launching Linux opens a framebuffer window that renders the guest console"
   await expect(canvas).toBeVisible({ timeout: 15_000 });
 
   // The console renders into it (text appears) as Linux boots — the window is no
-  // longer blank. This proves the v86 screen → shared framebuffer → compositor
+  // longer blank. This proves the emulator serial → shared framebuffer → compositor
   // blit path works end to end.
   await expect.poll(() => litPixels(canvas), { timeout: 90_000, intervals: [1000] }).toBeGreaterThan(200);
 });

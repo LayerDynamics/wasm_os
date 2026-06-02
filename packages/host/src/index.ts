@@ -172,7 +172,7 @@ export async function startDesktop(opts: StartOptions = {}): Promise<ReadyState>
   // with the SessionManager so it is part of the session (re-opens on reload, FR-35);
   // its window is tagged "linux" and its keystrokes route to the guest console.
   session.register("linux", async () => {
-    const pid = await control.spawnEmulator({ name: "linux", bzimage: "/assets/linux/buildroot-bzimage.bin" });
+    const pid = await control.spawnEmulator({ name: "linux", configUrl: "/assets/linux/wasmos-riscv64.cfg" });
     emulatorPids.add(pid);
     return pid;
   });
