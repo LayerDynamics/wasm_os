@@ -14,7 +14,7 @@
 import { createServer } from "node:http";
 import { createReadStream } from "node:fs";
 import { stat } from "node:fs/promises";
-import { extname, join, normalize, dirname } from "node:path";
+import { extname, join, normalize, dirname, relative, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = normalize(join(dirname(fileURLToPath(import.meta.url)), ".."));
