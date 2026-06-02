@@ -32,13 +32,14 @@ export interface SpawnOptions {
   grantNet?: boolean;
 }
 
-/** Options for launching the emulator process (M5). The v86 runtime + BIOS are
- * fixed vendored assets; the caller chooses the kernel image + cmdline. */
+/** Options for launching the emulator process (M5). The MIT TinyEMU runtime is a
+ * fixed vendored asset; the caller chooses the VM config (which names the bios,
+ * kernel, and rootfs) plus an optional extra cmdline. */
 export interface EmulatorOptions {
   name?: string;
-  /** Same-origin URL of the Linux kernel (bzImage) to boot. */
-  bzimage: string;
-  /** Kernel boot cmdline (default routes the console to ttyS0 for serial). */
+  /** Same-origin URL of the TinyEMU VM config (.cfg) to boot. */
+  configUrl: string;
+  /** Extra kernel cmdline appended to the cfg's own cmdline. */
   cmdline?: string;
   memoryMb?: number;
 }
@@ -46,22 +47,18 @@ export interface EmulatorOptions {
 /** A small JSON descriptor naming an image to boot, fetched at runtime (M5-T7). */
 export interface ImageManifest {
   name?: string;
-  bzimage: string;
+  configUrl: string;
   cmdline?: string;
 }
 
-// Fixed vendored v86 runtime + BIOS (GPLv2, third_party/v86/).
-const V86_BASE = "/third_party/v86";
-const DEFAULT_CMDLINE = "console=ttyS0 tsc=reliable mitigations=off random.trust_cpu=on";
+// The default riscv64 VM config (names the vendored bios/kernel/rootfs).
+const DEFAULT_CONFIG_URL = "/assets/linux/wasmos-riscv64.cfg";
 
-/** Build the emulator-worker boot message for a given kernel image (M5). */
-function emulatorBoot(bzimage: string, cmdline?: string, memoryMb = 128) {
+/** Build the emulator-worker boot message for a given VM config (M5). */
+function emulatorBoot(configUrl: string, cmdline?: string, memoryMb = 128) {
   return {
-    wasmPath: `${V86_BASE}/v86.wasm`,
-    bios: `${V86_BASE}/seabios.bin`,
-    vgaBios: `${V86_BASE}/vgabios.bin`,
-    bzimage,
-    cmdline: cmdline ?? DEFAULT_CMDLINE,
+    configUrl: configUrl || DEFAULT_CONFIG_URL,
+    cmdline: cmdline ?? "",
     memoryMb,
   };
 }
@@ -253,16 +250,16 @@ export async function boot(): Promise<BootResult> {
     spawnEmulator: (opts) =>
       call("spawnEmulator", {
         name: opts.name ?? "linux",
-        boot: emulatorBoot(opts.bzimage, opts.cmdline, opts.memoryMb),
+        boot: emulatorBoot(opts.configUrl, opts.cmdline, opts.memoryMb),
       }),
     spawnEmulatorFromManifest: async (manifestUrl) => {
-      // Fetch a small image descriptor at runtime, then boot the image it names
+      // Fetch a small image descriptor at runtime, then boot the config it names
       // ("run the image from within it", M5-T7). The descriptor is small enough to
-      // travel any path; the kernel image itself is loaded by v86 from its URL.
+      // travel any path; the bios/kernel/rootfs are loaded by TinyEMU from the cfg.
       const m = (await (await fetch(manifestUrl)).json()) as ImageManifest;
       return call<number>("spawnEmulator", {
         name: m.name ?? "linux",
-        boot: emulatorBoot(m.bzimage, m.cmdline),
+        boot: emulatorBoot(m.configUrl, m.cmdline),
       });
     },
     onEmulatorSerial: (cb) => {

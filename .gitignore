@@ -24,6 +24,8 @@ crates/kernel/src/bindings.rs
 !wit/**/*.wasm
 # Vendored v86 emulator runtime (M5) — committed third-party binaries, GPLv2.
 !third_party/v86/*.wasm
+# Vendored MIT TinyEMU riscv64 core (M5) — committed third-party binary.
+!third_party/tinyemu/*.wasm
 
 # Zig compilation cache (build:guests:zig) — build output, not source
 .zig-cache
@@ -42,3 +44,4 @@ development/reference_only
 
 # Vite production build of the web client (build output)
 apps/web/dist
+.riscv-build/

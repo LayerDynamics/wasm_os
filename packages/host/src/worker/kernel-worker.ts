@@ -103,10 +103,7 @@ const procs = new Map<number, ProcRuntime>();
 
 /** Boot options for the emulator worker (same-origin asset URLs + kernel cmdline). */
 interface EmulatorBoot {
-  wasmPath: string;
-  bios: string;
-  vgaBios: string;
-  bzimage: string;
+  configUrl: string;
   cmdline: string;
   memoryMb?: number;
   shareSeed?: Array<{ name: string; data: Uint8Array }>;
