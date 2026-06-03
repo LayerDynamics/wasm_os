@@ -457,6 +457,10 @@ fn fd_write(
             SyscallOutcome { reply: Some(resp(errno::SUCCESS, n as u32)), wakeups, term_output: Vec::new(), spawn: None, reap: Vec::new(), net: None }
         }
         DescKind::File { path } => {
+            // /proc is a read-only synthetic tree.
+            if crate::procfs::is_proc(&path) {
+                return SyscallOutcome::ready(resp(errno::ACCES, 0));
+            }
             // /dev device write semantics (real, handled here — not stored bytes).
             if crate::devfs::is_dev(&path) {
                 return match crate::devfs::classify_write(&path) {
@@ -673,8 +677,19 @@ fn path_open(vfs: &mut Vfs, procs: &mut ProcTable, pid: u32, r: &mut Reader) -> 
     let want_write = of & (oflags::CREAT | oflags::TRUNC) != 0;
     let rights = if want_write { Rights::RW } else { Rights::R };
 
-    // Capability enforcement (FR-31, default-deny).
-    if !procs.has_cap(pid, &crate::types::Capability::FsPath { subtree: full.clone(), rights }) {
+    // /proc is world-readable and read-only; /dev nodes are world-accessible. These
+    // synthetic trees reflect kernel state (not the user's files), so they are not
+    // gated by the per-path FS capability (matches Linux). /proc rejects writes.
+    let is_procfs = crate::procfs::is_proc(&full);
+    let is_devfs = crate::devfs::is_dev(&full);
+    if is_procfs && want_write {
+        return resp(errno::ACCES, 0); // /proc is read-only
+    }
+    // Capability enforcement (FR-31, default-deny) — skipped for the synthetic trees.
+    if !is_procfs
+        && !is_devfs
+        && !procs.has_cap(pid, &crate::types::Capability::FsPath { subtree: full.clone(), rights })
+    {
         return resp(errno::NOTCAPABLE, 0);
     }
 

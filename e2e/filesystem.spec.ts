@@ -143,6 +143,19 @@ test("/proc is a live, real view of the process table (host + guest)", async ({ 
     await page.waitForTimeout(150);
   }
   expect(log).toMatch(/opfs \/home/); // guest read of synthetic /proc worked
+
+  // /proc is read-only: a write is rejected and does not shadow the generated file.
+  const before = await page.evaluate(async () =>
+    new TextDecoder().decode(await (window as unknown as Win).__wasmos.control.fsRead("/proc/version")),
+  );
+  await page.keyboard.type("echo HACK > /proc/version", { delay: 15 });
+  await page.keyboard.press("Enter");
+  await page.waitForTimeout(400);
+  const after = await page.evaluate(async () =>
+    new TextDecoder().decode(await (window as unknown as Win).__wasmos.control.fsRead("/proc/version")),
+  );
+  expect(after).toBe(before); // unchanged — the write was denied, not stored
+  expect(after).not.toContain("HACK");
 });
 
 test("/dev exposes real device nodes with correct read/write semantics", async ({ page }) => {
@@ -184,4 +197,33 @@ test("/dev exposes real device nodes with correct read/write semantics", async (
   }
   expect(log).toContain("urandom"); // `ls /dev` listed the nodes (guest readdir)
   expect(log).toMatch(/\nAFTERNULL/); // the /dev/null write didn't hang or error
+});
+
+test("/var/log has a real boot log and `mount` reads /proc/mounts", async ({ page }) => {
+  await page.goto("/");
+  await page.waitForFunction(
+    () => Boolean((window as unknown as { __wasmos?: { term?: { log(): string } } }).__wasmos?.term?.log().includes("wasmos:")),
+    null,
+    { timeout: 20_000 },
+  );
+
+  // /var/log/boot.log records this boot's real facts.
+  const boot = await page.evaluate(async () =>
+    new TextDecoder().decode(await (window as unknown as Win).__wasmos.control.fsRead("/var/log/boot.log")),
+  );
+  expect(boot).toContain("WASM_OS boot");
+  expect(boot).toMatch(/shell pid: \d+/);
+
+  // The `mount` admin tool (in /sbin) prints the real mount table from /proc/mounts.
+  const readLog = () => page.evaluate(() => (window as unknown as Win).__wasmos.term.log());
+  await page.locator("#terminal").click();
+  await page.keyboard.type("mount", { delay: 20 });
+  await page.keyboard.press("Enter");
+  let log = "";
+  for (let i = 0; i < 40; i++) {
+    log = await readLog();
+    if (/opfs on \/home type opfs/.test(log)) break;
+    await page.waitForTimeout(150);
+  }
+  expect(log).toMatch(/opfs on \/home type opfs/);
 });

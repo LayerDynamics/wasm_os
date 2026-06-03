@@ -73,12 +73,12 @@ test("Welcome guide launches as a process, opens centered, and navigates slides"
   await page.locator(".wasmos-window", { has: page.locator("canvas") }).first().locator(".wasmos-titlebar").click();
   const seen = new Set<number>();
   seen.add(await hashLastCanvas(page));
-  for (let i = 0; i < 4; i++) {
+  for (let i = 0; i < 5; i++) {
     await page.keyboard.press("ArrowRight");
     await page.waitForTimeout(250);
     seen.add(await hashLastCanvas(page));
   }
-  expect(seen.size).toBe(5); // five distinct slides reached via the arrow key
+  expect(seen.size).toBe(6); // six distinct slides reached via the arrow key
 
   // Going back works too: ← returns to a previously-seen render.
   await page.keyboard.press("ArrowLeft");

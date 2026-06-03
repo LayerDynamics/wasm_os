@@ -17,7 +17,7 @@ const BIN = [
   "echo.zig", "crash",
   // M3 graphical apps (canvas surfaces); launchable from the file manager.
   // "mandelbrot" is the Zig polyglot app (FR-14 on the graphics path).
-  "gfxspike", "filemanager", "paint", "editor", "mandelbrot", "sysmon", "lisp", "welcome", "spinner", "chandemo", "shmdemo", "sigdemo", "kill", "renice", "ps", "top", "fetch",
+  "gfxspike", "filemanager", "paint", "editor", "mandelbrot", "sysmon", "lisp", "welcome", "spinner", "chandemo", "shmdemo", "sigdemo", "kill", "renice", "ps", "top", "fetch", "mount",
 ];
 const GUESTS = "/packages/host/guests";
 
@@ -38,7 +38,7 @@ declare global {
 }
 
 /** Admin/process-control tools that also belong in /sbin (FHS). */
-const SBIN = new Set(["kill", "renice", "ps", "top"]);
+const SBIN = new Set(["kill", "renice", "ps", "top", "mount"]);
 
 /** Fetch a built guest `.wasm` and install it into the VFS. Guests live in /usr/bin
  * (canonical) AND /bin (compat, so `/bin/sh`-style paths keep working); admin tools
@@ -312,6 +312,19 @@ export async function startDesktop(opts: StartOptions = {}): Promise<ReadyState>
 
   const statusText = `ready in ${coldLoadMillis}ms · tier ${result.features.tier} · shell pid ${shellPid}`;
   opts.onStatus?.(statusText);
+
+  // Record a real boot log to /var/log (the kernel's actual boot facts for this run).
+  void control.fsWrite(
+    "/var/log/boot.log",
+    enc.encode(
+      `WASM_OS boot\n` +
+        `kernel boot: ${result.bootMillis}ms\n` +
+        `cold load (nav -> kernel ready): ${coldLoadMillis}ms\n` +
+        `feature tier: ${result.features.tier}\n` +
+        `guests loaded: ${BIN.length}\n` +
+        `shell pid: ${shellPid}\n`,
+    ),
+  );
   const status = document.getElementById("status");
   if (status) {
     status.textContent = statusText;
