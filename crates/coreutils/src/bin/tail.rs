@@ -3,6 +3,7 @@
 use std::io::{self, BufRead, BufReader};
 
 fn main() {
+    wasmos_sys::chdir_to_pwd(); // relative paths resolve against $PWD, not the preopen root
     let (n, file) = parse(std::env::args().skip(1).collect());
     let lines: Vec<String> = match file {
         Some(path) => match std::fs::File::open(&path) {

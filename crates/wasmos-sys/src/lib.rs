@@ -304,6 +304,21 @@ pub fn win_read_input() -> Result<Vec<InputEvent>, u16> {
     Ok(events)
 }
 
+/// Align this process's working directory with the shell's `$PWD`. The kernel
+/// roots every process's preopen at `/` (so the whole filesystem is reachable,
+/// matching the process's FS capability), and carries the shell's current
+/// directory out-of-band in `$PWD`. wasi-libc defaults its cwd to `/`, so without
+/// this a bare `ls` or a relative path like `notes.txt` would resolve against `/`
+/// rather than the directory the user `cd`'d into. Call this first in `main` for
+/// any program that opens relative paths. A no-op if `$PWD` is unset or invalid.
+pub fn chdir_to_pwd() {
+    if let Ok(pwd) = std::env::var("PWD") {
+        if !pwd.is_empty() {
+            let _ = std::env::set_current_dir(&pwd);
+        }
+    }
+}
+
 /// `tty_set_raw(raw)` — switch the interactive terminal between raw and cooked
 /// line discipline. In raw mode the host stops local echo + line buffering and
 /// forwards every keystroke (ESC sequences, control bytes, arrows) straight to

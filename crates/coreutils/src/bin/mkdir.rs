@@ -1,6 +1,7 @@
 //! mkdir — create directories (FR-18).
 
 fn main() {
+    wasmos_sys::chdir_to_pwd(); // relative paths resolve against $PWD, not the preopen root
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.is_empty() {
         eprintln!("usage: mkdir DIR...");

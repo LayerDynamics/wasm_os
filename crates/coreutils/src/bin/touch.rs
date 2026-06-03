@@ -4,6 +4,7 @@
 use std::fs::OpenOptions;
 
 fn main() {
+    wasmos_sys::chdir_to_pwd(); // relative paths resolve against $PWD, not the preopen root
     let files: Vec<String> = std::env::args().skip(1).filter(|a| !a.starts_with('-')).collect();
     if files.is_empty() {
         eprintln!("touch: missing file operand");

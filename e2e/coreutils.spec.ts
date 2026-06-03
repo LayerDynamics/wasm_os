@@ -119,12 +119,13 @@ test("tail prints the last N lines; env runs with an empty environment", async (
   expect(await readLog(page)).toContain("ENV-RAN-7chk");
 });
 
-test("the pwd binary reflects the kernel working directory (preopen, not wasi-libc cwd)", async ({ page }) => {
+test("the pwd binary reflects the working directory via $PWD, not wasi-libc cwd", async ({ page }) => {
   // `/bin/pwd` (the binary, distinct from the shell's `pwd` builtin) must report
   // the process's actual working directory. On wasm32-wasip1 std::env::current_dir
-  // reads wasi-libc's cwd (always "/"); pwd instead reads its preopen (fd 3), which
-  // the kernel sets to the cwd at spawn. We isolate pwd's stdout into a file (away
-  // from prompt noise) and read it back to assert the exact bytes.
+  // reads wasi-libc's cwd (always "/"); the kernel roots every preopen at "/" and
+  // carries the real cwd in $PWD (inherited from the shell at spawn), so pwd reads
+  // $PWD. We isolate pwd's stdout into a file (away from prompt noise) and read it
+  // back to assert the exact bytes.
   await ready(page);
   await run(page, "mkdir /pwd_probe_dir");
   await run(page, "cd /pwd_probe_dir");
@@ -134,4 +135,30 @@ test("the pwd binary reflects the kernel working directory (preopen, not wasi-li
     (window as unknown as Win).__wasmos.control.fsRead("/pwd_probe_dir/cwd.txt"),
   );
   expect(new TextDecoder().decode(new Uint8Array(bytes))).toBe("/pwd_probe_dir\n");
+});
+
+test("commands work from a non-root cwd: relative paths and cross-directory access", async ({ page }) => {
+  // Regression: a process's preopen used to be rooted at its cwd, so from /home a
+  // command could not read /etc or /bin (absolute paths outside cwd) and a bare
+  // `ls`/relative path failed ("ls: .: No such file or directory"). The kernel now
+  // roots every preopen at "/", and guests chdir to $PWD, so the whole filesystem
+  // is reachable AND relative paths resolve against the working directory.
+  await ready(page);
+  await run(page, "mkdir /work");
+  await run(page, "cd /work");
+  await run(page, "echo content-XYZ > rel.txt"); // relative file in the cwd
+
+  // (1) a bare `ls` lists the CWD (resolves "." against /work), showing rel.txt.
+  await run(page, "ls");
+  await waitForLog(page, "rel.txt");
+  // (2) a relative path reads back the file written in the cwd.
+  await run(page, "cat rel.txt");
+  await waitForLog(page, "content-XYZ");
+  // (3) an absolute path OUTSIDE the cwd is reachable (was blocked by the old
+  // cwd-rooted preopen): /etc/os-release is a real seeded file.
+  await run(page, "cat /etc/os-release");
+  await waitForLog(page, "WASM_OS");
+  const log = await readLog(page);
+  expect(log).not.toContain("ls: .: No such file or directory");
+  expect(log).not.toContain("rel.txt: No such file or directory");
 });

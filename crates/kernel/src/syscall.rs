@@ -1225,11 +1225,16 @@ fn k_spawn(
         };
         procs.set_fd(child, fd, desc);
     }
-    // Set the child's preopen (fd 3) to its cwd so relative paths resolve there.
+    // Give the child a preopen rooted at "/" — its FS view is the whole tree, the
+    // same as its FsPath capability (enforced per-op at path_open/resolve_for, not
+    // by the preopen). Rooting the preopen at the cwd instead would wall the
+    // process off from everything outside its cwd (e.g. a process in /home could
+    // not read /etc or /bin). The cwd is carried separately in $PWD; a guest reads
+    // it and chdir()s so its own relative paths ("." , "rel.txt") resolve there.
     procs.set_fd(
         child,
         PREOPEN_FD,
-        Descriptor { kind: DescKind::Dir { path: cwd }, offset: 0, rights: Rights::RWX },
+        Descriptor { kind: DescKind::Dir { path: "/".to_string() }, offset: 0, rights: Rights::RWX },
     );
     procs.set_state(child, ProcState::Ready);
 
@@ -1639,6 +1644,10 @@ mod tests {
         assert!(cenv.iter().any(|e| e == "PWD=/home/user"), "PWD repointed to cwd");
         // PWD appears exactly once (the parent's PWD=/ was replaced, not duplicated).
         assert_eq!(cenv.iter().filter(|e| e.starts_with("PWD=")).count(), 1);
+        // The preopen (fd 3) is rooted at "/" — the child's FS view is the whole
+        // tree (so it can read /etc, /bin from any cwd), NOT walled off to /home/user.
+        // The working directory travels in $PWD (above); guests chdir to it.
+        assert_eq!(procs.fd(child, PREOPEN_FD).unwrap().kind, DescKind::Dir { path: "/".to_string() });
     }
 
     #[test]

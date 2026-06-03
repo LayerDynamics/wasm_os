@@ -380,6 +380,8 @@ fn term_size() -> (usize, usize) {
 }
 
 fn main() {
+    // Open a relative filename against the shell's cwd, not the preopen root.
+    wasmos_sys::chdir_to_pwd();
     let filename = std::env::args().nth(1).unwrap_or_default();
     let (rows, cols) = term_size();
     let mut ed = Editor::new(filename, rows, cols);
