@@ -10,3 +10,4 @@ mod mint;
 pub mod wasi;
 
 pub use format::{Error, Header, Tier};
+pub use mint::mint;
