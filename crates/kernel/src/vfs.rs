@@ -71,11 +71,12 @@ pub struct Vfs {
     mounts: Vec<(String, Mount)>, // (prefix, mount), longest-prefix wins
     home: Box<dyn Blockstore>,    // bound to /home (opfs)
     mnt: Box<dyn Blockstore>,     // bound to /mnt  (idb)
+    sys: Box<dyn Blockstore>,     // bound to /etc, /var, … (opfs, separate store)
 }
 
 impl Vfs {
-    pub fn new(home: Box<dyn Blockstore>, mnt: Box<dyn Blockstore>) -> Self {
-        let mut v = Self { tmpfs: BTreeMap::new(), mounts: Vec::new(), home, mnt };
+    pub fn new(home: Box<dyn Blockstore>, mnt: Box<dyn Blockstore>, sys: Box<dyn Blockstore>) -> Self {
+        let mut v = Self { tmpfs: BTreeMap::new(), mounts: Vec::new(), home, mnt, sys };
         v.mounts.push(("/".into(), Mount { backend: Backend::Tmpfs }));
         v
     }
@@ -89,7 +90,7 @@ impl Vfs {
         // Stamp the on-disk version for persistent backends (Appendix C). The
         // v2 layout is a strict superset of M1's flat file keys, so an unstamped
         // store full of M1 file keys is simply stamped — no data is rewritten.
-        if matches!(on, Backend::Opfs | Backend::Idb) && self.kv_get(on, VERSION_KEY).is_none() {
+        if matches!(on, Backend::Opfs | Backend::Idb | Backend::Sys) && self.kv_get(on, VERSION_KEY).is_none() {
             self.kv_put(on, VERSION_KEY, VFS_VERSION.to_vec());
         }
         Ok(())
@@ -124,6 +125,7 @@ impl Vfs {
             Backend::Tmpfs => self.tmpfs.get(key).cloned(),
             Backend::Opfs => self.home.get(key),
             Backend::Idb => self.mnt.get(key),
+            Backend::Sys => self.sys.get(key),
         }
     }
     fn kv_put(&mut self, b: Backend, key: &str, value: Vec<u8>) -> bool {
@@ -134,6 +136,7 @@ impl Vfs {
             }
             Backend::Opfs => self.home.put(key, value),
             Backend::Idb => self.mnt.put(key, value),
+            Backend::Sys => self.sys.put(key, value),
         }
     }
     fn kv_delete(&mut self, b: Backend, key: &str) -> bool {
@@ -141,6 +144,7 @@ impl Vfs {
             Backend::Tmpfs => self.tmpfs.remove(key).is_some(),
             Backend::Opfs => self.home.delete(key),
             Backend::Idb => self.mnt.delete(key),
+            Backend::Sys => self.sys.delete(key),
         }
     }
     fn kv_keys(&self, b: Backend, prefix: &str) -> Vec<String> {
@@ -148,6 +152,7 @@ impl Vfs {
             Backend::Tmpfs => self.tmpfs.keys().filter(|k| k.starts_with(prefix)).cloned().collect(),
             Backend::Opfs => self.home.list(prefix),
             Backend::Idb => self.mnt.list(prefix),
+            Backend::Sys => self.sys.list(prefix),
         }
     }
 
@@ -234,9 +239,12 @@ impl Vfs {
         Ok(())
     }
 
-    /// Create a directory and all missing parents (`mkdir -p`); idempotent.
+    /// Create a directory and all missing parents (`mkdir -p`); idempotent. Each
+    /// segment's marker is placed in the backend that segment resolves to, so a path
+    /// crossing a mount boundary (e.g. `/usr/local` with `/usr` on tmpfs and
+    /// `/usr/local` on the sys store) records each level on the correct backend.
     pub fn mkdir_p(&mut self, path: &str) -> Result<(), FsError> {
-        let b = self.resolve(path)?;
+        self.resolve(path)?; // validate the path
         let mut acc = String::new();
         for seg in path.split('/').filter(|s| !s.is_empty()) {
             acc.push('/');
@@ -245,6 +253,7 @@ impl Vfs {
                 return Err(FsError::IsDir);
             }
             if !self.is_dir(&acc) {
+                let b = self.resolve(&acc)?;
                 self.kv_put(b, &dir_marker(&acc), Vec::new());
             }
         }
@@ -294,6 +303,18 @@ impl Vfs {
             if let Some(rest) = marked.strip_prefix(&prefix) {
                 let name = rest.split('/').next().unwrap_or(rest);
                 if !name.is_empty() {
+                    dirs.insert(name.to_string(), true);
+                }
+            }
+        }
+
+        // Immediate child mount points (e.g. /home, /etc, /var) are directories even
+        // though their contents live in a different backend than `path`'s.
+        let base = path.trim_end_matches('/'); // "" for root
+        for (mount_prefix, _) in &self.mounts {
+            let mp = mount_prefix.trim_end_matches('/');
+            if let Some((parent, name)) = mp.rsplit_once('/') {
+                if parent == base && !name.is_empty() {
                     dirs.insert(name.to_string(), true);
                 }
             }
@@ -377,10 +398,27 @@ mod tests {
     }
 
     fn vfs() -> Vfs {
-        let mut v = Vfs::new(Box::new(MemStore::default()), Box::new(MemStore::default()));
+        let mut v = Vfs::new(
+            Box::new(MemStore::default()),
+            Box::new(MemStore::default()),
+            Box::new(MemStore::default()),
+        );
         v.mount("/home", Backend::Opfs).unwrap();
         v.mount("/mnt", Backend::Idb).unwrap();
+        v.mount("/etc", Backend::Sys).unwrap();
         v
+    }
+
+    #[test]
+    fn sys_backend_routes_etc_writes_and_is_a_distinct_store() {
+        let mut v = vfs();
+        v.write("/etc/hostname", b"wasmos".to_vec()).unwrap();
+        assert_eq!(v.read("/etc/hostname").unwrap(), b"wasmos");
+        // /etc routes to Sys, not the /home (Opfs) store — a /home read of the same
+        // basename is independent.
+        v.write("/home/hostname", b"user".to_vec()).unwrap();
+        assert_eq!(v.read("/home/hostname").unwrap(), b"user");
+        assert_eq!(v.read("/etc/hostname").unwrap(), b"wasmos");
     }
 
     #[test]
@@ -469,6 +507,38 @@ mod tests {
     }
 
     #[test]
+    fn readdir_lists_child_mounts_and_mkdir_p_crosses_boundaries() {
+        let mut v = vfs(); // mounts /home (opfs), /mnt (idb), /etc (sys)
+        // `/` lists its child mount points even when they hold no files yet.
+        let root = v.readdir("/").unwrap();
+        for m in ["home", "mnt", "etc"] {
+            assert!(root.iter().any(|e| e.name == m && e.is_dir), "/ should list {m}");
+        }
+        // mkdir_p across a mount boundary records each level on its own backend.
+        v.mount("/usr/local", Backend::Sys).unwrap();
+        v.mkdir_p("/usr/local/share").unwrap();
+        assert!(v.is_dir("/usr")); // tmpfs marker
+        assert!(v.is_dir("/usr/local")); // mount point on sys
+        assert!(v.is_dir("/usr/local/share")); // sys marker
+        assert!(v.readdir("/").unwrap().iter().any(|e| e.name == "usr" && e.is_dir));
+        assert!(v.readdir("/usr").unwrap().iter().any(|e| e.name == "local" && e.is_dir));
+    }
+
+    #[test]
+    fn mkdir_p_creates_parents_and_is_idempotent() {
+        let mut v = vfs();
+        v.mkdir_p("/home/a/b/c").unwrap();
+        assert!(v.is_dir("/home/a"));
+        assert!(v.is_dir("/home/a/b"));
+        assert!(v.is_dir("/home/a/b/c"));
+        // Idempotent: a second mkdir_p of an existing tree is Ok (not Exists).
+        v.mkdir_p("/home/a/b/c").unwrap();
+        // A segment that is a file makes mkdir_p fail with IsDir.
+        v.write("/home/a/file", b"x".to_vec()).unwrap();
+        assert_eq!(v.mkdir_p("/home/a/file/sub"), Err(FsError::IsDir));
+    }
+
+    #[test]
     fn rmdir_requires_empty() {
         let mut v = vfs();
         v.mkdir("/home/d").unwrap();
@@ -508,7 +578,7 @@ mod tests {
         let mut home = MemStore::default();
         home.0.insert("/home/user/notes.txt".into(), b"hello".to_vec());
         home.0.insert("/home/user/sub/deep.txt".into(), b"deep".to_vec());
-        let mut v = Vfs::new(Box::new(home), Box::new(MemStore::default()));
+        let mut v = Vfs::new(Box::new(home), Box::new(MemStore::default()), Box::new(MemStore::default()));
         // Mounting stamps the version without touching the M1 file data.
         v.mount("/home", Backend::Opfs).unwrap();
         // Files read back unchanged; directories are derived from the keys.

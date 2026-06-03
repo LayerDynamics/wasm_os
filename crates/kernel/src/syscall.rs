@@ -1241,7 +1241,7 @@ mod tests {
 
     /// (vfs with /mnt mounted on idb, proc table, pipe table, pid w/ full FS rights).
     fn setup() -> (Vfs, ProcTable, PipeTable, u32) {
-        let mut vfs = Vfs::new(Box::new(MemStore::default()), Box::new(MemStore::default()));
+        let mut vfs = Vfs::new(Box::new(MemStore::default()), Box::new(MemStore::default()), Box::new(MemStore::default()));
         vfs.mount("/mnt", Backend::Idb).unwrap();
         // Seed the guest images the spawn tests launch: k_spawn now validates the
         // image exists in the VFS before requesting instantiation (a missing image
@@ -1374,7 +1374,7 @@ mod tests {
     #[test]
     fn path_open_outside_capability_subtree_is_denied() {
         // pid granted only /home; opening /mnt must be denied (default-deny).
-        let mut vfs = Vfs::new(Box::new(MemStore::default()), Box::new(MemStore::default()));
+        let mut vfs = Vfs::new(Box::new(MemStore::default()), Box::new(MemStore::default()), Box::new(MemStore::default()));
         vfs.mount("/mnt", Backend::Idb).unwrap();
         vfs.write("/mnt/secret", b"s".to_vec()).unwrap();
         let mut procs = ProcTable::new();
@@ -1855,7 +1855,7 @@ mod tests {
     #[test]
     fn fs_mutation_respects_capabilities() {
         // pid granted only /home; mutating /mnt must be denied (default-deny).
-        let mut vfs = Vfs::new(Box::new(MemStore::default()), Box::new(MemStore::default()));
+        let mut vfs = Vfs::new(Box::new(MemStore::default()), Box::new(MemStore::default()), Box::new(MemStore::default()));
         vfs.mount("/mnt", Backend::Idb).unwrap();
         let mut procs = ProcTable::new();
         let mut pipes = PipeTable::new();

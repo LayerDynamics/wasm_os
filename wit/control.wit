@@ -49,6 +49,9 @@ interface control {
   /// Remove a file. Returns not-found if the path does not exist. Routes to the
   /// backing store for opfs/idb mounts (durable unlink) and to tmpfs otherwise.
   fs-delete: func(path: string) -> result<_, fs-error>;
+  /// Create a directory and all missing parents (`mkdir -p`); idempotent. Used to
+  /// build the standard filesystem hierarchy at boot.
+  fs-mkdirp: func(path: string) -> result<_, fs-error>;
 
   // --- Process lifecycle (M1, FR-5) ---
   record spawn-spec {

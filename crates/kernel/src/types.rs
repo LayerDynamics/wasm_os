@@ -16,6 +16,8 @@ pub enum Backend {
     Tmpfs,
     Opfs,
     Idb,
+    /// Persistent OPFS store for system dirs (/etc, /var, …), separate from /home.
+    Sys,
 }
 
 // ---------------------------------------------------------------------------

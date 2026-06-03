@@ -85,6 +85,8 @@ export interface ProcExit {
 export interface AsyncKernelControl {
   mount(path: string, on: Backend): Promise<void>;
   fsWrite(path: string, bytes: Uint8Array): Promise<void>;
+  /** Create a directory and all missing parents (`mkdir -p`); idempotent. */
+  fsMkdirp(path: string): Promise<void>;
   fsRead(path: string): Promise<Uint8Array>;
   fsList(path: string): Promise<string[]>;
   fsDelete(path: string): Promise<void>;
@@ -229,6 +231,7 @@ export async function boot(): Promise<BootResult> {
   const control: AsyncKernelControl = {
     mount: (path, on) => call("mount", { path, on }),
     fsWrite: (path, bytes) => call("fsWrite", { path, bytes }),
+    fsMkdirp: (path) => call("fsMkdirp", { path }),
     fsRead: (path) => call("fsRead", { path }),
     fsList: (path) => call("fsList", { path }),
     fsDelete: (path) => call("fsDelete", { path }),

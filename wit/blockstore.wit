@@ -15,3 +15,13 @@ interface mnt-store {
   list-keys: func(prefix: string) -> list<string>;
   delete: func(key: string) -> bool;
 }
+
+/// System dirs (/etc, /var, /opt, /srv, /root, /usr/local, /Volumes) — host backs
+/// this with OPFS, kept separate from the user /home store so system and user state
+/// persist + can be wiped independently. Identical shape to home-store.
+interface sys-store {
+  get: func(key: string) -> option<list<u8>>;
+  put: func(key: string, value: list<u8>) -> bool;
+  list-keys: func(prefix: string) -> list<string>;
+  delete: func(key: string) -> bool;
+}

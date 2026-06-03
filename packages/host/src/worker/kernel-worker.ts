@@ -43,6 +43,7 @@ interface KernelControl {
   fsRead(path: string): Uint8Array;
   fsList(path: string): string[];
   fsDelete(path: string): void;
+  fsMkdirp(path: string): void;
   listProcs(): Array<{ pid: number; name: string; state: string }>;
   spawn(spec: SpawnSpec): number;
   spawnEmulator(name: string): number;
@@ -87,6 +88,7 @@ const ctx = self as unknown as WorkerScope;
 let control: KernelControl | undefined;
 let home: CachedStore | undefined;
 let mnt: CachedStore | undefined;
+let sys: CachedStore | undefined;
 
 /** Per-process bookkeeping for the worker + ring + waiters. */
 interface ProcRuntime {
@@ -232,8 +234,17 @@ async function init(features: FeatureReport): Promise<{ bootMillis: number; feat
     ? await OpfsBlockstore.create("home")
     : await IdbBlockstore.create("home");
   const mntBacking: Blockstore = await IdbBlockstore.create("mnt");
+  // System dirs (/etc, /var, …) persist to a SEPARATE OPFS store from /home so the two
+  // can be wiped independently (IndexedDB fallback when OPFS is unavailable).
+  const sysBacking: Blockstore = features.opfs
+    ? await OpfsBlockstore.create("sys")
+    : await IdbBlockstore.create("sys");
   const tStore = performance.now();
-  [home, mnt] = await Promise.all([CachedStore.load(homeBacking), CachedStore.load(mntBacking)]);
+  [home, mnt, sys] = await Promise.all([
+    CachedStore.load(homeBacking),
+    CachedStore.load(mntBacking),
+    CachedStore.load(sysBacking),
+  ]);
   console.info(`[wasmos boot] persisted store load: ${Math.round(performance.now() - tStore)}ms`);
 
   // Dynamic import via a non-literal path so the bundler keeps it external; the
@@ -246,6 +257,7 @@ async function init(features: FeatureReport): Promise<{ bootMillis: number; feat
   const instance = await mod.instantiate(getCoreModule, {
     "wasmos:abi/home-store": home.imports(),
     "wasmos:abi/mnt-store": mnt.imports(),
+    "wasmos:abi/sys-store": sys.imports(),
   });
   control = instance.control;
   const status = control.boot(features);
@@ -509,6 +521,9 @@ ctx.onmessage = async (ev: MessageEvent) => {
       case "fsDelete":
         result = requireControl().fsDelete(args.path as string);
         break;
+      case "fsMkdirp":
+        result = requireControl().fsMkdirp(args.path as string);
+        break;
       case "listProcs":
         result = requireControl().listProcs();
         break;
@@ -552,7 +567,7 @@ ctx.onmessage = async (ev: MessageEvent) => {
         result = undefined;
         break;
       case "flush":
-        await Promise.all([home?.flush(), mnt?.flush()]);
+        await Promise.all([home?.flush(), mnt?.flush(), sys?.flush()]);
         result = undefined;
         break;
       default:

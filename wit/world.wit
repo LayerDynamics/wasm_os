@@ -1,8 +1,9 @@
 package wasmos:abi@0.1.0;
 
-/// The M0 kernel: exports control, imports the two host-backed stores.
+/// The kernel: exports control, imports the host-backed stores (home, mnt, sys).
 world kernel {
   import home-store;
   import mnt-store;
+  import sys-store;
   export control;
 }

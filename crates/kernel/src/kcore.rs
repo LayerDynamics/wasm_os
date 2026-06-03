@@ -37,9 +37,9 @@ pub struct KernelCore {
 }
 
 impl KernelCore {
-    pub fn new(home: Box<dyn Blockstore>, mnt: Box<dyn Blockstore>) -> Self {
+    pub fn new(home: Box<dyn Blockstore>, mnt: Box<dyn Blockstore>, sys: Box<dyn Blockstore>) -> Self {
         Self {
-            vfs: Vfs::new(home, mnt),
+            vfs: Vfs::new(home, mnt, sys),
             procs: ProcTable::new(),
             sched: Scheduler::new(),
             pipes: PipeTable::new(),
@@ -60,6 +60,21 @@ impl KernelCore {
         }
         let _ = self.vfs.mount("/home", Backend::Opfs);
         let _ = self.vfs.mount("/mnt", Backend::Idb);
+        // Persistent system dirs live on the sys store (separate from /home so the two
+        // wipe independently). Mount BEFORE mkdir_p so dir markers route correctly.
+        for d in ["/etc", "/var", "/opt", "/srv", "/root", "/usr/local", "/Volumes"] {
+            let _ = self.vfs.mount(d, Backend::Sys);
+        }
+        // Build the standard filesystem hierarchy (FHS). Idempotent every boot: tmpfs
+        // dirs are recreated, persistent dirs already exist on their stores. /proc and
+        // /dev are synthetic and mounted separately.
+        for d in [
+            "/bin", "/sbin", "/lib", "/usr", "/usr/bin", "/usr/sbin", "/usr/lib",
+            "/usr/local", "/etc", "/var", "/var/log", "/var/tmp", "/tmp", "/run",
+            "/opt", "/srv", "/mnt", "/media", "/home", "/root", "/boot", "/Volumes",
+        ] {
+            let _ = self.vfs.mkdir_p(d);
+        }
 
         // init holds full FS rights and the right to spawn (it launches the
         // userland in M1). Registering it drives the full M0 process path.
@@ -96,6 +111,9 @@ impl KernelCore {
     }
     pub fn delete(&mut self, path: &str) -> Result<(), FsError> {
         self.vfs.delete(path)
+    }
+    pub fn mkdir_p(&mut self, path: &str) -> Result<(), FsError> {
+        self.vfs.mkdir_p(path)
     }
 
     // --- Process/scheduler/capability surface ---
@@ -657,7 +675,11 @@ mod tests {
     }
 
     fn core() -> KernelCore {
-        KernelCore::new(Box::new(MemStore::default()), Box::new(MemStore::default()))
+        KernelCore::new(
+            Box::new(MemStore::default()),
+            Box::new(MemStore::default()),
+            Box::new(MemStore::default()),
+        )
     }
 
     #[test]

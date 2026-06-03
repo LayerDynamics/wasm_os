@@ -38,43 +38,51 @@ mod component {
         NetRequest as WNetRequest, ProcInfo as WProcInfo, SpawnRequest as WSpawnRequest, SpawnSpec,
         SyscallOutcome as WSyscallOutcome,
     };
-    use bindings::wasmos::abi::{home_store, mnt_store};
+    use bindings::wasmos::abi::{home_store, mnt_store, sys_store};
 
     /// Adapter: route the kernel's Blockstore trait to a host import module.
     enum HostStore {
         Home,
         Mnt,
+        Sys,
     }
     impl Blockstore for HostStore {
         fn get(&self, key: &str) -> Option<Vec<u8>> {
             match self {
                 HostStore::Home => home_store::get(key),
                 HostStore::Mnt => mnt_store::get(key),
+                HostStore::Sys => sys_store::get(key),
             }
         }
         fn put(&mut self, key: &str, value: Vec<u8>) -> bool {
             match self {
                 HostStore::Home => home_store::put(key, &value),
                 HostStore::Mnt => mnt_store::put(key, &value),
+                HostStore::Sys => sys_store::put(key, &value),
             }
         }
         fn list(&self, prefix: &str) -> Vec<String> {
             match self {
                 HostStore::Home => home_store::list_keys(prefix),
                 HostStore::Mnt => mnt_store::list_keys(prefix),
+                HostStore::Sys => sys_store::list_keys(prefix),
             }
         }
         fn delete(&mut self, key: &str) -> bool {
             match self {
                 HostStore::Home => home_store::delete(key),
                 HostStore::Mnt => mnt_store::delete(key),
+                HostStore::Sys => sys_store::delete(key),
             }
         }
     }
 
     thread_local! {
-        static KERNEL: RefCell<KernelCore> =
-            RefCell::new(KernelCore::new(Box::new(HostStore::Home), Box::new(HostStore::Mnt)));
+        static KERNEL: RefCell<KernelCore> = RefCell::new(KernelCore::new(
+            Box::new(HostStore::Home),
+            Box::new(HostStore::Mnt),
+            Box::new(HostStore::Sys),
+        ));
     }
 
     fn map_backend(b: WBackend) -> Backend {
@@ -123,6 +131,10 @@ mod component {
 
         fn fs_delete(path: String) -> Result<(), WFsError> {
             KERNEL.with(|k| k.borrow_mut().delete(&path).map_err(map_err))
+        }
+
+        fn fs_mkdirp(path: String) -> Result<(), WFsError> {
+            KERNEL.with(|k| k.borrow_mut().mkdir_p(&path).map_err(map_err))
         }
 
         fn list_procs() -> Vec<WProcInfo> {
