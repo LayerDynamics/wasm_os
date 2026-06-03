@@ -1,9 +1,16 @@
 import { detectFeatures, type FeatureReport } from "./features.js";
 
+/** Cache-busting token for the stable-path build artifacts (workers + kernel ABI).
+ * These live at fixed URLs whose bytes change every deploy; a `?v=` that we bump when
+ * the worker/ABI protocol changes evicts any copy a browser cached `immutable` before
+ * the server's cache headers were corrected (otherwise a fresh main bundle could call
+ * a year-old kernel-worker.js → "unknown kworker command"). */
+export const ASSET_VERSION = "2";
+
 /** Where the bundled kernel worker is served (see the `bundle` build step).
  * esbuild mirrors the src/ layout under dist/, so worker entries land in
  * dist/worker/. */
-const KWORKER_URL = "/dist/worker/kernel-worker.js";
+const KWORKER_URL = `/dist/worker/kernel-worker.js?v=${ASSET_VERSION}`;
 
 export type Backend = "tmpfs" | "opfs" | "idb";
 export interface ProcInfo {

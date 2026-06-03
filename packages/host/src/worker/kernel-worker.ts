@@ -20,9 +20,13 @@ import { RingServer } from "../ring/host.js";
 import { OP, Writer } from "../ring/protocol.js";
 import type { ExitMessage } from "./process-worker.js";
 
+// Cache-busting token for stable-path artifacts (see boot.ts ASSET_VERSION); kept in
+// sync by hand since this worker bundles independently of the main entry.
+const ASSET_VERSION = "2";
 const ABI_BASE = "/packages/abi/generated";
-const PROCESS_WORKER_URL = "/dist/worker/process-worker.js";
-const EMULATOR_WORKER_URL = "/dist/worker/emulator-worker.js";
+const ABI_V = `?v=${ASSET_VERSION}`;
+const PROCESS_WORKER_URL = `/dist/worker/process-worker.js?v=${ASSET_VERSION}`;
+const EMULATOR_WORKER_URL = `/dist/worker/emulator-worker.js?v=${ASSET_VERSION}`;
 
 type Backend = "tmpfs" | "opfs" | "idb";
 interface SpawnSpec {
@@ -250,10 +254,10 @@ async function init(features: FeatureReport): Promise<{ bootMillis: number; feat
 
   // Dynamic import via a non-literal path so the bundler keeps it external; the
   // browser fetches the generated component + its core modules at runtime.
-  const kernelUrl = `${ABI_BASE}/kernel.js`;
+  const kernelUrl = `${ABI_BASE}/kernel.js${ABI_V}`;
   const mod: KernelModule = await import(/* @vite-ignore */ kernelUrl);
   const getCoreModule = (path: string) =>
-    WebAssembly.compileStreaming(fetch(`${ABI_BASE}/${path}`));
+    WebAssembly.compileStreaming(fetch(`${ABI_BASE}/${path}${ABI_V}`));
 
   const instance = await mod.instantiate(getCoreModule, {
     "wasmos:abi/home-store": home.imports(),

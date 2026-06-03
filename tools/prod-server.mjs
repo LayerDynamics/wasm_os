@@ -55,19 +55,37 @@ async function resolveFile(base, urlPath) {
   try {
     const st = await stat(file);
     if (st.isDirectory()) return null;
-    return { file, size: st.size };
+    return { file, size: st.size, mtimeMs: st.mtimeMs };
   } catch {
     return null;
   }
 }
 
-/** Stream a file with the right MIME, COOP/COEP/CORP, caching, and HTTP Range. */
-function send(req, res, file, size, { immutable = false } = {}) {
+/** Stream a file with the right MIME, COOP/COEP/CORP, caching, and HTTP Range.
+ *
+ * Caching is correctness-first: only CONTENT-HASHED files (their URL changes when
+ * their bytes change, e.g. Vite's /spa-assets/) may be cached `immutable`. Every other
+ * asset is served at a STABLE url whose bytes change across deploys (the esbuild
+ * workers, the kernel bindings, the guest wasm) — caching those `immutable` pins a
+ * browser to a stale build (a fresh main bundle + a year-old kernel-worker.js =
+ * "unknown kworker command"). They get `no-cache` + an ETag so the browser always
+ * revalidates and a 304 keeps large unchanged files (the riscv image) cheap. */
+function send(req, res, file, size, { immutable = false, mtimeMs = 0 } = {}) {
   const type = MIME[extname(file).toLowerCase()] ?? "application/octet-stream";
   setBaseHeaders(res, type);
   res.setHeader("Accept-Ranges", "bytes");
-  // Hashed SPA bundles + the immutable vendored binaries cache hard; HTML/config don't.
-  res.setHeader("Cache-Control", immutable ? "public, max-age=31536000, immutable" : "no-cache");
+  if (immutable) {
+    res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+  } else {
+    // Revalidate every time; a matching ETag returns 304 (no re-download).
+    res.setHeader("Cache-Control", "no-cache");
+    const etag = `W/"${size.toString(16)}-${Math.round(mtimeMs).toString(16)}"`;
+    res.setHeader("ETag", etag);
+    if (req.headers["if-none-match"] === etag) {
+      res.statusCode = 304;
+      return res.end();
+    }
+  }
 
   const range = req.headers.range;
   const m = range && /^bytes=(\d*)-(\d*)$/.exec(range);
@@ -106,7 +124,10 @@ const server = createServer(async (req, res) => {
     const prefix = ASSET_PREFIXES.find((p) => urlPath.startsWith(p));
     if (prefix) {
       const hit = await resolveFile(join(ROOT, prefix), urlPath.slice(prefix.length));
-      if (hit) return send(req, res, hit.file, hit.size, { immutable: true });
+      // Stable-URL build artifacts (workers, kernel bindings, guest wasm, riscv image):
+      // NOT immutable — their bytes change across deploys at the same path. Revalidate
+      // via ETag so a deploy is always picked up.
+      if (hit) return send(req, res, hit.file, hit.size, { immutable: false, mtimeMs: hit.mtimeMs });
       res.statusCode = 404;
       setBaseHeaders(res, "text/plain");
       return res.end("not found");
