@@ -10,4 +10,5 @@ mod mint;
 pub mod wasi;
 
 pub use format::{Error, Header, Tier};
+pub use io::{extract, read, verify};
 pub use mint::mint;
