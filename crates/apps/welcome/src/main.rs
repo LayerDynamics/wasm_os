@@ -73,7 +73,7 @@ const SLIDES: &[Slide] = &[
             "Each app opens in its own window:",
             "  \u{2022} drag the title bar to move it",
             "  \u{2022} drag an edge or corner to resize it",
-            "  \u{2022} use  \u{2013}  \u{25a2}  \u{2715}  to minimize, maximize, or close",
+            "  \u{2022} the corner buttons minimize, maximize, and close it",
             "",
             "The taskbar lists every open window \u{2014} click one to bring it",
             "to the front. New windows tile into free space automatically.",
@@ -166,9 +166,10 @@ impl Deck {
     fn draw(&self, fb: &mut Framebuffer) {
         fb.clear(BG);
 
-        // Title bar.
+        // Title bar — a fixed brand (the per-slide heading carries the topic, so this
+        // does not repeat the slide-1 "Welcome to WASM_OS" heading).
         fb.fill_rect(0, 0, W as i32, TITLE_H, TITLE_BG);
-        fb.text(MARGIN, 7, "Welcome to WASM_OS", TITLE_FG);
+        fb.text(MARGIN, 7, "WASM_OS  \u{2014}  a guided tour", TITLE_FG);
         let counter = format!("{} / {}", self.slide + 1, SLIDES.len());
         let cx = W as i32 - MARGIN - counter.chars().count() as i32 * GLYPH_W as i32;
         fb.text(cx, 7, &counter, TITLE_FG);
