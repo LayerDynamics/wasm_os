@@ -31,11 +31,22 @@ struct Editor {
     col: usize,
     scroll: usize,
     modified: bool,
+    obj: Option<Vec<u8>>, // Some(bytes) when the file is a wasm object (FR-12)
 }
 
 impl Editor {
     fn load(path: String) -> Editor {
-        let text = std::fs::read_to_string(&path).unwrap_or_default();
+        // A wasm object? (path ends .wasm AND verifies). Read content out of it.
+        let bytes = std::fs::read(&path).unwrap_or_default();
+        let (text, obj) = if path.ends_with(".wasm") && byteblockstorage::verify(&bytes).is_ok() {
+            let content = byteblockstorage::read(&bytes).unwrap_or_default();
+            (String::from_utf8_lossy(&content).into_owned(), Some(bytes))
+        } else if path.ends_with(".wasm") {
+            // New wasm doc that doesn't exist yet: start blank, save will mint.
+            (String::new(), Some(Vec::new()))
+        } else {
+            (String::from_utf8_lossy(&bytes).into_owned(), None)
+        };
         let mut lines: Vec<String> = text
             .split('\n')
             .map(|s| s.chars().filter(|c| (' '..='~').contains(c)).collect())
@@ -43,12 +54,25 @@ impl Editor {
         if lines.is_empty() {
             lines.push(String::new());
         }
-        Editor { path, lines, row: 0, col: 0, scroll: 0, modified: false }
+        Editor { path, lines, row: 0, col: 0, scroll: 0, modified: false, obj }
     }
 
     fn save(&mut self) {
         let text = self.lines.join("\n");
-        if std::fs::write(&self.path, text.as_bytes()).is_ok() {
+        let ok = match &mut self.obj {
+            Some(obj) => {
+                // Ensure we have a live object to write into; mint one sized to content.
+                if byteblockstorage::verify(obj).is_err() {
+                    let tier = byteblockstorage::Tier::for_len(text.len() as u32 + 4)
+                        .unwrap_or(byteblockstorage::Tier::K64);
+                    *obj = byteblockstorage::mint(tier, 0);
+                }
+                byteblockstorage::save(obj, text.as_bytes()).is_ok()
+                    && std::fs::write(&self.path, &obj[..]).is_ok()
+            }
+            None => std::fs::write(&self.path, text.as_bytes()).is_ok(),
+        };
+        if ok {
             self.modified = false;
         }
     }
