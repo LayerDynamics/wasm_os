@@ -8,7 +8,11 @@ type Win = {
   __wasmos: {
     session: { launch(name: string): Promise<number | undefined> };
     compositor: { windowList(): Array<{ id: number; title: string }> };
-    control: { listProcs(): Promise<Array<{ pid: number; name: string; state: string }>> };
+    control: {
+      listProcs(): Promise<Array<{ pid: number; name: string; state: string }>>;
+      kill(pid: number): Promise<void>;
+      flush(): Promise<void>;
+    };
   };
 };
 
@@ -84,4 +88,53 @@ test("Welcome guide launches as a process, opens centered, and navigates slides"
   await page.keyboard.press("ArrowLeft");
   await page.waitForTimeout(250);
   expect(seen.has(await hashLastCanvas(page))).toBe(true);
+});
+
+test("the Welcome guide opens on load every visit until the user dismisses it", async ({ page }) => {
+  // The real client opens Welcome centered on load until the user closes it once;
+  // the dismissal is then remembered. `?welcomeOnLoad=1` drives the exact index.ts
+  // path the React client uses (the harness keeps it off by default). Browser
+  // storage persists across reloads within this test's context, so the dismissal
+  // marker survives the reload — exactly as it would for a returning visitor.
+  const boot = async () => {
+    await page.goto("/?welcomeOnLoad=1");
+    await page.waitForFunction(() => Boolean((window as unknown as { __wasmos?: unknown }).__wasmos), null, {
+      timeout: 20_000,
+    });
+    await page.waitForFunction(
+      () => ((window as unknown as { __wasmos: { term: { log(): string } } }).__wasmos.term.log()).includes("wasmos:"),
+      null,
+      { timeout: 10_000 },
+    );
+  };
+  const welcomeOpen = () =>
+    page.evaluate(() => (window as unknown as Win).__wasmos.compositor.windowList().some((w) => w.title === "Welcome"));
+  const waitWelcome = () =>
+    page.waitForFunction(
+      () => (window as unknown as Win).__wasmos.compositor.windowList().some((w) => w.title === "Welcome"),
+      null,
+      { timeout: 15_000 },
+    );
+
+  // (1) On load, the guide opens by itself.
+  await boot();
+  await waitWelcome();
+  expect(await welcomeOpen()).toBe(true);
+
+  // (2) It opens AGAIN on a reload, because it has not been dismissed yet.
+  await boot();
+  await waitWelcome();
+  expect(await welcomeOpen()).toBe(true);
+
+  // (3) Close it (which reaps its process), then reload: it stays closed.
+  await page.evaluate(async () => {
+    const w = (await (window as unknown as Win).__wasmos.control.listProcs()).find((p) => p.name === "welcome");
+    if (w) await (window as unknown as Win).__wasmos.control.kill(w.pid);
+  });
+  await page.evaluate(() => (window as unknown as Win).__wasmos.control.flush());
+  await page.waitForTimeout(300);
+  await boot();
+  // Give the (now-suppressed) auto-open every chance to happen before asserting it didn't.
+  await page.waitForTimeout(3000);
+  expect(await welcomeOpen()).toBe(false);
 });

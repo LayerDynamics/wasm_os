@@ -83,10 +83,10 @@ export interface StartOptions {
   taskbar?: HTMLElement;
   /** Called with the boot status line (the React shell renders it as chrome). */
   onStatus?: (text: string) => void;
-  /** Pop the centered Welcome guide once on a first-ever visit (the React client
-   *  sets this). Off by default so the deterministic E2E harness isn't perturbed by
-   *  an extra window. */
-  welcomeOnFirstBoot?: boolean;
+  /** Open the centered Welcome guide on load, every visit, until the user closes
+   *  it once (the dismissal is remembered). The React client sets this; off by
+   *  default so the deterministic E2E harness isn't perturbed by an extra window. */
+  welcomeOnLoad?: boolean;
 }
 
 /** Boot the kernel + bring up the full WASM_OS desktop (compositor, terminal,
@@ -333,28 +333,35 @@ export async function startDesktop(opts: StartOptions = {}): Promise<ReadyState>
     new CustomEvent("wasmos:ready", { detail: { bootMillis: result.bootMillis, coldLoadMillis, features: result.features } }),
   );
 
+  // The Welcome guide is owned by the on-load logic below — it opens every visit
+  // until dismissed — so it must NOT be recorded or re-opened by the session
+  // snapshot, or it would double-open (restore + on-load) or get stuck open.
+  if (opts.welcomeOnLoad) session.setTransient("welcome");
+
   // Re-open the apps from the previous session (FR-35). Fire-and-forget: their
   // windows stream in as each process boots and requests its surface.
   void session.restore();
 
-  // First visit: pop the Welcome guide (centered) once, then remember we showed it
-  // so it doesn't reappear every boot. The marker lives in the persisted VFS. Gated
-  // to the real client (opts.welcomeOnFirstBoot) so the E2E harness stays deterministic.
-  if (opts.welcomeOnFirstBoot) {
+  // Open the Welcome guide centered on every load, until the user dismisses it.
+  // Closing its window (which reaps its process) writes a dismissal marker so it
+  // stays closed on later visits. Gated to the real client (opts.welcomeOnLoad)
+  // so the deterministic E2E harness isn't perturbed by an extra window.
+  if (opts.welcomeOnLoad) {
     void (async () => {
-      const marker = "/home/.welcome-shown";
+      const dismissed = "/home/.welcome-dismissed";
       try {
-        await control.fsRead(marker);
-        return; // already shown on a previous visit
+        await control.fsRead(dismissed);
+        return; // the user closed it on a previous visit — honor that, stay closed
       } catch {
-        // not shown yet — fall through and launch it
+        // never dismissed — open the guide
       }
-      await session.launch("welcome");
-      try {
-        await control.fsWrite(marker, new Uint8Array([1]));
-      } catch {
-        // best-effort; if it can't persist, the guide just shows again next boot
-      }
+      const pid = await session.launch("welcome");
+      if (pid === undefined) return;
+      // Persist the dismissal when the user closes the guide's window — its process
+      // is reaped on close, firing onExit — so it does not reappear next load.
+      control.onExit((exited) => {
+        if (exited === pid) void control.fsWrite(dismissed, new Uint8Array([1])).catch(() => {});
+      });
     })();
   }
 

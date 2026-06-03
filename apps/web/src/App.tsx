@@ -27,7 +27,7 @@ export function App() {
     startDesktop({
       desktop,
       taskbar,
-      welcomeOnFirstBoot: true, // pop the centered Welcome guide on a first-ever visit
+      welcomeOnLoad: true, // open the centered Welcome guide on load until dismissed
       onStatus: (text) => {
         setStatus(text);
         setPhase("ready");

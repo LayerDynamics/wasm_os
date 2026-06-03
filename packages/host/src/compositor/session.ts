@@ -31,6 +31,7 @@ export class SessionManager {
   private pidToApp = new Map<number, string>();
   private winApp = new Map<number, string>();
   private pendingGeom = new Map<string, Geom>();
+  private transient = new Set<string>();
   private saveTimer: ReturnType<typeof setTimeout> | undefined;
   private restoring = false;
 
@@ -46,6 +47,13 @@ export class SessionManager {
    * capability set). The taskbar launcher and session restore share this. */
   register(name: string, spawn: () => Promise<number>): void {
     this.apps.set(name, spawn);
+  }
+
+  /** Mark an app as transient: its window is never recorded in the session
+   *  snapshot and never re-opened by restore(). Its lifecycle is owned elsewhere
+   *  — e.g. the Welcome guide, which opens on load until the user dismisses it. */
+  setTransient(name: string): void {
+    this.transient.add(name);
   }
 
   /** The registered app name a pid was launched as, if any (used to title its
@@ -74,7 +82,7 @@ export class SessionManager {
     if (!parsed?.apps?.length) return;
     this.restoring = true;
     for (const entry of parsed.apps) {
-      if (!this.apps.has(entry.app)) continue;
+      if (!this.apps.has(entry.app) || this.transient.has(entry.app)) continue;
       // Stash the geometry BEFORE launching so onWindowOpened applies it.
       if (entry.geom) this.pendingGeom.set(entry.app, entry.geom);
       await this.launch(entry.app);
@@ -86,6 +94,7 @@ export class SessionManager {
     if (win.surface !== "canvas" || win.ownerPid === undefined) return; // app windows only
     const app = this.pidToApp.get(win.ownerPid);
     if (!app) return;
+    if (this.transient.has(app)) return; // transient apps are never recorded/restored
     this.winApp.set(win.id, app);
     const geom = this.pendingGeom.get(app);
     if (geom) {
