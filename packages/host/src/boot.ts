@@ -39,6 +39,19 @@ export interface SpawnOptions {
   grantNet?: boolean;
 }
 
+/** Build the kernel spawn-spec from host spawn options (shared by spawn paths). */
+function spawnSpec(opts?: SpawnOptions) {
+  return {
+    name: opts?.name ?? "proc",
+    grantFsSubtree: opts?.grantFsSubtree ?? "",
+    grantSpawn: opts?.grantSpawn ?? false,
+    grantGpu: opts?.grantGpu ?? false,
+    grantInput: opts?.grantInput ?? false,
+    grantSignal: opts?.grantSignal ?? false,
+    grantNet: opts?.grantNet ?? false,
+  };
+}
+
 /** Options for launching the emulator process (M5). The MIT TinyEMU runtime is a
  * fixed vendored asset; the caller chooses the VM config (which names the bios,
  * kernel, and rootfs) plus an optional extra cmdline. */
@@ -104,6 +117,10 @@ export interface AsyncKernelControl {
   takeCapture(pid: number): Promise<[Uint8Array, Uint8Array]>;
   /** Spawn a guest `.wasm` as a process; returns its PID. */
   spawn(wasmBytes: ArrayBuffer, opts?: SpawnOptions): Promise<number>;
+  /** Spawn from a guest image already installed in the VFS (e.g. /usr/bin/sh).
+   * The kworker reads the bytes from the VFS, so the host never retains a copy —
+   * the dominant boot-memory saving over keeping every guest's bytes resident. */
+  spawnByPath(imagePath: string, opts?: SpawnOptions): Promise<number>;
   /** Launch the privileged emulator process (M5, FR-27): a Native process whose
    * body is a dedicated TinyEMU worker booting a real Linux. Returns its PID. */
   spawnEmulator(opts: EmulatorOptions): Promise<number>;
@@ -262,19 +279,8 @@ export async function boot(): Promise<BootResult> {
     fsDelete: (path) => call("fsDelete", { path }),
     listProcs: () => call("listProcs"),
     takeCapture: (pid) => call("takeCapture", { pid }),
-    spawn: (wasmBytes, opts) =>
-      call("spawn", {
-        wasmBytes,
-        spec: {
-          name: opts?.name ?? "proc",
-          grantFsSubtree: opts?.grantFsSubtree ?? "",
-          grantSpawn: opts?.grantSpawn ?? false,
-          grantGpu: opts?.grantGpu ?? false,
-          grantInput: opts?.grantInput ?? false,
-          grantSignal: opts?.grantSignal ?? false,
-          grantNet: opts?.grantNet ?? false,
-        },
-      }),
+    spawn: (wasmBytes, opts) => call("spawn", { wasmBytes, spec: spawnSpec(opts) }),
+    spawnByPath: (imagePath, opts) => call("spawnByPath", { imagePath, spec: spawnSpec(opts) }),
     spawnEmulator: (opts) =>
       call("spawnEmulator", {
         name: opts.name ?? "linux",

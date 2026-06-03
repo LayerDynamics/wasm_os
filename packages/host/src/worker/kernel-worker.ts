@@ -513,6 +513,16 @@ function spawn(spec: SpawnSpec, wasmBytes: ArrayBuffer): number {
   return pid;
 }
 
+/** Host-initiated spawn from a VFS image path: read the already-loaded guest from
+ * the kernel VFS rather than shipping its bytes across the boundary. This lets the
+ * host launch the shell and apps without retaining a copy of every guest's bytes
+ * in main-thread memory — they live once in the VFS (FR-30). */
+function spawnByPath(spec: SpawnSpec, imagePath: string): number {
+  const pid = requireControl().spawn(spec);
+  instantiateProcess(pid, requireControl().fsRead(imagePath));
+  return pid;
+}
+
 /**
  * Guest-initiated spawn (KSPAWN, M2): the kernel already allocated the child's
  * PID/fds/caps and returned a `spawn` request. Read its image from the VFS and
@@ -595,6 +605,9 @@ ctx.onmessage = async (ev: MessageEvent) => {
         break;
       case "spawn":
         result = spawn(args.spec as SpawnSpec, args.wasmBytes as ArrayBuffer);
+        break;
+      case "spawnByPath":
+        result = spawnByPath(args.spec as SpawnSpec, args.imagePath as string);
         break;
       case "spawnEmulator":
         result = spawnEmulator(args.name as string, args.boot as EmulatorBoot);

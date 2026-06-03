@@ -44,13 +44,15 @@ const SBIN = new Set(["kill", "renice", "ps", "top", "mount"]);
  * (canonical) AND /bin (compat, so `/bin/sh`-style paths keep working); admin tools
  * are additionally placed in /sbin. /bin and /usr/bin are tmpfs, re-materialized from
  * the served wasm each boot, so a deploy never serves a stale binary. */
-async function loadBin(control: BootResult["control"], name: string): Promise<ArrayBuffer> {
+async function loadBin(control: BootResult["control"], name: string): Promise<void> {
   const bytes = await (await fetch(`${GUESTS}/${name}.wasm`)).arrayBuffer();
   const u8 = new Uint8Array(bytes);
   const dests = [`/usr/bin/${name}`, `/bin/${name}`];
   if (SBIN.has(name)) dests.push(`/sbin/${name}`);
   await Promise.all(dests.map((p) => control.fsWrite(p, u8)));
-  return bytes;
+  // The bytes now live in the VFS (FR-30); do NOT retain them in host memory —
+  // spawns read each guest back from the VFS via spawnByPath. Letting `bytes` go
+  // out of scope here keeps the boot-time footprint bounded on small devices.
 }
 
 /** Translate a 12-byte brokered key record (see compositor/input.ts) into the
@@ -106,14 +108,18 @@ export async function startDesktop(opts: StartOptions = {}): Promise<ReadyState>
   crypto.getRandomValues(entropy);
   await control.seedEntropy(entropy);
 
-  // Populate /bin, then launch the shell as a terminal-bound process. Load every
-  // guest CONCURRENTLY: the fetches multiplex over one HTTP/2 connection and the
-  // fsWrite calls multiplex over the kernel ring (each carries a unique request id),
-  // so this collapses ~34 sequential round-trips into one batch — the dominant cost
-  // of the cold desktop boot on higher-latency links.
+  // Install every guest into the VFS, then launch the shell as a terminal-bound
+  // process. Loaded in bounded BATCHES rather than all at once: fetching all ~37
+  // guests in parallel — each held as an ArrayBuffer and copied 2-3× across the
+  // ring simultaneously — produces a transient allocation spike that a
+  // memory-constrained mobile browser can reject ("out of memory") right on the
+  // boot screen. A small concurrency cap keeps round-trips multiplexed (fast) while
+  // bounding peak memory; the bytes are not retained host-side (see loadBin).
   const tGuests = performance.now();
-  const bins: Record<string, ArrayBuffer> = {};
-  await Promise.all(BIN.map(async (name) => { bins[name] = await loadBin(control, name); }));
+  const LOAD_CONCURRENCY = 6;
+  for (let i = 0; i < BIN.length; i += LOAD_CONCURRENCY) {
+    await Promise.all(BIN.slice(i, i + LOAD_CONCURRENCY).map((name) => loadBin(control, name)));
+  }
   console.info(
     `[wasmos boot] kernel-ready: ${coldLoadMillis}ms · guest load (${BIN.length} bins): ` +
       `${Math.round(performance.now() - tGuests)}ms`,
@@ -148,7 +154,7 @@ export async function startDesktop(opts: StartOptions = {}): Promise<ReadyState>
   // RESPAWN it if it exits (the `exit` builtin, a crash, or being killed) — otherwise
   // the terminal is left talking to a zombie and silently drops every keystroke.
   const spawnShell = async (): Promise<number> => {
-    const pid = await control.spawn(bins.sh!, {
+    const pid = await control.spawnByPath("/usr/bin/sh", {
       name: "sh",
       grantSpawn: true,
       grantFsSubtree: "/",
@@ -235,7 +241,7 @@ export async function startDesktop(opts: StartOptions = {}): Promise<ReadyState>
   });
 
   for (const app of APPS) {
-    session.register(app.name, () => control.spawn(bins[app.name]!, { name: app.name, ...app.opts }));
+    session.register(app.name, () => control.spawnByPath(`/usr/bin/${app.name}`, { name: app.name, ...app.opts }));
   }
   // The privileged emulator process (M5): boots real Linux into a window. Registered
   // with the SessionManager so it is part of the session (re-opens on reload, FR-35);
