@@ -1,10 +1,15 @@
 import { boot, type BootResult } from "./boot.js";
+import { isCrossOriginIsolated } from "./features.js";
 import { attachTerminal, type TerminalSession } from "./term/terminal.js";
 import { Compositor } from "./compositor/compositor.js";
 import { SurfaceManager } from "./compositor/surface.js";
 import { SessionManager } from "./compositor/session.js";
 import { InputRouter } from "./compositor/input.js";
 import { ThemeManager } from "./compositor/theme.js";
+
+// Re-export so the React client can pre-flight the same isolation check this entry
+// enforces (and render actionable guidance instead of a cryptic crash).
+export { isCrossOriginIsolated } from "./features.js";
 
 /** Executables loaded into the VFS `/bin` at boot (tmpfs, repopulated each boot). */
 // "echo.zig" is the Zig-built sibling of "echo" (FR-14 polyglot proof): same WASI
@@ -96,6 +101,19 @@ export interface StartOptions {
  * containers. Returns the ready state (also published on `window.__wasmos`). This
  * is the single entry both the plain bundle and the React client call. */
 export async function startDesktop(opts: StartOptions = {}): Promise<ReadyState> {
+  // WASM_OS's synchronous syscall ring is built on SharedArrayBuffer + Atomics,
+  // which a browser only exposes in a CROSS-ORIGIN-ISOLATED context. Some
+  // environments — most often an in-app webview (a link opened inside another
+  // app) or an older mobile OS — do not provide it even when the server sends the
+  // right COOP/COEP headers. Fail here with a clear, actionable message instead of
+  // a cryptic "Can't find variable: SharedArrayBuffer" deep in worker startup.
+  if (!isCrossOriginIsolated()) {
+    throw new Error(
+      "WASM_OS needs a cross-origin-isolated browser context (SharedArrayBuffer is " +
+        "unavailable here). Open the page directly in Safari or Chrome — not inside another " +
+        "app's in-app browser — on a current OS version.",
+    );
+  }
   const result = await boot();
   // Capture full cold-load (navigation start → kernel ready) BEFORE the userland
   // spins up, so this stays comparable to M0/M1.

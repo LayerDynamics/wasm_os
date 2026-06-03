@@ -74,3 +74,25 @@ body,
 .wasmos-bootsplash-error .wasmos-bootsplash-status {
   color: #f88;
 }
+.wasmos-bootsplash-status code {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+.wasmos-bootsplash-help {
+  margin: 14px 0 0;
+  padding: 0 24px;
+  max-width: 440px;
+  list-style: disc;
+  text-align: left;
+  font-size: 13px;
+  line-height: 1.5;
+  color: #c2c6d0;
+}
+.wasmos-bootsplash-help li {
+  margin: 7px 0;
+}
+.wasmos-bootsplash-help b {
+  color: #e6e0f6;
+}

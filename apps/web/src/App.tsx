@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import { startDesktop } from "@wasmos/host";
+import { startDesktop, isCrossOriginIsolated } from "@wasmos/host";
 
-type Phase = "booting" | "ready" | "error";
+type Phase = "booting" | "ready" | "error" | "unsupported";
 
 /**
  * The WASM_OS web client shell. React owns the page chrome — a boot splash, the
@@ -24,6 +24,12 @@ export function App() {
     const desktop = desktopRef.current;
     const taskbar = taskbarRef.current;
     if (!desktop || !taskbar) return;
+    // Bail BEFORE booting if the context can't provide SharedArrayBuffer — render
+    // actionable guidance rather than letting the kernel crash on first use.
+    if (!isCrossOriginIsolated()) {
+      setPhase("unsupported");
+      return;
+    }
     startDesktop({
       desktop,
       taskbar,
@@ -54,6 +60,24 @@ export function App() {
         <div className="wasmos-bootsplash wasmos-bootsplash-error" role="alert">
           <div className="wasmos-bootsplash-logo">WASM_OS</div>
           <div className="wasmos-bootsplash-status">{status}</div>
+        </div>
+      )}
+      {phase === "unsupported" && (
+        <div className="wasmos-bootsplash wasmos-bootsplash-error" role="alert">
+          <div className="wasmos-bootsplash-logo">WASM_OS</div>
+          <div className="wasmos-bootsplash-sub">this browser can’t run WASM_OS here</div>
+          <div className="wasmos-bootsplash-status">
+            WASM_OS runs a real kernel using <code>SharedArrayBuffer</code>, which needs a
+            cross-origin-isolated context your browser hasn’t enabled on this page.
+          </div>
+          <ul className="wasmos-bootsplash-help">
+            <li>
+              Opened from inside another app (a link in a messenger, X, Instagram…)? Tap the
+              ••• or share menu and choose <b>Open in Safari</b> / <b>Open in Chrome</b>.
+            </li>
+            <li>Or paste the link straight into your browser’s address bar.</li>
+            <li>Make sure your browser and OS are up to date (iOS 16+, a recent Chrome).</li>
+          </ul>
         </div>
       )}
     </div>

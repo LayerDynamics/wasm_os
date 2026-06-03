@@ -7,6 +7,14 @@ export interface FeatureReport {
   tier: string;
 }
 
+/** Whether this context can run WASM_OS's synchronous syscall ring: it needs
+ *  `SharedArrayBuffer`, which a browser exposes only in a cross-origin-isolated
+ *  context. In-app webviews and older mobile OSes lack it even with correct
+ *  COOP/COEP headers — callers use this to fail fast with actionable guidance. */
+export function isCrossOriginIsolated(): boolean {
+  return typeof SharedArrayBuffer !== "undefined" && globalThis.crossOriginIsolated === true;
+}
+
 export function detectFeatures(): FeatureReport {
   const hasSAB = typeof SharedArrayBuffer !== "undefined";
   const coi = typeof globalThis.crossOriginIsolated === "boolean" ? globalThis.crossOriginIsolated : false;
