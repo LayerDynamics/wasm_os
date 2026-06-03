@@ -122,6 +122,14 @@ name = "wasmos-sys"
 version = "0.0.0"
 
 [[package]]
+name = "welcome"
+version = "0.0.0"
+dependencies = [
+ "wasmgfx",
+ "wasmos-sys",
+]
+
+[[package]]
 name = "wit-bindgen-rt"
 version = "0.44.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

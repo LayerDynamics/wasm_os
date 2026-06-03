@@ -58,7 +58,9 @@ export class Compositor {
     const spot =
       opts.x !== undefined && opts.y !== undefined
         ? { x: opts.x, y: opts.y }
-        : this.place(opts.width, opts.height);
+        : opts.centered
+          ? this.center(opts.width, opts.height)
+          : this.place(opts.width, opts.height);
     const placed: WindowOptions = { ...opts, x: spot.x, y: spot.y };
     const win = new Win(id, placed, this.delegate);
     this.wins.set(id, win);
@@ -68,6 +70,14 @@ export class Compositor {
     this.onWindowOpened(win);
     this.onWindowsChanged();
     return win;
+  }
+
+  /** Top-left that centers a `w`×`h` window in the workspace (above the taskbar). */
+  private center(w: number, h: number): { x: number; y: number } {
+    const taskbarH = 36;
+    const wsW = this.desktop.clientWidth || window.innerWidth;
+    const wsH = (this.desktop.clientHeight || window.innerHeight) - taskbarH;
+    return { x: Math.max(8, Math.round((wsW - w) / 2)), y: Math.max(8, Math.round((wsH - h) / 2)) };
   }
 
   /** Choose a top-left for a new `w`×`h` window that overlaps existing visible

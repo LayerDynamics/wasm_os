@@ -21,6 +21,9 @@ export interface WindowOptions {
   /** Owning process PID for a process-backed window (undefined = host app). */
   ownerPid?: number;
   surface?: SurfaceKind;
+  /** Open centered in the workspace (overrides the default tiling placement) when
+   *  the caller didn't pin x/y. Used for the Welcome guide. */
+  centered?: boolean;
 }
 
 /** Callbacks a Window uses to ask the compositor to act on its behalf. */

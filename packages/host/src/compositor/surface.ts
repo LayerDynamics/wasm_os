@@ -32,6 +32,8 @@ export class SurfaceManager {
     private bindInput: (canvas: HTMLCanvasElement, ownerPid: number) => void = () => {},
     /** Title for a process-owned window, by owning pid (overridden in M3-T9). */
     private titleFor: (pid: number) => string = (pid) => `App (pid ${pid})`,
+    /** Whether a process-owned window should open centered (e.g. the Welcome guide). */
+    private centeredFor: (pid: number) => boolean = () => false,
   ) {}
 
   /** A process created a surface: open its canvas window and bind the framebuffer. */
@@ -42,6 +44,7 @@ export class SurfaceManager {
       height: info.height + 30, // + titlebar
       ownerPid: info.pid,
       surface: "canvas",
+      centered: this.centeredFor(info.pid),
     });
     const canvas = document.createElement("canvas");
     canvas.width = info.width;

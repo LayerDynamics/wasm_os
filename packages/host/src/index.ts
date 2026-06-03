@@ -17,7 +17,7 @@ const BIN = [
   "echo.zig", "crash",
   // M3 graphical apps (canvas surfaces); launchable from the file manager.
   // "mandelbrot" is the Zig polyglot app (FR-14 on the graphics path).
-  "gfxspike", "filemanager", "paint", "editor", "mandelbrot", "sysmon", "lisp", "spinner", "chandemo", "shmdemo", "sigdemo", "kill", "renice", "ps", "top", "fetch",
+  "gfxspike", "filemanager", "paint", "editor", "mandelbrot", "sysmon", "lisp", "welcome", "spinner", "chandemo", "shmdemo", "sigdemo", "kill", "renice", "ps", "top", "fetch",
 ];
 const GUESTS = "/packages/host/guests";
 
@@ -74,6 +74,10 @@ export interface StartOptions {
   taskbar?: HTMLElement;
   /** Called with the boot status line (the React shell renders it as chrome). */
   onStatus?: (text: string) => void;
+  /** Pop the centered Welcome guide once on a first-ever visit (the React client
+   *  sets this). Off by default so the deterministic E2E harness isn't perturbed by
+   *  an extra window. */
+  welcomeOnFirstBoot?: boolean;
 }
 
 /** Boot the kernel + bring up the full WASM_OS desktop (compositor, terminal,
@@ -157,6 +161,7 @@ export async function startDesktop(opts: StartOptions = {}): Promise<ReadyState>
   // same way (and each launch is tagged for persistence).
   type AppOpts = { grantGpu?: boolean; grantInput?: boolean; grantSpawn?: boolean; grantSignal?: boolean; grantFsSubtree?: string };
   const APPS: Array<{ name: string; label: string; opts: AppOpts }> = [
+    { name: "welcome", label: "Welcome", opts: { grantGpu: true, grantInput: true } },
     { name: "filemanager", label: "Files", opts: { grantGpu: true, grantInput: true, grantSpawn: true, grantFsSubtree: "/" } },
     { name: "paint", label: "Paint", opts: { grantGpu: true, grantInput: true, grantFsSubtree: "/" } },
     { name: "editor", label: "Editor", opts: { grantGpu: true, grantInput: true, grantFsSubtree: "/" } },
@@ -178,6 +183,7 @@ export async function startDesktop(opts: StartOptions = {}): Promise<ReadyState>
       const name = session.appForPid(pid);
       return (name && APP_LABELS[name]) || `App (pid ${pid})`;
     },
+    (pid) => session.appForPid(pid) === "welcome", // the guide opens centered
   );
   control.onSurface((info) => surfaces.onSurface(info));
   control.onPresent((id) => surfaces.onPresent(id));
@@ -276,5 +282,27 @@ export async function startDesktop(opts: StartOptions = {}): Promise<ReadyState>
   // Re-open the apps from the previous session (FR-35). Fire-and-forget: their
   // windows stream in as each process boots and requests its surface.
   void session.restore();
+
+  // First visit: pop the Welcome guide (centered) once, then remember we showed it
+  // so it doesn't reappear every boot. The marker lives in the persisted VFS. Gated
+  // to the real client (opts.welcomeOnFirstBoot) so the E2E harness stays deterministic.
+  if (opts.welcomeOnFirstBoot) {
+    void (async () => {
+      const marker = "/home/.welcome-shown";
+      try {
+        await control.fsRead(marker);
+        return; // already shown on a previous visit
+      } catch {
+        // not shown yet — fall through and launch it
+      }
+      await session.launch("welcome");
+      try {
+        await control.fsWrite(marker, new Uint8Array([1]));
+      } catch {
+        // best-effort; if it can't persist, the guide just shows again next boot
+      }
+    })();
+  }
+
   return state;
 }
