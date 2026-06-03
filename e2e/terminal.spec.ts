@@ -330,10 +330,10 @@ test("env prints the real per-process environment end-to-end (FR-18)", async ({ 
   let log = "";
   for (let i = 0; i < 50; i++) {
     log = await readLog();
-    if (log.includes("PATH=/bin") && log.includes("HOME=/home")) break;
+    if (log.includes("PATH=/usr/bin:/bin:/sbin") && log.includes("HOME=/home")) break;
     await page.waitForTimeout(150);
   }
-  expect(log).toContain("PATH=/bin");
+  expect(log).toContain("PATH=/usr/bin:/bin:/sbin");
   expect(log).toContain("HOME=/home");
   expect(log).toContain("TERM=xterm-256color");
   expect(log).toContain("PWD=");

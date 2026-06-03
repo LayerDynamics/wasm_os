@@ -37,10 +37,19 @@ declare global {
   }
 }
 
-/** Fetch a built guest `.wasm` and install it into the VFS `/bin`. */
+/** Admin/process-control tools that also belong in /sbin (FHS). */
+const SBIN = new Set(["kill", "renice", "ps", "top"]);
+
+/** Fetch a built guest `.wasm` and install it into the VFS. Guests live in /usr/bin
+ * (canonical) AND /bin (compat, so `/bin/sh`-style paths keep working); admin tools
+ * are additionally placed in /sbin. /bin and /usr/bin are tmpfs, re-materialized from
+ * the served wasm each boot, so a deploy never serves a stale binary. */
 async function loadBin(control: BootResult["control"], name: string): Promise<ArrayBuffer> {
   const bytes = await (await fetch(`${GUESTS}/${name}.wasm`)).arrayBuffer();
-  await control.fsWrite(`/bin/${name}`, new Uint8Array(bytes));
+  const u8 = new Uint8Array(bytes);
+  const dests = [`/usr/bin/${name}`, `/bin/${name}`];
+  if (SBIN.has(name)) dests.push(`/sbin/${name}`);
+  await Promise.all(dests.map((p) => control.fsWrite(p, u8)));
   return bytes;
 }
 
@@ -103,6 +112,32 @@ export async function startDesktop(opts: StartOptions = {}): Promise<ReadyState>
     `[wasmos boot] kernel-ready: ${coldLoadMillis}ms · guest load (${BIN.length} bins): ` +
       `${Math.round(performance.now() - tGuests)}ms`,
   );
+  // Seed /etc with real system config (persistent sys store) on first boot only —
+  // never clobber a file the user has edited. Written BEFORE the shell starts so it
+  // can source /etc/profile (PATH) and print /etc/motd as its login banner.
+  const ETC_DEFAULTS: Record<string, string> = {
+    "/etc/hostname": "wasmos\n",
+    "/etc/os-release":
+      'NAME="WASM_OS"\nID=wasmos\nPRETTY_NAME="WASM_OS — a microkernel OS in your browser tab"\n' +
+      'VERSION="0.1"\nVERSION_ID="0.1"\nHOME_URL="https://github.com/LayerDynamics/wasm_os"\n',
+    "/etc/motd":
+      "Welcome to WASM_OS — a real microkernel OS running in this browser tab.\n" +
+      "  • `ls /` to explore the filesystem, or open  ☰ Apps\n" +
+      "  • `cat /etc/os-release` for details · `cat /proc/uptime` for liveness\n",
+    "/etc/profile": "# /etc/profile — system-wide shell startup\nexport PATH=/usr/bin:/bin:/sbin\nexport HOME=/home\n",
+    "/etc/passwd": "root:x:0:0:root:/root:/bin/sh\nuser:x:1000:1000:user:/home:/bin/sh\n",
+  };
+  const enc = new TextEncoder();
+  await Promise.all(
+    Object.entries(ETC_DEFAULTS).map(async ([path, body]) => {
+      try {
+        await control.fsRead(path); // already present (a prior boot, possibly edited)
+      } catch {
+        await control.fsWrite(path, enc.encode(body));
+      }
+    }),
+  );
+
   // Spawn the shell and bind it to the terminal. Factored out so the terminal can
   // RESPAWN it if it exits (the `exit` builtin, a crash, or being killed) — otherwise
   // the terminal is left talking to a zombie and silently drops every keystroke.

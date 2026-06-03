@@ -11,6 +11,15 @@ use wasmos_sys::{
 };
 
 fn main() {
+    // Login: print the message of the day, then source PATH from /etc/profile so a
+    // user edit to /etc/profile actually changes command resolution.
+    if let Ok(motd) = std::fs::read_to_string("/etc/motd") {
+        print!("{motd}");
+    }
+    if let Some(path) = read_profile_path() {
+        std::env::set_var("PATH", path);
+    }
+
     let mut stdin = std::io::stdin();
     let mut cwd = String::from("/");
     let mut last_status: i32 = 0;
@@ -235,14 +244,35 @@ fn run_pipeline(stages: &[Stage], cwd: &str) -> i32 {
     status
 }
 
-/// Resolve a program name: a path (containing `/`) is resolved against `cwd`,
-/// a bare name against `$PATH` (`/bin`).
+/// Resolve a program name: a path (containing `/`) is resolved against `cwd`; a bare
+/// name is searched across the directories in `$PATH` (sourced from /etc/profile at
+/// login), returning the first directory that actually holds the binary.
 fn resolve_cmd(cwd: &str, prog: &str) -> String {
     if prog.contains('/') {
-        resolve_path(cwd, prog)
-    } else {
-        format!("/bin/{prog}")
+        return resolve_path(cwd, prog);
     }
+    let path = std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin:/sbin".to_string());
+    let dirs: Vec<&str> = path.split(':').filter(|s| !s.is_empty()).collect();
+    for dir in &dirs {
+        let cand = format!("{}/{}", dir.trim_end_matches('/'), prog);
+        if std::fs::metadata(&cand).is_ok() {
+            return cand;
+        }
+    }
+    // Not found on PATH — return the first dir's candidate so the spawn yields a clean
+    // "command not found".
+    let first = dirs.first().copied().unwrap_or("/usr/bin").trim_end_matches('/');
+    format!("{first}/{prog}")
+}
+
+/// PATH value declared in /etc/profile (`export PATH=…` or `PATH=…`), if present.
+fn read_profile_path() -> Option<String> {
+    let content = std::fs::read_to_string("/etc/profile").ok()?;
+    content.lines().find_map(|line| {
+        let l = line.trim();
+        let l = l.strip_prefix("export ").unwrap_or(l);
+        l.strip_prefix("PATH=").map(|v| v.trim().to_string())
+    })
 }
 
 /// Normalize `target` against `cwd` into an absolute path (handles `.`/`..`).

@@ -1405,7 +1405,7 @@ mod tests {
         // count matches the bufsize (sum of len+1 per entry).
         assert_eq!(read_u32_at(&esz, 6) as usize, env_blob.len());
         let env = String::from_utf8_lossy(&env_blob);
-        assert!(env.contains("PATH=/bin\0"));
+        assert!(env.contains("PATH=/usr/bin:/bin:/sbin\0"));
         assert!(env.contains("HOME=/home\0"));
         assert!(env.contains("TERM=xterm-256color\0"));
         assert!(env.contains("PWD=/\0"));
@@ -1529,7 +1529,7 @@ mod tests {
         w.bytes(b"/home/user"); // cwd
         let child = read_u32_at(&dispatch(&mut vfs, &mut procs, &mut pipes, sh, &w.build()).reply.unwrap(), 2);
         let cenv = procs.env(child);
-        assert!(cenv.iter().any(|e| e == "PATH=/bin"), "inherited PATH");
+        assert!(cenv.iter().any(|e| e == "PATH=/usr/bin:/bin:/sbin"), "inherited PATH");
         assert!(cenv.iter().any(|e| e == "EDITOR=editor"), "inherited custom var");
         assert!(cenv.iter().any(|e| e == "PWD=/home/user"), "PWD repointed to cwd");
         // PWD appears exactly once (the parent's PWD=/ was replaced, not duplicated).

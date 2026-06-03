@@ -253,7 +253,7 @@ pub struct Process {
 /// not an empty placeholder). `PWD` is refined per child to its working directory.
 pub fn default_env() -> Vec<String> {
     vec![
-        "PATH=/bin".to_string(),
+        "PATH=/usr/bin:/bin:/sbin".to_string(),
         "HOME=/home".to_string(),
         "TERM=xterm-256color".to_string(),
         "PWD=/".to_string(),
