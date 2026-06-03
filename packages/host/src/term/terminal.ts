@@ -19,6 +19,13 @@ export interface TerminalSession {
   /** Move keyboard focus to the terminal's xterm textarea. The compositor calls
    *  this when the terminal window is (re)activated so typing reaches the shell. */
   focus(): void;
+  /** The shell process the terminal is currently delivering keystrokes to. */
+  shellPid(): number;
+  /** Rebind the terminal to a freshly-respawned shell (the previous one exited).
+   *  Keystrokes now go to `pid`; the input line is reset. */
+  setShell(pid: number): void;
+  /** Write a host notice (e.g. "shell restarted") into the terminal + log. */
+  notice(text: string): void;
 }
 
 export function attachTerminal(
@@ -33,6 +40,10 @@ export function attachTerminal(
   const dec = new TextDecoder();
   const enc = new TextEncoder();
   let logText = "";
+  // The shell the terminal talks to. Mutable: if the shell exits (e.g. `exit`, a
+  // crash, or being killed), the host respawns a fresh one and rebinds via setShell
+  // so the terminal keeps working instead of becoming a dead echo-only box.
+  let currentShell = shellPid;
 
   // Single sink: everything shown on the terminal is also accumulated in the log.
   const write = (text: string) => {
@@ -67,7 +78,7 @@ export function attachTerminal(
       if (pending.length === 0) return;
       write(pending);
       lineLen += [...pending].length;
-      void control.stdin(shellPid, enc.encode(pending));
+      void control.stdin(currentShell, enc.encode(pending));
       pending = "";
     };
     for (const ch of data) {
@@ -75,13 +86,13 @@ export function attachTerminal(
         flush();
         write("\r\n");
         lineLen = 0;
-        void control.stdin(shellPid, enc.encode("\n"));
+        void control.stdin(currentShell, enc.encode("\n"));
       } else if (ch === "\x7f" || ch === "\b") {
         flush();
         if (lineLen > 0) {
           write("\b \b"); // cursor back, overwrite with space, cursor back
           lineLen -= 1;
-          void control.stdin(shellPid, enc.encode("\x7f"));
+          void control.stdin(currentShell, enc.encode("\x7f"));
         }
       } else {
         const code = ch.charCodeAt(0);
@@ -91,5 +102,15 @@ export function attachTerminal(
     flush();
   });
 
-  return { term, log: () => logText, focus: () => term.focus() };
+  return {
+    term,
+    log: () => logText,
+    focus: () => term.focus(),
+    shellPid: () => currentShell,
+    setShell: (pid: number) => {
+      currentShell = pid;
+      lineLen = 0; // the fresh shell starts at a clean prompt
+    },
+    notice: (text: string) => write(text),
+  };
 }

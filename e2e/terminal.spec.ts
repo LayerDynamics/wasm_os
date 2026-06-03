@@ -179,6 +179,52 @@ test("Backspace deletes the last character in the terminal line", async ({ page 
   expect(await readLog()).toBe(before); // nothing erased past the start of the line
 });
 
+test("the terminal respawns its shell after it exits (no dead echo-only terminal)", async ({ page }) => {
+  // Regression: the shell could exit (the `exit` builtin, a crash, or being killed
+  // from System Monitor) and become an UNREAPED ZOMBIE. The terminal stayed bound to
+  // the corpse — typing echoed locally but Enter/Backspace silently did nothing (the
+  // user's exact report). An unreaped zombie never fires onExit, so the host now polls
+  // process state and respawns the shell, keeping the terminal usable.
+  const errors = captureErrors(page);
+  await page.goto("/");
+  await waitReady(page, errors);
+  await page.waitForFunction(
+    () => ((window as unknown as { __wasmos: { term: { log(): string } } }).__wasmos.term.log()).includes("wasmos:"),
+    null,
+    { timeout: 10_000 },
+  );
+
+  await page.locator("#terminal").click();
+  const shell0 = await page.evaluate(
+    () => (window as unknown as { __wasmos: { term: { shellPid(): number } } }).__wasmos.term.shellPid(),
+  );
+
+  // Kill the shell with the `exit` builtin → it becomes a zombie.
+  await page.keyboard.type("exit", { delay: 20 });
+  await page.keyboard.press("Enter");
+
+  // The watcher (≤1.5s) must respawn a NEW shell the terminal is rebound to.
+  await page.waitForFunction(
+    (old) => (window as unknown as { __wasmos: { term: { shellPid(): number } } }).__wasmos.term.shellPid() !== old,
+    shell0,
+    { timeout: 8_000 },
+  );
+
+  // And the terminal must run commands again — it recovered, it is not a dead box.
+  await page.keyboard.type("echo RECOVERED", { delay: 20 });
+  await page.keyboard.press("Enter");
+  const readLog = () =>
+    page.evaluate(() => (window as unknown as { __wasmos: { term: { log(): string } } }).__wasmos.term.log());
+  let log = "";
+  for (let i = 0; i < 50; i++) {
+    log = await readLog();
+    if (/\nRECOVERED/.test(log)) break;
+    await page.waitForTimeout(150);
+  }
+  expect(log).toMatch(/\nRECOVERED/); // command ran on the respawned shell
+  expect(log).toContain("[shell exited — restarted]");
+});
+
 test("terminal keeps working after switching to another window and back (focus restore)", async ({ page }) => {
   // Regression: the compositor marked a re-clicked window active + raised it, but
   // never restored DOM focus to a DOM window's content. So after launching another

@@ -99,14 +99,21 @@ export async function startDesktop(opts: StartOptions = {}): Promise<ReadyState>
     `[wasmos boot] kernel-ready: ${coldLoadMillis}ms · guest load (${BIN.length} bins): ` +
       `${Math.round(performance.now() - tGuests)}ms`,
   );
-  const shellPid = await control.spawn(bins.sh!, {
-    name: "sh",
-    grantSpawn: true,
-    grantFsSubtree: "/",
-    grantSignal: true, // the user's process-control authority: enables `kill` (M4-T5)
-    grantNet: true, // brokered networking authority: enables `fetch` (M5-T6)
-  });
-  await control.bindTerminal(shellPid);
+  // Spawn the shell and bind it to the terminal. Factored out so the terminal can
+  // RESPAWN it if it exits (the `exit` builtin, a crash, or being killed) — otherwise
+  // the terminal is left talking to a zombie and silently drops every keystroke.
+  const spawnShell = async (): Promise<number> => {
+    const pid = await control.spawn(bins.sh!, {
+      name: "sh",
+      grantSpawn: true,
+      grantFsSubtree: "/",
+      grantSignal: true, // the user's process-control authority: enables `kill` (M4-T5)
+      grantNet: true, // brokered networking authority: enables `fetch` (M5-T6)
+    });
+    await control.bindTerminal(pid);
+    return pid;
+  };
+  const shellPid = await spawnShell();
 
   // Bring up the desktop compositor and run the terminal inside its first window
   // (a DOM surface). The content host keeps id="terminal" so xterm sizing + the
@@ -146,12 +153,6 @@ export async function startDesktop(opts: StartOptions = {}): Promise<ReadyState>
   control.onSurface((info) => surfaces.onSurface(info));
   control.onPresent((id) => surfaces.onPresent(id));
 
-  // Closing a process window reaps the owning process (M3-T9); a process that
-  // exits or traps has its windows closed (crash containment, FR-34).
-  compositor.onWindowClosed = (id, ownerPid) => {
-    surfaces.closeByWindow(id);
-    if (ownerPid !== undefined) void control.kill(ownerPid);
-  };
   control.onExit((pid) => {
     compositor.closeByOwner(pid);
     emulatorPids.delete(pid);
@@ -190,7 +191,11 @@ export async function startDesktop(opts: StartOptions = {}): Promise<ReadyState>
     { label: "Linux", launch: () => void session.launch("linux") },
   ]);
 
-  const termWin = compositor.open({ title: "Terminal — sh", width: 724, height: 460, ownerPid: shellPid, surface: "dom" });
+  // The terminal window is deliberately NOT owned by the shell pid: the shell is a
+  // RESTARTABLE service behind it, so the shell exiting must not close the window
+  // (and `onExit`'s closeByOwner must not target it). Shell cleanup on window-close
+  // is handled explicitly below.
+  const termWin = compositor.open({ title: "Terminal — sh", width: 724, height: 460, surface: "dom" });
   const termHost = document.createElement("div");
   termHost.id = "terminal";
   termWin.content.appendChild(termHost);
@@ -200,6 +205,48 @@ export async function startDesktop(opts: StartOptions = {}): Promise<ReadyState>
   // visually active but keyboard-dead (typing/Backspace/Delete silently lost).
   termWin.onActivate = () => term.focus();
   term.focus();
+
+  // Keep a live shell behind the terminal (init/getty-style). The shell can exit via
+  // the `exit` builtin, a crash/trap, or being killed (e.g. from System Monitor); an
+  // unreaped zombie never fires onExit, so poll process state and respawn on death.
+  // Without this the terminal stays bound to a zombie and every keystroke is silently
+  // dropped — typing echoes locally but Enter/Backspace do nothing.
+  let respawning = false;
+  const shellWatch = window.setInterval(async () => {
+    if (respawning) return;
+    let procs;
+    try {
+      procs = await control.listProcs();
+    } catch {
+      return; // transient; re-check next tick
+    }
+    const sh = procs.find((p) => p.pid === term.shellPid());
+    if (sh && sh.state !== "zombie") return; // still alive
+    respawning = true;
+    try {
+      const pid = await spawnShell();
+      term.setShell(pid);
+      term.notice("\r\n[shell exited — restarted]\r\n");
+    } catch {
+      // spawn failed (e.g. mid-teardown); leave respawning cleared to retry next tick.
+    } finally {
+      respawning = false;
+    }
+  }, 1500);
+
+  // Closing a process window reaps the owning process (M3-T9); a process that exits
+  // or traps has its windows closed (crash containment, FR-34). Closing the TERMINAL
+  // window instead stops the shell watcher and kills the current shell explicitly
+  // (the window has no ownerPid, so the generic path below won't).
+  compositor.onWindowClosed = (id, ownerPid) => {
+    surfaces.closeByWindow(id);
+    if (id === termWin.id) {
+      window.clearInterval(shellWatch);
+      void control.kill(term.shellPid());
+      return;
+    }
+    if (ownerPid !== undefined) void control.kill(ownerPid);
+  };
 
   const state: ReadyState = { ...result, coldLoadMillis, shellPid, term, compositor, surfaces, session };
   window.__wasmos = state;
