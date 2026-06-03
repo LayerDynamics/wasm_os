@@ -48,6 +48,12 @@ export class SessionManager {
     this.apps.set(name, spawn);
   }
 
+  /** The registered app name a pid was launched as, if any (used to title its
+   *  window by app rather than the generic "App (pid N)"). */
+  appForPid(pid: number): string | undefined {
+    return this.pidToApp.get(pid);
+  }
+
   /** Launch an app by name, recording its pid so its window can be tagged. */
   async launch(name: string): Promise<number | undefined> {
     const spawn = this.apps.get(name);

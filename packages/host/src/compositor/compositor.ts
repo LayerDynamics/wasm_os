@@ -21,7 +21,8 @@ export class Compositor {
   private activeId: number | null = null;
   private nextId = 1;
   private baseZ = 10;
-  private cascade = 0;
+  /** Step (px) of the placement grid scanned by {@link place}. */
+  private static readonly PLACE_STEP = 32;
 
   /** Notified when a window closes (so owners can reap a backing process). */
   onWindowClosed: (id: number, ownerPid?: number) => void = () => {};
@@ -50,13 +51,15 @@ export class Compositor {
   /** Open a window; returns it so the caller can mount content into `.content`. */
   open(opts: WindowOptions): Win {
     const id = this.nextId++;
-    // Cascade initial placement when the caller didn't pin a position.
-    const placed: WindowOptions = {
-      ...opts,
-      x: opts.x ?? 24 + (this.cascade % 6) * 28,
-      y: opts.y ?? 24 + (this.cascade % 6) * 28,
-    };
-    this.cascade++;
+    // Place a new window in the emptiest spot (least overlap with existing visible
+    // windows) when the caller didn't pin a position — so launched apps tile into
+    // free desktop space instead of cascading on top of the terminal. A restored
+    // window (session geometry) pins both coords and keeps them.
+    const spot =
+      opts.x !== undefined && opts.y !== undefined
+        ? { x: opts.x, y: opts.y }
+        : this.place(opts.width, opts.height);
+    const placed: WindowOptions = { ...opts, x: spot.x, y: spot.y };
     const win = new Win(id, placed, this.delegate);
     this.wins.set(id, win);
     this.zorder.push(id);
@@ -65,6 +68,42 @@ export class Compositor {
     this.onWindowOpened(win);
     this.onWindowsChanged();
     return win;
+  }
+
+  /** Choose a top-left for a new `w`×`h` window that overlaps existing visible
+   * windows the least (a light tiling). Scans a coarse grid of the workspace and
+   * keeps the lowest-overlap slot, preferring the top-left; returns immediately on
+   * a fully free slot. Falls back to the top-left margin when the desktop is full. */
+  private place(w: number, h: number): { x: number; y: number } {
+    const margin = 8;
+    const taskbarH = 36; // keep windows clear of the bottom taskbar
+    const wsW = this.desktop.clientWidth || window.innerWidth;
+    const wsH = (this.desktop.clientHeight || window.innerHeight) - taskbarH;
+    const maxX = Math.max(margin, wsW - w - margin);
+    const maxY = Math.max(margin, wsH - h - margin);
+    const rects = [...this.wins.values()]
+      .filter((win) => win.isVisible())
+      .map((win) => win.geometry());
+    const step = Compositor.PLACE_STEP;
+    let best = { x: margin, y: margin };
+    let bestScore = Infinity;
+    for (let y = margin; y <= maxY; y += step) {
+      for (let x = margin; x <= maxX; x += step) {
+        let overlap = 0;
+        for (const g of rects) {
+          const ox = Math.max(0, Math.min(x + w, g.x + g.w) - Math.max(x, g.x));
+          const oy = Math.max(0, Math.min(y + h, g.y + g.h) - Math.max(y, g.y));
+          overlap += ox * oy;
+        }
+        const score = overlap * 1_000_000 + x + y; // least overlap, then most top-left
+        if (score < bestScore) {
+          bestScore = score;
+          best = { x, y };
+          if (overlap === 0) return best; // a fully free slot — take it
+        }
+      }
+    }
+    return best;
   }
 
   close(id: number): void {

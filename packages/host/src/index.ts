@@ -147,24 +147,14 @@ export async function startDesktop(opts: StartOptions = {}): Promise<ReadyState>
     },
   );
 
-  // Process-owned canvas surfaces (M3): a process calls win_surface → a canvas
-  // window opens here and its shared framebuffer is blitted on present.
-  const surfaces = new SurfaceManager(compositor, (canvas, pid) => inputRouter.bindCanvas(canvas, pid));
-  control.onSurface((info) => surfaces.onSurface(info));
-  control.onPresent((id) => surfaces.onPresent(id));
-
-  control.onExit((pid) => {
-    compositor.closeByOwner(pid);
-    emulatorPids.delete(pid);
-  });
-
-  // Session snapshot/restore (M4-T9, FR-35): records open app windows + geometry
-  // to /home/.session.json and re-opens them on the next boot.
+  // Session snapshot/restore (M4-T9, FR-35): records open app windows + geometry to
+  // /home/.session.json and re-opens them on the next boot. Created BEFORE the
+  // SurfaceManager so each process-owned window can be titled by its launching app.
   const session = new SessionManager(control, compositor);
 
-  // The launchable graphical apps + their minimal capability sets. Registered
-  // with the SessionManager so the taskbar launcher AND session restore spawn
-  // them the same way (and each launch is tagged for persistence).
+  // The launchable graphical apps + their minimal capability sets. Registered with
+  // the SessionManager so the taskbar launcher AND session restore spawn them the
+  // same way (and each launch is tagged for persistence).
   type AppOpts = { grantGpu?: boolean; grantInput?: boolean; grantSpawn?: boolean; grantSignal?: boolean; grantFsSubtree?: string };
   const APPS: Array<{ name: string; label: string; opts: AppOpts }> = [
     { name: "filemanager", label: "Files", opts: { grantGpu: true, grantInput: true, grantSpawn: true, grantFsSubtree: "/" } },
@@ -175,6 +165,28 @@ export async function startDesktop(opts: StartOptions = {}): Promise<ReadyState>
     { name: "sysmon", label: "Monitor", opts: { grantGpu: true, grantInput: true, grantSignal: true } },
     { name: "lisp", label: "Lisp", opts: { grantGpu: true, grantInput: true, grantFsSubtree: "/home" } },
   ];
+  // pid → human label so a process-owned window shows "Editor"/"Linux", not "App (pid 5)".
+  const APP_LABELS: Record<string, string> = { linux: "Linux" };
+  for (const app of APPS) APP_LABELS[app.name] = app.label;
+
+  // Process-owned canvas surfaces (M3): a process calls win_surface → a canvas window
+  // opens here (titled by the launching app) and its framebuffer is blitted on present.
+  const surfaces = new SurfaceManager(
+    compositor,
+    (canvas, pid) => inputRouter.bindCanvas(canvas, pid),
+    (pid) => {
+      const name = session.appForPid(pid);
+      return (name && APP_LABELS[name]) || `App (pid ${pid})`;
+    },
+  );
+  control.onSurface((info) => surfaces.onSurface(info));
+  control.onPresent((id) => surfaces.onPresent(id));
+
+  control.onExit((pid) => {
+    compositor.closeByOwner(pid);
+    emulatorPids.delete(pid);
+  });
+
   for (const app of APPS) {
     session.register(app.name, () => control.spawn(bins[app.name]!, { name: app.name, ...app.opts }));
   }

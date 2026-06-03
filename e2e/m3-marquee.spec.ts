@@ -34,7 +34,10 @@ test("boot → desktop → 3 windows concurrent → move/resize/focus → reload
   await expect.poll(() => page.locator(".wasmos-window canvas").count(), { timeout: 10_000 }).toBe(2);
   await expect(page.locator(".wasmos-window")).toHaveCount(3);
 
-  // The most-recent window (Mandelbrot) is focused; move it by its titlebar.
+  // The most-recent window (Mandelbrot) is focused; drag it by its titlebar to a
+  // deterministic upper-left spot. Using an absolute target (not a delta) keeps the
+  // window — and its SE resize handle — on-screen regardless of where the compositor
+  // initially placed it, so the resize drag below has room to grow downward.
   const top = page.locator(".wasmos-window").last();
   const before = await top.boundingBox();
   const bar = top.locator(".wasmos-titlebar");
@@ -42,7 +45,7 @@ test("boot → desktop → 3 windows concurrent → move/resize/focus → reload
   if (!before || !bb) throw new Error("no box");
   await page.mouse.move(bb.x + 30, bb.y + 14);
   await page.mouse.down();
-  await page.mouse.move(bb.x + 30 - 120, bb.y + 14 + 70, { steps: 8 });
+  await page.mouse.move(180, 110, { steps: 8 });
   await page.mouse.up();
   const moved = await top.boundingBox();
   if (!moved) throw new Error("no moved box");
