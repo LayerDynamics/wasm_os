@@ -158,6 +158,7 @@ pub mod errno {
     pub const INVAL: u16 = 28;
     pub const ISDIR: u16 = 31;
     pub const NOENT: u16 = 44;
+    pub const NOSPC: u16 = 51; // no space left on device (/dev/full)
     pub const NOSYS: u16 = 52;
     pub const NOTDIR: u16 = 54;
     pub const NOTEMPTY: u16 = 55;
@@ -456,6 +457,22 @@ fn fd_write(
             SyscallOutcome { reply: Some(resp(errno::SUCCESS, n as u32)), wakeups, term_output: Vec::new(), spawn: None, reap: Vec::new(), net: None }
         }
         DescKind::File { path } => {
+            // /dev device write semantics (real, handled here — not stored bytes).
+            if crate::devfs::is_dev(&path) {
+                return match crate::devfs::classify_write(&path) {
+                    crate::devfs::DevWrite::NoSpace => SyscallOutcome::ready(resp(errno::NOSPC, 0)),
+                    crate::devfs::DevWrite::Tty => SyscallOutcome {
+                        reply: Some(resp(errno::SUCCESS, data.len() as u32)),
+                        wakeups: Vec::new(),
+                        term_output: data.to_vec(), // /dev/tty → the interactive terminal
+                        spawn: None,
+                        reap: Vec::new(),
+                        net: None,
+                    },
+                    // /dev/null, /dev/zero, /dev/random, /dev/urandom: accept + discard.
+                    _ => SyscallOutcome::ready(resp(errno::SUCCESS, data.len() as u32)),
+                };
+            }
             if !desc.rights.write {
                 return SyscallOutcome::ready(resp(errno::ACCES, 0));
             }
@@ -539,9 +556,25 @@ fn fd_read(
             }
         }
         DescKind::File { path } => {
-            let content = match vfs.read(&path) {
-                Ok(c) => c,
-                Err(_) => return SyscallOutcome::ready(err(errno::NOENT)),
+            // /dev devices return their bytes directly — no seek offset is applied, so
+            // /dev/zero and /dev/urandom are endless and /dev/null reads as EOF.
+            if crate::devfs::is_dev(&path) {
+                return match vfs.dev_read(&path, len as usize) {
+                    Some(bytes) => SyscallOutcome::ready(ok(&bytes)),
+                    None => SyscallOutcome::ready(err(errno::NOENT)),
+                };
+            }
+            // /proc files are generated live from the real process table.
+            let content = if crate::procfs::is_proc(&path) {
+                match crate::procfs::read(procs, &vfs.mount_list(), pid, &path) {
+                    Some(c) => c,
+                    None => return SyscallOutcome::ready(err(errno::NOENT)),
+                }
+            } else {
+                match vfs.read(&path) {
+                    Ok(c) => c,
+                    Err(_) => return SyscallOutcome::ready(err(errno::NOENT)),
+                }
             };
             let Ok(offset) = usize::try_from(desc.offset) else {
                 return SyscallOutcome::ready(err(errno::INVAL));
@@ -645,7 +678,13 @@ fn path_open(vfs: &mut Vfs, procs: &mut ProcTable, pid: u32, r: &mut Reader) -> 
         return resp(errno::NOTCAPABLE, 0);
     }
 
-    let exists = vfs.read(&full).is_ok();
+    let exists = if crate::procfs::is_proc(&full) {
+        crate::procfs::exists(procs, &full)
+    } else if crate::devfs::is_dev(&full) {
+        crate::devfs::exists(&full)
+    } else {
+        vfs.read(&full).is_ok()
+    };
     if of & oflags::DIRECTORY != 0 {
         // Opening a directory: allow it as a Dir fd (used for readdir).
         let fd = procs
@@ -686,10 +725,23 @@ fn fd_readdir(vfs: &mut Vfs, procs: &mut ProcTable, pid: u32, r: &mut Reader) ->
         None => return err(errno::BADF),
     };
 
-    // Real immediate children from the hierarchical VFS (M2).
-    let entries = match vfs.readdir(&dir_path) {
-        Ok(e) => e,
-        Err(_) => return err(errno::NOTDIR),
+    // Real immediate children — from the live process table for /proc, else the
+    // hierarchical VFS (M2).
+    let entries = if crate::procfs::is_proc(&dir_path) {
+        match crate::procfs::readdir(procs, &dir_path) {
+            Some(e) => e,
+            None => return err(errno::NOTDIR),
+        }
+    } else if crate::devfs::is_dev(&dir_path) {
+        match crate::devfs::readdir(&dir_path) {
+            Some(e) => e,
+            None => return err(errno::NOTDIR),
+        }
+    } else {
+        match vfs.readdir(&dir_path) {
+            Ok(e) => e,
+            Err(_) => return err(errno::NOTDIR),
+        }
     };
     // WASI `dirent` is a **24-byte** struct (8-byte aligned): d_next:u64,
     // d_ino:u64, d_namlen:u32, d_type:u8, then 3 padding bytes, then the name.

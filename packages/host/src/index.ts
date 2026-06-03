@@ -100,6 +100,12 @@ export async function startDesktop(opts: StartOptions = {}): Promise<ReadyState>
   const coldLoadMillis = Math.round(performance.now());
   const { control } = result;
 
+  // Seed the kernel's /dev/[u]random generator with real host CSPRNG entropy (the
+  // deterministic kernel has no RNG of its own). 32 bytes from the browser's crypto.
+  const entropy = new Uint8Array(32);
+  crypto.getRandomValues(entropy);
+  await control.seedEntropy(entropy);
+
   // Populate /bin, then launch the shell as a terminal-bound process. Load every
   // guest CONCURRENTLY: the fetches multiplex over one HTTP/2 connection and the
   // fsWrite calls multiplex over the kernel ring (each carries a unique request id),

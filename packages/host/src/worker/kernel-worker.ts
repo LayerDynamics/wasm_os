@@ -44,6 +44,7 @@ interface KernelControl {
   fsList(path: string): string[];
   fsDelete(path: string): void;
   fsMkdirp(path: string): void;
+  seedEntropy(seed: Uint8Array): void;
   listProcs(): Array<{ pid: number; name: string; state: string }>;
   spawn(spec: SpawnSpec): number;
   spawnEmulator(name: string): number;
@@ -523,6 +524,9 @@ ctx.onmessage = async (ev: MessageEvent) => {
         break;
       case "fsMkdirp":
         result = requireControl().fsMkdirp(args.path as string);
+        break;
+      case "seedEntropy":
+        result = requireControl().seedEntropy(args.seed as Uint8Array);
         break;
       case "listProcs":
         result = requireControl().listProcs();

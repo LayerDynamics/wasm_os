@@ -87,6 +87,8 @@ export interface AsyncKernelControl {
   fsWrite(path: string, bytes: Uint8Array): Promise<void>;
   /** Create a directory and all missing parents (`mkdir -p`); idempotent. */
   fsMkdirp(path: string): Promise<void>;
+  /** Seed the kernel's /dev/[u]random generator with real host CSPRNG entropy. */
+  seedEntropy(seed: Uint8Array): Promise<void>;
   fsRead(path: string): Promise<Uint8Array>;
   fsList(path: string): Promise<string[]>;
   fsDelete(path: string): Promise<void>;
@@ -232,6 +234,7 @@ export async function boot(): Promise<BootResult> {
     mount: (path, on) => call("mount", { path, on }),
     fsWrite: (path, bytes) => call("fsWrite", { path, bytes }),
     fsMkdirp: (path) => call("fsMkdirp", { path }),
+    seedEntropy: (seed) => call("seedEntropy", { seed }),
     fsRead: (path) => call("fsRead", { path }),
     fsList: (path) => call("fsList", { path }),
     fsDelete: (path) => call("fsDelete", { path }),

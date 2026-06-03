@@ -72,13 +72,32 @@ pub struct Vfs {
     home: Box<dyn Blockstore>,    // bound to /home (opfs)
     mnt: Box<dyn Blockstore>,     // bound to /mnt  (idb)
     sys: Box<dyn Blockstore>,     // bound to /etc, /var, … (opfs, separate store)
+    dev_rng: u64,                 // /dev/[u]random state, seeded with host entropy
 }
 
 impl Vfs {
     pub fn new(home: Box<dyn Blockstore>, mnt: Box<dyn Blockstore>, sys: Box<dyn Blockstore>) -> Self {
-        let mut v = Self { tmpfs: BTreeMap::new(), mounts: Vec::new(), home, mnt, sys };
+        let mut v = Self { tmpfs: BTreeMap::new(), mounts: Vec::new(), home, mnt, sys, dev_rng: 1 };
         v.mounts.push(("/".into(), Mount { backend: Backend::Tmpfs }));
         v
+    }
+
+    /// Seed the /dev/[u]random generator with real host entropy (the deterministic
+    /// kernel has no RNG of its own). Called once at boot.
+    pub fn seed_dev_rng(&mut self, state: u64) {
+        self.dev_rng = state;
+    }
+
+    /// Read `len` bytes from a /dev device node (advances the RNG for random/urandom).
+    pub fn dev_read(&mut self, path: &str, len: usize) -> Option<Vec<u8>> {
+        crate::devfs::read(path, len, &mut self.dev_rng)
+    }
+
+    /// A bounded, read-only device sample (does not advance the shared RNG). Lets the
+    /// host control read a fixed-size chunk of an endless device (`zero`, `urandom`).
+    pub fn dev_sample(&self, path: &str, len: usize) -> Option<Vec<u8>> {
+        let mut rng = self.dev_rng;
+        crate::devfs::read(path, len, &mut rng)
     }
 
     pub fn mount(&mut self, path: &str, on: Backend) -> Result<(), FsError> {
@@ -94,6 +113,22 @@ impl Vfs {
             self.kv_put(on, VERSION_KEY, VFS_VERSION.to_vec());
         }
         Ok(())
+    }
+
+    /// The mount table as `(mount_point, backend_name)`, for `/proc/mounts`.
+    pub fn mount_list(&self) -> Vec<(String, &'static str)> {
+        self.mounts
+            .iter()
+            .map(|(p, m)| {
+                let name = match m.backend {
+                    Backend::Tmpfs => "tmpfs",
+                    Backend::Opfs => "opfs",
+                    Backend::Idb => "idb",
+                    Backend::Sys => "sys",
+                };
+                (p.clone(), name)
+            })
+            .collect()
     }
 
     fn resolve(&self, path: &str) -> Result<Backend, FsError> {

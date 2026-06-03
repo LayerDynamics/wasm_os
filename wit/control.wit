@@ -52,6 +52,9 @@ interface control {
   /// Create a directory and all missing parents (`mkdir -p`); idempotent. Used to
   /// build the standard filesystem hierarchy at boot.
   fs-mkdirp: func(path: string) -> result<_, fs-error>;
+  /// Seed the /dev/[u]random generator with real host CSPRNG entropy (the kernel is
+  /// deterministic and has no RNG of its own). Called once at boot.
+  seed-entropy: func(seed: list<u8>);
 
   // --- Process lifecycle (M1, FR-5) ---
   record spawn-spec {

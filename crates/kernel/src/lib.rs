@@ -7,8 +7,10 @@
 // kernel's surface — and it means items reached only by the wasm-gated
 // `component` or by M1 callers are not miscounted as dead on the host build.
 pub mod chan;
+pub mod devfs;
 pub mod kcore;
 pub mod pipe;
+pub mod procfs;
 pub mod sched;
 pub mod shm;
 pub mod syscall;
@@ -135,6 +137,10 @@ mod component {
 
         fn fs_mkdirp(path: String) -> Result<(), WFsError> {
             KERNEL.with(|k| k.borrow_mut().mkdir_p(&path).map_err(map_err))
+        }
+
+        fn seed_entropy(seed: Vec<u8>) {
+            KERNEL.with(|k| k.borrow_mut().seed_entropy(&seed));
         }
 
         fn list_procs() -> Vec<WProcInfo> {

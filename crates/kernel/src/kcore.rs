@@ -72,6 +72,9 @@ impl KernelCore {
             "/bin", "/sbin", "/lib", "/usr", "/usr/bin", "/usr/sbin", "/usr/lib",
             "/usr/local", "/etc", "/var", "/var/log", "/var/tmp", "/tmp", "/run",
             "/opt", "/srv", "/mnt", "/media", "/home", "/root", "/boot", "/Volumes",
+            // /proc and /dev are synthetic (reads route to procfs/devfs); the markers
+            // just make them visible in `ls /`.
+            "/proc", "/dev",
         ] {
             let _ = self.vfs.mkdir_p(d);
         }
@@ -104,9 +107,27 @@ impl KernelCore {
         self.vfs.write(path, bytes)
     }
     pub fn read(&self, path: &str) -> Result<Vec<u8>, FsError> {
+        if crate::procfs::is_proc(path) {
+            return crate::procfs::read(&self.procs, &self.vfs.mount_list(), 0, path).ok_or(FsError::NotFound);
+        }
+        if crate::devfs::is_dev(path) {
+            // Endless devices can't be "read whole" — return a bounded 64-byte sample.
+            return self.vfs.dev_sample(path, 64).ok_or(FsError::NotFound);
+        }
         self.vfs.read(path)
     }
     pub fn list(&self, path: &str) -> Result<Vec<String>, FsError> {
+        let base = path.trim_end_matches('/');
+        if crate::procfs::is_proc(path) {
+            return crate::procfs::readdir(&self.procs, path)
+                .map(|es| es.into_iter().map(|e| format!("{base}/{}", e.name)).collect())
+                .ok_or(FsError::NotFound);
+        }
+        if crate::devfs::is_dev(path) {
+            return crate::devfs::readdir(path)
+                .map(|es| es.into_iter().map(|e| format!("{base}/{}", e.name)).collect())
+                .ok_or(FsError::NotFound);
+        }
         self.vfs.list(path)
     }
     pub fn delete(&mut self, path: &str) -> Result<(), FsError> {
@@ -114,6 +135,10 @@ impl KernelCore {
     }
     pub fn mkdir_p(&mut self, path: &str) -> Result<(), FsError> {
         self.vfs.mkdir_p(path)
+    }
+    /// Seed the /dev/[u]random generator with real host entropy.
+    pub fn seed_entropy(&mut self, seed: &[u8]) {
+        self.vfs.seed_dev_rng(crate::devfs::seed_state(seed));
     }
 
     // --- Process/scheduler/capability surface ---
