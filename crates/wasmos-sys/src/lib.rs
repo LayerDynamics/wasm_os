@@ -31,6 +31,7 @@ const WIN_SURFACE: u8 = 0x23;
 /// never reaches the kernel ring. The opcode is the marker the shim matches on.
 const WIN_PRESENT: u8 = 0x24;
 const WIN_READ_INPUT: u8 = 0x25;
+const TTY_SET_RAW: u8 = 0x26;
 const PROC_LIST: u8 = 0x30;
 const SET_PRIORITY: u8 = 0x31;
 const CHAN_OPEN: u8 = 0x32;
@@ -301,6 +302,21 @@ pub fn win_read_input() -> Result<Vec<InputEvent>, u16> {
         off += INPUT_EVENT_SIZE;
     }
     Ok(events)
+}
+
+/// `tty_set_raw(raw)` — switch the interactive terminal between raw and cooked
+/// line discipline. In raw mode the host stops local echo + line buffering and
+/// forwards every keystroke (ESC sequences, control bytes, arrows) straight to
+/// this process's stdin — what an in-terminal editor like nano needs to read
+/// keys one at a time. Call `tty_set_raw(true)` on entry and `tty_set_raw(false)`
+/// before exit; if the process dies while raw, the host restores cooked mode so
+/// the terminal is never left unusable. Only the foreground process is honored.
+pub fn tty_set_raw(raw: bool) -> u16 {
+    let mut w = W::new();
+    w.u8(TTY_SET_RAW);
+    w.u8(u8::from(raw));
+    let resp = call(&w.0);
+    rd_u16(&resp, 0)
 }
 
 // --- M4: process introspection + control (ps/top, FR-33; renice, FR-8) ---

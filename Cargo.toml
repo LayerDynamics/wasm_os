@@ -16,6 +16,7 @@ members = [
     "crates/apps/sysmon",
     "crates/apps/lisp",
     "crates/apps/welcome",
+    "crates/apps/nano",
     "crates/spinner",
     "crates/chandemo",
     "crates/shmdemo",

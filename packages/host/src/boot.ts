@@ -118,6 +118,14 @@ export interface AsyncKernelControl {
   wait(pid: number): Promise<ProcExit>;
   /** Deliver input bytes to a process's stdin (terminal keystrokes, M2). */
   stdin(pid: number, bytes: Uint8Array): Promise<void>;
+  /** Deliver keystrokes to the terminal's current foreground job (a running
+   *  editor/filter, else the shell). The kworker tracks the foreground stack so
+   *  input reaches a program like nano while the shell is parked in `wait()`. */
+  terminalInput(bytes: Uint8Array): Promise<void>;
+  /** A foreground program toggled the terminal's line discipline via
+   *  `tty_set_raw` — `raw` true means pass keys through verbatim (no echo, no
+   *  line buffering); false restores cooked mode. Reset to cooked if it exits. */
+  onTermMode(cb: (raw: boolean) => void): void;
   /** Deliver brokered input events to the focused window's process (M3-T3). */
   deliverInput(pid: number, bytes: Uint8Array): Promise<void>;
   /** Bind a process's stdout/stderr to the terminal (writes stream to xterm). */
@@ -162,6 +170,7 @@ export async function boot(): Promise<BootResult> {
   const presentListeners: Array<(surfaceId: number) => void> = [];
   const exitListeners: Array<(pid: number) => void> = [];
   const emulatorSerialListeners: Array<(pid: number, text: string) => void> = [];
+  const termModeListeners: Array<(raw: boolean) => void> = [];
 
   worker.onmessage = (e: MessageEvent) => {
     const data = e.data as {
@@ -178,6 +187,7 @@ export async function boot(): Promise<BootResult> {
       height?: number;
       sab?: SharedArrayBuffer;
       text?: string;
+      raw?: boolean;
     };
     // Streaming (non-RPC) messages: terminal output as processes write it.
     if (data.type === "output") {
@@ -207,6 +217,11 @@ export async function boot(): Promise<BootResult> {
     // M5: the emulator process's serial console (running text).
     if (data.type === "emulatorSerial" && data.pid !== undefined) {
       for (const cb of emulatorSerialListeners) cb(data.pid, data.text ?? "");
+      return;
+    }
+    // A foreground program toggled the terminal's raw/cooked line discipline.
+    if (data.type === "termMode") {
+      for (const cb of termModeListeners) cb(data.raw ?? false);
       return;
     }
     if (typeof data.id !== "number") return; // unknown message
@@ -281,6 +296,10 @@ export async function boot(): Promise<BootResult> {
     emulatorInput: (pid, text) => call("emulatorInput", { pid, text }),
     wait: (pid) => call("wait", { pid }),
     stdin: (pid, bytes) => call("stdin", { pid, bytes }),
+    terminalInput: (bytes) => call("terminalInput", { bytes }),
+    onTermMode: (cb) => {
+      termModeListeners.push(cb);
+    },
     deliverInput: (pid, bytes) => call("deliverInput", { pid, bytes }),
     bindTerminal: (pid) => call("bindTerminal", { pid }),
     onOutput: (cb) => {

@@ -98,6 +98,11 @@ interface control {
   record spawn-request {
     pid: u32,
     image-path: string,
+    /// True when the child's fd 0 is the interactive terminal (a foreground job,
+    /// e.g. a bare command or a pipeline's first stage). The host pushes such a
+    /// child onto the terminal's foreground stack so keystrokes route to it (not
+    /// the shell, which is blocked in `wait`), and pops it when the child exits.
+    terminal-stdin: bool,
   }
 
   /// Outcome of routing one syscall (M2 park/resume).
@@ -120,6 +125,11 @@ interface control {
     /// set when the caller parked on `net_request` (M5-T6): the kworker performs
     /// the brokered fetch and returns the body via `deliver-net`.
     net: option<net-request>,
+    /// set when the caller changed the terminal line-discipline mode via
+    /// `tty_set_raw` (in-terminal editors like nano): `some(1)` => raw (no echo,
+    /// no line buffering, ESC/control bytes passed through), `some(0)` => cooked.
+    /// The kworker forwards the new mode to the host terminal. `none` => no change.
+    term-mode: option<u8>,
   }
 
   /// A capability-gated network request the kworker must broker (M5-T6, OQ-2).

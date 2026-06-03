@@ -385,6 +385,7 @@ impl KernelCore {
             spawn: None,
             reap: Vec::new(),
             net: None,
+            term_mode: None,
         }
     }
 
@@ -574,6 +575,7 @@ impl KernelCore {
                     spawn: None,
                     reap: Vec::new(),
                     net: None,
+                    term_mode: None,
                 }
             }
             _ => err(syscall::errno::INVAL), // unsupported signal

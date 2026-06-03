@@ -5,8 +5,14 @@
  * stderr (`onOutput`); we write it to xterm and accumulate a plain-text log the
  * E2E can assert on (decoupled from xterm's visual buffer).
  *
- * Terminal → kernel: keystrokes are locally echoed and delivered to the shell's
- * stdin via `control.stdin` (the shell parks on a read until they arrive).
+ * Terminal → kernel: keystrokes are delivered to the terminal's foreground job
+ * via `control.terminalInput` (the kworker routes them to the running program,
+ * else the shell). In COOKED mode (the default) we apply a minimal line
+ * discipline — local echo, Backspace, line buffering — and drop escape/control
+ * bytes a line-oriented shell can't use. A foreground program can switch the
+ * terminal to RAW mode (`tty_set_raw`, e.g. nano): then we stop echoing and line
+ * buffering and forward every byte verbatim — arrows, Ctrl-keys and all — so the
+ * program reads keys one at a time and owns the screen.
  */
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
@@ -54,9 +60,29 @@ export function attachTerminal(
   // Kernel → terminal.
   control.onOutput((_pid, bytes) => write(dec.decode(bytes)));
 
-  // Terminal → kernel: a minimal line discipline (local echo + Backspace), then
-  // deliver to the shell's stdin. A single `onData` chunk can carry many characters
-  // at once — most importantly a PASTE such as "ls\n" or text containing tabs — so
+  // Raw vs cooked line discipline. A foreground program (nano) flips this via
+  // `tty_set_raw`; the kworker tells us. On any change we reset the cooked input
+  // line so the two disciplines never share stale state. The kworker also forces
+  // cooked mode back if the program exits while raw (so the terminal can't brick).
+  // `lineLen` tracks how many chars the user has typed on the CURRENT input line so
+  // Backspace erases only that, staying in lockstep with the shell's line buffer.
+  let lineLen = 0;
+  let rawMode = false;
+  control.onTermMode((raw) => {
+    rawMode = raw;
+    lineLen = 0;
+  });
+
+  // Terminal → kernel: deliver keystrokes to the terminal's foreground job (the
+  // kworker routes them to the running program, else the shell).
+  //
+  // RAW mode (a full-screen program like nano): forward every byte verbatim —
+  // printable, control bytes, and ESC sequences (arrow keys arrive as "\x1b[A"
+  // etc.) — with NO local echo and NO line buffering. The program reads keys one
+  // at a time and repaints the screen itself.
+  //
+  // COOKED mode (the default shell line discipline): a single `onData` chunk can
+  // carry many characters at once — most importantly a PASTE such as "ls\n" — so
   // we process it character-by-character, batching runs of printable text and
   // handling control characters individually:
   //   • CR / LF          → flush pending text, echo CRLF, send "\n", reset the line.
@@ -67,18 +93,19 @@ export function attachTerminal(
   //                        no use for them and they would corrupt the command).
   // A chunk that begins with ESC is an escape sequence (arrow/F-key); we drop the
   // whole chunk so its "[A"/"[B" tail is never inserted into the command line.
-  //
-  // `lineLen` tracks how many chars the user has typed on the CURRENT input line so
-  // Backspace erases only that, staying in lockstep with the shell's line buffer.
-  let lineLen = 0;
   term.onData((data) => {
+    if (rawMode) {
+      // Pass through unchanged; the foreground program owns echo + rendering.
+      void control.terminalInput(enc.encode(data));
+      return;
+    }
     if (data.charCodeAt(0) === 0x1b) return; // ESC-prefixed: arrows, F-keys, etc.
     let pending = "";
     const flush = () => {
       if (pending.length === 0) return;
       write(pending);
       lineLen += [...pending].length;
-      void control.stdin(currentShell, enc.encode(pending));
+      void control.terminalInput(enc.encode(pending));
       pending = "";
     };
     for (const ch of data) {
@@ -86,13 +113,13 @@ export function attachTerminal(
         flush();
         write("\r\n");
         lineLen = 0;
-        void control.stdin(currentShell, enc.encode("\n"));
+        void control.terminalInput(enc.encode("\n"));
       } else if (ch === "\x7f" || ch === "\b") {
         flush();
         if (lineLen > 0) {
           write("\b \b"); // cursor back, overwrite with space, cursor back
           lineLen -= 1;
-          void control.stdin(currentShell, enc.encode("\x7f"));
+          void control.terminalInput(enc.encode("\x7f"));
         }
       } else {
         const code = ch.charCodeAt(0);

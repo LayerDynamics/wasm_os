@@ -43,6 +43,11 @@ pub struct SyscallOutcome {
     /// A brokered network request (M5-T6, OQ-2): the caller parked on `net_request`
     /// and the kworker must perform the fetch, then `deliver_net` the response.
     pub net: Option<NetRequest>,
+    /// Set when the caller changed the terminal line-discipline via `tty_set_raw`:
+    /// `Some(1)` => raw (no echo/line-buffering, ESC + control bytes passed
+    /// through to the foreground process), `Some(0)` => cooked. `None` => no
+    /// change. The kworker forwards the new mode to the host terminal.
+    pub term_mode: Option<u8>,
 }
 
 /// A capability-gated network request the kworker must broker (M5-T6, FR-NG-1):
@@ -58,16 +63,20 @@ pub struct NetRequest {
 pub struct SpawnRequest {
     pub pid: u32,
     pub image_path: String,
+    /// True when the child's fd 0 is the interactive terminal — a foreground job
+    /// the host must route keystrokes to (and pop from the foreground stack on
+    /// exit). False for pipe stages / redirected stdin and background jobs.
+    pub terminal_stdin: bool,
 }
 
 impl SyscallOutcome {
     /// A completed syscall with its reply bytes.
     pub fn ready(bytes: Vec<u8>) -> Self {
-        Self { reply: Some(bytes), wakeups: Vec::new(), term_output: Vec::new(), spawn: None, reap: Vec::new(), net: None }
+        Self { reply: Some(bytes), wakeups: Vec::new(), term_output: Vec::new(), spawn: None, reap: Vec::new(), net: None, term_mode: None }
     }
     /// A parked syscall (no reply yet).
     pub fn parked() -> Self {
-        Self { reply: None, wakeups: Vec::new(), term_output: Vec::new(), spawn: None, reap: Vec::new(), net: None }
+        Self { reply: None, wakeups: Vec::new(), term_output: Vec::new(), spawn: None, reap: Vec::new(), net: None, term_mode: None }
     }
 }
 
@@ -111,6 +120,10 @@ pub enum Op {
     // win_read_input drains brokered keyboard/mouse events (Input capability),
     // parking until the compositor delivers some (M3-T3).
     WinReadInput = 0x25,
+    // tty_set_raw toggles the interactive terminal's line discipline (raw vs
+    // cooked) for in-terminal editors like nano. The new mode is reported to the
+    // host via `syscall-outcome.term-mode`.
+    TtySetRaw = 0x26,
 }
 
 impl Op {
@@ -143,6 +156,7 @@ impl Op {
             0x22 => Op::KWait,
             0x23 => Op::WinSurface,
             0x25 => Op::WinReadInput,
+            0x26 => Op::TtySetRaw,
             _ => return None,
         })
     }
@@ -403,7 +417,23 @@ pub fn dispatch(
         // wasmos_kernel compositor extension (M3).
         Op::WinSurface => win_surface(procs, pid, &mut r),
         Op::WinReadInput => win_read_input(procs, pid, &mut r),
+        Op::TtySetRaw => tty_set_raw(&mut r),
     }
+}
+
+/// `tty_set_raw(raw: u8)` — `[0x26][raw u8]`. Toggle the interactive terminal's
+/// line discipline. In raw mode the host stops local echo + line buffering and
+/// forwards every keystroke (including ESC sequences and control bytes) straight
+/// to the foreground process — what an in-terminal editor like nano needs. The
+/// new mode rides out on `term_mode`; the host applies it only for the current
+/// foreground pid and auto-restores cooked mode if the process exits while raw.
+/// Reply: `[errno u16]` (always SUCCESS — the toggle cannot fail in the kernel).
+fn tty_set_raw(r: &mut Reader) -> SyscallOutcome {
+    let raw = r.u8().unwrap_or(0);
+    let mode = if raw != 0 { 1 } else { 0 };
+    let mut out = SyscallOutcome::ready(Writer::new().u16(errno::SUCCESS).build());
+    out.term_mode = Some(mode);
+    out
 }
 
 fn fd_write(
@@ -439,6 +469,7 @@ fn fd_write(
                 spawn: None,
                 reap: Vec::new(),
                 net: None,
+                term_mode: None,
             }
         }
         DescKind::PipeWrite { id } => {
@@ -454,7 +485,7 @@ fn fd_write(
             let n = pipes.write(id, data);
             // Wake any readers parked on this pipe.
             let wakeups = procs.take_blocked_on(&WaitReason::PipeRead(id));
-            SyscallOutcome { reply: Some(resp(errno::SUCCESS, n as u32)), wakeups, term_output: Vec::new(), spawn: None, reap: Vec::new(), net: None }
+            SyscallOutcome { reply: Some(resp(errno::SUCCESS, n as u32)), wakeups, term_output: Vec::new(), spawn: None, reap: Vec::new(), net: None, term_mode: None }
         }
         DescKind::File { path } => {
             // /proc is a read-only synthetic tree.
@@ -472,6 +503,7 @@ fn fd_write(
                         spawn: None,
                         reap: Vec::new(),
                         net: None,
+                        term_mode: None,
                     },
                     // /dev/null, /dev/zero, /dev/random, /dev/urandom: accept + discard.
                     _ => SyscallOutcome::ready(resp(errno::SUCCESS, data.len() as u32)),
@@ -537,7 +569,7 @@ fn fd_read(
                 let data = pipes.read(id, len as usize);
                 // Draining the pipe may unblock writers parked on a full buffer.
                 let wakeups = procs.take_blocked_on(&WaitReason::PipeWrite(id));
-                SyscallOutcome { reply: Some(ok(&data)), wakeups, term_output: Vec::new(), spawn: None, reap: Vec::new(), net: None }
+                SyscallOutcome { reply: Some(ok(&data)), wakeups, term_output: Vec::new(), spawn: None, reap: Vec::new(), net: None, term_mode: None }
             } else if pipes.write_open(id) {
                 // Empty but writers remain — park until a write arrives.
                 procs.set_blocked(pid, WaitReason::PipeRead(id));
@@ -655,7 +687,7 @@ fn fd_close(
     } else {
         err_only(errno::BADF)
     };
-    SyscallOutcome { reply: Some(reply), wakeups, term_output: Vec::new(), spawn: None, reap: Vec::new(), net: None }
+    SyscallOutcome { reply: Some(reply), wakeups, term_output: Vec::new(), spawn: None, reap: Vec::new(), net: None, term_mode: None }
 }
 
 fn path_open(vfs: &mut Vfs, procs: &mut ProcTable, pid: u32, r: &mut Reader) -> Vec<u8> {
@@ -943,7 +975,7 @@ fn proc_exit(procs: &mut ProcTable, pipes: &mut PipeTable, pid: u32, r: &mut Rea
 
     // Wake any parent parked in wait() on this child.
     wakeups.extend(procs.take_blocked_on(&WaitReason::Wait(pid)));
-    SyscallOutcome { reply: Some(err_only(errno::SUCCESS)), wakeups, term_output: Vec::new(), spawn: None, reap: Vec::new(), net: None }
+    SyscallOutcome { reply: Some(err_only(errno::SUCCESS)), wakeups, term_output: Vec::new(), spawn: None, reap: Vec::new(), net: None, term_mode: None }
 }
 
 // ---------------------------------------------------------------------------
@@ -1154,6 +1186,11 @@ fn k_spawn(
     env.push(format!("PWD={cwd}"));
     procs.set_env(child, env);
 
+    // A foreground job's fd 0 is the terminal itself — the host routes keystrokes
+    // to it (not the shell, which is parked in `wait`) and pops it on exit. Pipe
+    // stages, redirected stdin, and background jobs do not take the terminal.
+    let terminal_stdin = matches!(specs.first(), Some(FdSpec::Terminal));
+
     // Configure stdio fds 0/1/2 from the shell's spec.
     for (idx, spec) in specs.into_iter().enumerate() {
         let fd = idx as u32;
@@ -1200,9 +1237,10 @@ fn k_spawn(
         reply: Some(resp(errno::SUCCESS, child)),
         wakeups: Vec::new(),
         term_output: Vec::new(),
-        spawn: Some(SpawnRequest { pid: child, image_path: path }),
+        spawn: Some(SpawnRequest { pid: child, image_path: path, terminal_stdin }),
         reap: Vec::new(),
         net: None,
+        term_mode: None,
     }
 }
 
@@ -1845,6 +1883,48 @@ mod tests {
         assert_eq!(procs.argv(child), vec!["echo".to_string(), "hi".to_string()]);
         assert_eq!(procs.fd(child, 1).unwrap().kind, DescKind::Terminal);
         assert_eq!(procs.fd(child, 0).unwrap().kind, DescKind::Stdin);
+        // fd 0 is the terminal → this is a foreground job; the host routes
+        // keystrokes to it (not the shell parked in wait()).
+        assert!(sr.terminal_stdin, "a terminal-stdin child is a foreground job");
+    }
+
+    /// KSPAWN request whose fd 0 reads a file (`<`), fd 1/2 the terminal — a
+    /// child that is NOT a terminal foreground job.
+    fn req_kspawn_filein(path: &str, argv: &[&str], infile: &str) -> Vec<u8> {
+        let mut w = Writer::new();
+        w.u8(Op::KSpawn as u8).bytes(path.as_bytes()).u32(argv.len() as u32);
+        for a in argv {
+            w.bytes(a.as_bytes());
+        }
+        w.u8(3).bytes(infile.as_bytes()).u8(0); // fd0: File read
+        w.u8(0); // fd1: terminal
+        w.u8(0); // fd2: terminal
+        w.build()
+    }
+
+    #[test]
+    fn kspawn_with_redirected_stdin_is_not_a_terminal_foreground_job() {
+        // `cmd < file` does not read the keyboard, so the host must NOT route
+        // terminal keystrokes to it: terminal_stdin is false.
+        let (mut vfs, mut procs, mut pipes, sh) = shell_setup();
+        let out = dispatch(&mut vfs, &mut procs, &mut pipes, sh, &req_kspawn_filein("/bin/echo", &["echo"], "/tmp/in"));
+        let sr = out.spawn.expect("spawn request");
+        assert!(!sr.terminal_stdin, "a file-redirected stdin is not a foreground terminal job");
+    }
+
+    #[test]
+    fn tty_set_raw_reports_the_new_mode_to_the_host() {
+        // The editor switches the terminal to raw and back; the kernel surfaces
+        // the new discipline via term_mode for the host to apply (1=raw, 0=cooked).
+        let (mut vfs, mut procs, mut pipes, sh) = shell_setup();
+        let raw = dispatch(&mut vfs, &mut procs, &mut pipes, sh, &Writer::new().u8(Op::TtySetRaw as u8).u8(1).build());
+        assert_eq!(read_u16(&raw.reply.expect("ready")), errno::SUCCESS);
+        assert_eq!(raw.term_mode, Some(1));
+        let cooked = dispatch(&mut vfs, &mut procs, &mut pipes, sh, &Writer::new().u8(Op::TtySetRaw as u8).u8(0).build());
+        assert_eq!(cooked.term_mode, Some(0));
+        // A syscall that doesn't touch the tty leaves the mode unchanged.
+        let other = dispatch(&mut vfs, &mut procs, &mut pipes, sh, &req_kspawn_term("/bin/echo", &["echo"]));
+        assert_eq!(other.term_mode, None);
     }
 
     #[test]

@@ -68,12 +68,16 @@ interface SyscallOutcome {
   reply: Uint8Array | undefined;
   wakeups: Uint32Array;
   termOutput: Uint8Array;
-  /** Set when a guest spawned a child the kworker must instantiate (M2-T5). */
-  spawn?: { pid: number; imagePath: string };
+  /** Set when a guest spawned a child the kworker must instantiate (M2-T5).
+   *  `terminalStdin` marks a foreground job whose fd 0 is the terminal. */
+  spawn?: { pid: number; imagePath: string; terminalStdin: boolean };
   /** pids the kworker must force-terminate (SIGKILL, M4-T5). */
   reap: Uint32Array;
   /** Set when a guest parked on net_request (M5-T6) — the kworker fetches the URL. */
   net?: { pid: number; url: string };
+  /** Set when a guest toggled the terminal line discipline via `tty_set_raw`:
+   *  `1` => raw, `0` => cooked, `undefined` => no change (jco maps `option<u8>`). */
+  termMode?: number;
 }
 
 interface KernelModule {
@@ -160,6 +164,41 @@ const parked = new Map<number, Uint8Array>();
 /** M3 compositor surfaces: `surface_id -> owning pid` (present authorization). */
 const surfaceOwners = new Map<number, number>();
 
+/**
+ * Terminal foreground-job stack (in-terminal editor support). The bottom is the
+ * interactive shell (seeded on `bindTerminal`); a child whose fd 0 is the
+ * terminal (a foreground job — `spawn-request.terminal-stdin`) is pushed on
+ * spawn and popped on exit. Terminal keystrokes route to the TOP, so a running
+ * foreground program (nano, `cat`, `grep`) receives input while the shell is
+ * parked in `wait()`. Empty until the terminal is bound.
+ */
+const terminalFg: number[] = [];
+/** True while the foreground program holds the terminal in raw line discipline
+ * (set via `tty_set_raw`). Reset to cooked when that program exits — so a crash
+ * never leaves the terminal echo-less and unusable. */
+let terminalRaw = false;
+
+/** The pid that should receive terminal keystrokes right now (foreground top). */
+function terminalForeground(): number | undefined {
+  return terminalFg[terminalFg.length - 1];
+}
+
+/** Apply a terminal line-discipline change and tell the main-thread terminal. */
+function setTerminalRaw(raw: boolean): void {
+  if (raw === terminalRaw) return;
+  terminalRaw = raw;
+  ctx.postMessage({ type: "termMode", raw });
+}
+
+/** A syscall may have toggled raw mode (`tty_set_raw`). Honor it ONLY for the
+ * current foreground process, so a background program cannot hijack the
+ * terminal's discipline. `term_mode` is `1` (raw) / `0` (cooked) / undefined. */
+function applyTermMode(pid: number, termMode: number | undefined): void {
+  if (termMode === undefined) return;
+  if (pid !== terminalForeground()) return;
+  setTerminalRaw(termMode === 1);
+}
+
 /** Drive one syscall: complete it now, or park it; then process its wakeups. */
 function driveSyscall(pid: number, request: Uint8Array): void {
   const rt = procs.get(pid);
@@ -170,6 +209,7 @@ function driveSyscall(pid: number, request: Uint8Array): void {
   }
   if (outcome.spawn) handleSpawnRequest(outcome.spawn);
   if (outcome.net) handleNetRequest(outcome.net);
+  applyTermMode(pid, outcome.termMode);
   if (outcome.reply === undefined) {
     parked.set(pid, request); // park — do NOT complete the ring
   } else {
@@ -202,6 +242,7 @@ function processWakeups(wakeups: Uint32Array | number[]): void {
     }
     if (outcome.spawn) handleSpawnRequest(outcome.spawn);
     if (outcome.net) handleNetRequest(outcome.net);
+    applyTermMode(w, outcome.termMode);
     if (outcome.reply === undefined) {
       parked.set(w, request); // parked again (e.g. wait on a not-yet-exited child)
     } else {
@@ -301,6 +342,17 @@ function onProcExit(pid: number, msg: ExitMessage): void {
 
   for (const resolve of rt.waiters) resolve(rt.exitCode);
   rt.waiters = [];
+
+  // If this was a terminal foreground job, pop it so keystrokes fall back to the
+  // job beneath it (ultimately the shell). If it held the terminal in raw mode,
+  // restore cooked discipline — otherwise a crashed editor would leave the
+  // terminal with no echo and swallowing keys (brick prevention).
+  const fgIdx = terminalFg.lastIndexOf(pid);
+  if (fgIdx !== -1) {
+    const wasForeground = fgIdx === terminalFg.length - 1;
+    terminalFg.splice(fgIdx, 1);
+    if (wasForeground && terminalRaw) setTerminalRaw(false);
+  }
 
   // Drop this process's surface ownership and tell the main thread so the
   // compositor closes any windows it owned (crash containment, FR-34).
@@ -466,9 +518,12 @@ function spawn(spec: SpawnSpec, wasmBytes: ArrayBuffer): number {
  * PID/fds/caps and returned a `spawn` request. Read its image from the VFS and
  * bring it to life.
  */
-function handleSpawnRequest(req: { pid: number; imagePath: string }): void {
+function handleSpawnRequest(req: { pid: number; imagePath: string; terminalStdin: boolean }): void {
   const image = requireControl().fsRead(req.imagePath);
   instantiateProcess(req.pid, image);
+  // A foreground job (its fd 0 is the terminal) becomes the new keystroke target
+  // until it exits; the shell that spawned it is parked in wait() beneath it.
+  if (req.terminalStdin) terminalFg.push(req.pid);
 }
 
 /** Perform a guest's brokered network request (M5-T6): the kernel parked the
@@ -558,6 +613,18 @@ ctx.onmessage = async (ev: MessageEvent) => {
         result = undefined;
         break;
       }
+      case "terminalInput": {
+        // Deliver keystrokes to the current terminal foreground job (the stack
+        // top), so a running editor/filter gets input while the shell waits. No
+        // foreground yet (terminal not bound) → drop the bytes.
+        const target = terminalForeground();
+        if (target !== undefined) {
+          const wakeups = requireControl().deliverStdin(target, args.bytes as Uint8Array);
+          processWakeups(wakeups);
+        }
+        result = undefined;
+        break;
+      }
       case "deliverInput": {
         // Deliver brokered keyboard/mouse to the focused window's process (M3-T3);
         // wake any parked win_read_input.
@@ -568,6 +635,12 @@ ctx.onmessage = async (ev: MessageEvent) => {
       }
       case "bindTerminal":
         requireControl().bindTerminal(args.pid as number);
+        // (Re)seat the foreground stack on the interactive shell: keystrokes go
+        // here whenever no foreground job is running. A respawned shell rebinds,
+        // resetting any stale foreground/raw state to a clean cooked prompt.
+        terminalFg.length = 0;
+        terminalFg.push(args.pid as number);
+        if (terminalRaw) setTerminalRaw(false);
         result = undefined;
         break;
       case "kill":

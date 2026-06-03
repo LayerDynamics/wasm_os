@@ -11,9 +11,9 @@ fn main() {
     }
     let mut code = 0;
     for path in files {
-        // create(true) makes the file if absent; without truncate(true) an existing
-        // file keeps its contents.
-        if let Err(e) = OpenOptions::new().create(true).write(true).open(&path) {
+        // create(true) makes the file if absent; truncate(false) means an existing
+        // file keeps its contents (touch must never clobber data).
+        if let Err(e) = OpenOptions::new().create(true).write(true).truncate(false).open(&path) {
             eprintln!("touch: cannot touch '{path}': {e}");
             code = 1;
         }

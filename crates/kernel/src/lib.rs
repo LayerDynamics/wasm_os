@@ -200,9 +200,12 @@ mod component {
                 reply: out.reply,
                 wakeups: out.wakeups,
                 term_output: out.term_output,
-                spawn: out.spawn.map(|s| WSpawnRequest { pid: s.pid, image_path: s.image_path }),
+                spawn: out
+                    .spawn
+                    .map(|s| WSpawnRequest { pid: s.pid, image_path: s.image_path, terminal_stdin: s.terminal_stdin }),
                 reap: out.reap,
                 net: out.net.map(|n| WNetRequest { pid: n.pid, url: n.url }),
+                term_mode: out.term_mode,
             }
         }
 

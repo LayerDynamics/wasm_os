@@ -89,6 +89,14 @@ interface process {
   /// the response body. Requires the Net capability (default-deny). Blocks until
   /// the fetch completes; an error result carries the kernel errno (IO on failure).
   net-request: func(url: string) -> result<list<u8>, u16>;
+
+  /// Switch the interactive terminal between raw and cooked line discipline — what
+  /// an in-terminal editor like `nano` uses to take over the screen. In raw mode
+  /// the host stops local echo + line buffering and forwards every keystroke
+  /// (printable, control bytes, and the arrow keys' ESC sequences) verbatim to the
+  /// foreground process; cooked mode restores the shell line discipline. The new
+  /// mode is reported host-side via `syscall-outcome.term-mode`. Returns the errno.
+  tty-set-raw: func(raw: bool) -> u16;
 }
 
 /// The wasmos_kernel compositor extension (M3) — the guest surface + input

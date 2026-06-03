@@ -73,6 +73,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "nano"
+version = "0.0.0"
+dependencies = [
+ "wasmos-sys",
+]
+
+[[package]]
 name = "paint"
 version = "0.0.0"
 dependencies = [
