@@ -1,6 +1,8 @@
 //! The operations over object bytes: read, verify, write-in-place, repack, save.
 
 use crate::format::{locate, Error, Header};
+use crate::mint::mint as mint_obj;
+use crate::Tier;
 
 /// Validate the bbs0 header + window bounds; returns the parsed header.
 pub fn verify(obj: &[u8]) -> Result<Header, Error> {
@@ -46,6 +48,29 @@ pub fn write_in_place(obj: &mut [u8], content: &[u8]) -> Result<(), Error> {
     let cl = loc.bbs0_content_len_off;
     obj[cl..cl + 4].copy_from_slice(&len.to_le_bytes());
     Ok(())
+}
+
+/// Emit a new object at the smallest tier that fits `content`, carrying it forward.
+pub fn repack(obj: &[u8], content: &[u8]) -> Result<Vec<u8>, Error> {
+    let ct = verify(obj)?.content_type;
+    let tier = Tier::for_len(content.len() as u32 + 4).ok_or(Error::TooLarge)?;
+    let mut fresh = mint_obj(tier, ct);
+    write_in_place(&mut fresh, content)?;
+    Ok(fresh)
+}
+
+/// Save content into `obj`: in place if it fits (Ok(None)), else re-pack and replace
+/// `obj` with the larger object (Ok(Some(new_bytes))).
+pub fn save(obj: &mut Vec<u8>, content: &[u8]) -> Result<Option<Vec<u8>>, Error> {
+    let cap = verify(obj)?.capacity as usize;
+    if content.len() <= cap - 4 {
+        write_in_place(obj, content)?;
+        Ok(None)
+    } else {
+        let fresh = repack(obj, content)?;
+        *obj = fresh.clone();
+        Ok(Some(fresh))
+    }
 }
 
 #[cfg(test)]
@@ -108,5 +133,23 @@ mod tests {
         let mut obj = mint(Tier::B256, 0);
         let too_big = vec![b'x'; 256]; // > capacity-4
         assert!(matches!(write_in_place(&mut obj, &too_big), Err(crate::Error::TooLarge)));
+    }
+
+    #[test]
+    fn save_repacks_when_content_exceeds_capacity() {
+        let mut obj = mint(Tier::B256, 0); // content_capacity = 252
+        let content = vec![b'z'; 2000]; // 2000+4 > K1(1024) -> smallest fit is K4 (4096)
+        let res = save(&mut obj, &content).unwrap();
+        assert!(res.is_some(), "should have re-packed");
+        assert_eq!(verify(&obj).unwrap().capacity, 4096);
+        assert_eq!(read(&obj).unwrap(), content);
+    }
+
+    #[test]
+    fn save_in_place_when_fits() {
+        let mut obj = mint(Tier::K4, 0);
+        let res = save(&mut obj, b"small").unwrap();
+        assert!(res.is_none(), "should NOT re-pack");
+        assert_eq!(read(&obj).unwrap(), b"small");
     }
 }
