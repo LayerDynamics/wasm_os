@@ -82,3 +82,39 @@ test("System Monitor renders the process table and kills the selected process (F
     )
     .toMatch(/zombie|gone/);
 });
+
+test("System Monitor kills via the keyboard (arrow-select + k), no mouse needed", async ({ page }) => {
+  // Regression: the cursor defaulted to row 0 = init (pid 1), which is protected, so
+  // pressing k right after launch silently did nothing — the keys looked broken. The
+  // selection now seeds on the first killable process, and arrow keys navigate.
+  await ready(page);
+
+  const victim = await page.evaluate(async () => {
+    const w = (window as unknown as Win).__wasmos;
+    const bytes = await (await fetch("/packages/host/guests/sigdemo.wasm")).arrayBuffer();
+    return w.control.spawn(bytes, { name: "sigdemo", grantFsSubtree: "/" });
+  });
+  expect(victim).toBeGreaterThan(0);
+
+  await page.locator(".wasmos-launcher").click();
+  await page.locator(".wasmos-launch-item", { hasText: "Monitor" }).click();
+  const canvas: Locator = page.locator(".wasmos-window canvas").last();
+  await expect(canvas).toBeVisible({ timeout: 10_000 });
+  await page.waitForTimeout(600); // the monitor is focused by its launch and rendered
+
+  // Navigate by keyboard to the victim's row: clamp to the top, then arrow down.
+  const procs = (await listProcs(page)).sort((a, b) => a.pid - b.pid);
+  const idx = procs.findIndex((p) => p.pid === victim);
+  expect(idx).toBeGreaterThanOrEqual(0);
+  for (let i = 0; i < 20; i++) await page.keyboard.press("ArrowUp");
+  await page.waitForTimeout(100);
+  for (let i = 0; i < idx; i++) {
+    await page.keyboard.press("ArrowDown");
+    await page.waitForTimeout(30);
+  }
+  await page.keyboard.press("k");
+
+  await expect
+    .poll(async () => (await listProcs(page)).find((x) => x.pid === victim)?.state ?? "gone", { timeout: 20_000 })
+    .toMatch(/zombie|gone/);
+});

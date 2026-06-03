@@ -56,6 +56,13 @@ impl State {
     fn selected_pid(&self) -> Option<u32> {
         self.procs.get(self.selected).map(|p| p.pid)
     }
+
+    /// Index of the first process that can actually be signalled (i.e. not init,
+    /// pid 1, which is protected). Used to seed the selection so k/t/r act on a real
+    /// target out of the box instead of silently no-op'ing on init.
+    fn first_killable(&self) -> usize {
+        self.procs.iter().position(|p| p.pid != 1).unwrap_or(0)
+    }
 }
 
 fn state_color(s: ProcState) -> Color {
@@ -70,7 +77,7 @@ fn draw(fb: &mut Framebuffer, st: &State) {
     fb.clear(BG);
     fb.fill_rect(0, 0, W as i32, HEADER_H, HEADER_BG);
     fb.text(6, 5, &format!("System Monitor — {} processes", st.procs.len()), FG);
-    fb.text(6, 19, "[k] kill  [t] term  [r] renice+   up/dn select", DIM);
+    fb.text(6, 19, "[k]ill  [t]erm  [r]enice   \u{2191}/\u{2193} select   (init pid 1 is protected)", DIM);
 
     // Column header.
     let cy = HEADER_H;
@@ -134,6 +141,9 @@ fn main() {
     let mut fb = Framebuffer::new(W, H);
     let mut st = State { procs: Vec::new(), selected: 0 };
     st.refresh();
+    // Seed the cursor on a killable process (not the protected init) so the first
+    // k/t/r keypress acts on a real target.
+    st.selected = st.first_killable();
     draw(&mut fb, &st);
     win_present(surface, fb.bytes());
 
