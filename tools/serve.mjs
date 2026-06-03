@@ -22,7 +22,9 @@ createServer(async (req, res) => {
       "Content-Type": MIME[extname(file)] ?? "application/octet-stream",
       "Cross-Origin-Opener-Policy": "same-origin",
       "Cross-Origin-Embedder-Policy": "require-corp",
-      "Cross-Origin-Resource-Policy": "same-origin",
+      // cross-origin so the app can be embedded in a cross-origin iframe while
+      // staying internally cross-origin isolated (matches tools/prod-server.mjs).
+      "Cross-Origin-Resource-Policy": "cross-origin",
       "Cache-Control": "no-store",
     });
     res.end(body);

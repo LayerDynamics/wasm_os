@@ -25,6 +25,9 @@ const MIME: Record<string, string> = {
 const ISOLATION_HEADERS = {
   "Cross-Origin-Opener-Policy": "same-origin",
   "Cross-Origin-Embedder-Policy": "require-corp",
+  // cross-origin so the document itself can be embedded in a cross-origin iframe
+  // while staying internally isolated (matches tools/prod-server.mjs).
+  "Cross-Origin-Resource-Policy": "cross-origin",
 };
 
 /** Serve the repo-root build artifacts (kernel bindings, workers, guests, emulator
@@ -48,7 +51,9 @@ function repoAssets(): Plugin {
       // Module workers (kernel-worker etc.) created in a COEP:require-corp document
       // require the worker SCRIPT response to carry COEP+CORP too — not just CORP —
       // else the browser blocks it (ERR_BLOCKED_BY_RESPONSE). Mirror serve.mjs.
-      res.setHeader("Cross-Origin-Resource-Policy", "same-origin");
+      // CORP cross-origin allows cross-origin iframe embedding (the app stays
+      // internally isolated via COOP/COEP). Mirrors tools/prod-server.mjs.
+      res.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
       res.setHeader("Cross-Origin-Embedder-Policy", "require-corp");
       res.setHeader("Cross-Origin-Opener-Policy", "same-origin");
       res.setHeader("Cache-Control", "no-store");

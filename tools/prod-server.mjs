@@ -45,7 +45,11 @@ function setBaseHeaders(res, contentType) {
   // Cross-origin isolation — required for SharedArrayBuffer in every document/worker.
   res.setHeader("Cross-Origin-Opener-Policy", "same-origin");
   res.setHeader("Cross-Origin-Embedder-Policy", "require-corp");
-  res.setHeader("Cross-Origin-Resource-Policy", "same-origin");
+  // CORP cross-origin (not same-origin) so WASM_OS can be embedded as a
+  // cross-origin <iframe> in another COEP:require-corp page (e.g. the portfolio
+  // overlay). COOP/COEP stay same-origin/require-corp, so the iframe is STILL
+  // cross-origin isolated internally and SharedArrayBuffer remains defined.
+  res.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
 }
 
 /** Resolve a request URL to an on-disk file, or null if it escapes its base/404s. */
