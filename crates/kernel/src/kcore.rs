@@ -295,6 +295,9 @@ impl KernelCore {
                 if req.first() == Some(&0x10) {
                     out.wakeups.extend(self.close_proc_channels(pid));
                     self.shm.free_owned(pid);
+                    // Drop any brokered-net response queued for a process that exits
+                    // before collecting it, so the map doesn't retain dead pids.
+                    self.net_responses.remove(&pid);
                 }
                 out
             }
@@ -439,7 +442,10 @@ impl KernelCore {
             return syscall::SyscallOutcome::ready(syscall::errno::INVAL.to_le_bytes().to_vec());
         }
         let size = u32::from_le_bytes([req[1], req[2], req[3], req[4]]) as usize;
-        let id = self.shm.create(pid, size);
+        let Some(id) = self.shm.create(pid, size) else {
+            // Per-process region cap reached — refuse rather than grow without limit.
+            return syscall::SyscallOutcome::ready(syscall::errno::NOSPC.to_le_bytes().to_vec());
+        };
         let mut b = syscall::errno::SUCCESS.to_le_bytes().to_vec();
         b.extend_from_slice(&id.to_le_bytes());
         syscall::SyscallOutcome::ready(b)
@@ -553,6 +559,7 @@ impl KernelCore {
                     syscall::dispatch(&mut self.vfs, &mut self.procs, &mut self.pipes, target, &exit_req);
                 out.wakeups.extend(self.close_proc_channels(target));
                 self.shm.free_owned(target);
+                self.net_responses.remove(&target);
                 out.reap.push(target);
                 // The forged exit's SUCCESS reply belongs to `target`'s (now dead)
                 // ring; replace it with this caller's kill reply.

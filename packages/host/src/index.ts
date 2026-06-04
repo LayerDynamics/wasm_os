@@ -64,6 +64,10 @@ async function loadBin(control: BootResult["control"], name: string): Promise<vo
  * text/escape sequence a serial console expects (M5-T4). Only key-down produces
  * output; key-up and unmapped keys yield "". */
 function keyEventToConsoleText(bytes: Uint8Array): string {
+  // The record is a fixed 12 bytes (kind @0, keycode u32 @6). Guard the length so a
+  // short/malformed buffer returns "" instead of throwing a RangeError out of the
+  // (fire-and-forget) input delivery path.
+  if (bytes.byteLength < 12) return "";
   const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const kind = dv.getUint8(0);
   if (kind !== 4) return ""; // EV_KEY_DOWN only

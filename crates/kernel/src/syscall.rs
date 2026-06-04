@@ -515,10 +515,21 @@ fn fd_write(
             // O_APPEND (fd_fdstat_set_flags): every write lands at the current end
             // of file, regardless of the descriptor's seek offset.
             let append = procs.fd_flags(pid, fd) & fdflags::APPEND != 0;
+            // Use try_from (matching the fd_read path) rather than `as usize`, which
+            // would silently truncate a 64-bit offset on the 32-bit wasm target.
             let offset = if append {
                 vfs.read(&path).map(|c| c.len()).unwrap_or(0)
             } else {
-                desc.offset as usize
+                match usize::try_from(desc.offset) {
+                    Ok(o) => o,
+                    Err(_) => return SyscallOutcome::ready(resp(errno::INVAL, 0)),
+                }
+            };
+            // Bound the resulting file size so a sparse write at a huge offset cannot
+            // force an unbounded zero-fill allocation (NOSPC = "no space left").
+            let end = match offset.checked_add(data.len()) {
+                Some(e) if e <= MAX_FILE_SIZE => e,
+                _ => return SyscallOutcome::ready(resp(errno::NOSPC, 0)),
             };
             let mut content = match vfs.read(&path) {
                 Ok(c) => c,
@@ -528,7 +539,6 @@ fn fd_write(
             if content.len() < offset {
                 content.resize(offset, 0);
             }
-            let end = offset + data.len();
             if content.len() < end {
                 content.resize(end, 0);
             }
@@ -547,6 +557,21 @@ fn fd_write(
     }
 }
 
+/// Upper bound on the bytes a single `fd_read` may return. The reply travels back
+/// over the SharedArrayBuffer ring whose response region is 64 KiB, so a larger read
+/// could never be delivered. Clamping the guest-supplied length here also prevents a
+/// hostile length (e.g. `u32::MAX`) from (a) overflowing the offset arithmetic below
+/// into a reversed-range slice panic, or (b) forcing an unbounded `/dev/zero`
+/// allocation in the kernel — both of which would take down the whole OS.
+const MAX_READ_LEN: usize = 64 * 1024 - 64;
+
+/// Upper bound on a VFS file's size. `fd_write` lets a guest seek to an arbitrary
+/// offset and then write, growing the backing buffer to `offset + len` via a
+/// zero-fill `resize`. Without a ceiling a 1-byte write at a near-`usize::MAX`
+/// offset would try to allocate gigabytes of zeros in the kernel worker (OOM →
+/// whole-OS abort). 64 MiB is far above any real document this OS edits.
+const MAX_FILE_SIZE: usize = 64 * 1024 * 1024;
+
 fn fd_read(
     vfs: &mut Vfs,
     procs: &mut ProcTable,
@@ -557,6 +582,8 @@ fn fd_read(
     let (Some(fd), Some(len)) = (r.u32(), r.u32()) else {
         return SyscallOutcome::ready(Writer::new().u16(errno::INVAL).bytes(&[]).build());
     };
+    // Clamp once, up front: every read path below uses this bounded length.
+    let len = (len as usize).min(MAX_READ_LEN);
     let ok = |data: &[u8]| Writer::new().u16(errno::SUCCESS).bytes(data).build();
     let err = |e: u16| Writer::new().u16(e).bytes(&[]).build();
 
@@ -566,7 +593,7 @@ fn fd_read(
     match desc.kind.clone() {
         DescKind::PipeRead { id } => {
             if pipes.buf_len(id) > 0 {
-                let data = pipes.read(id, len as usize);
+                let data = pipes.read(id, len);
                 // Draining the pipe may unblock writers parked on a full buffer.
                 let wakeups = procs.take_blocked_on(&WaitReason::PipeWrite(id));
                 SyscallOutcome { reply: Some(ok(&data)), wakeups, term_output: Vec::new(), spawn: None, reap: Vec::new(), net: None, term_mode: None }
@@ -581,7 +608,7 @@ fn fd_read(
         DescKind::Stdin => {
             if procs.stdin_len(pid) > 0 {
                 // Data buffered — return up to `len` bytes immediately.
-                let data = procs.read_stdin(pid, len as usize);
+                let data = procs.read_stdin(pid, len);
                 SyscallOutcome::ready(ok(&data))
             } else if procs.stdin_is_eof(pid) {
                 SyscallOutcome::ready(ok(&[])) // closed → EOF
@@ -595,7 +622,7 @@ fn fd_read(
             // /dev devices return their bytes directly — no seek offset is applied, so
             // /dev/zero and /dev/urandom are endless and /dev/null reads as EOF.
             if crate::devfs::is_dev(&path) {
-                return match vfs.dev_read(&path, len as usize) {
+                return match vfs.dev_read(&path, len) {
                     Some(bytes) => SyscallOutcome::ready(ok(&bytes)),
                     None => SyscallOutcome::ready(err(errno::NOENT)),
                 };
@@ -616,7 +643,7 @@ fn fd_read(
                 return SyscallOutcome::ready(err(errno::INVAL));
             };
             let start = offset.min(content.len());
-            let end = (start + len as usize).min(content.len());
+            let end = start.saturating_add(len).min(content.len());
             let slice = &content[start..end];
             if let Some(d) = procs.fd_mut(pid, fd) {
                 d.offset = end as u64;
@@ -650,7 +677,7 @@ fn fd_seek(vfs: &mut Vfs, procs: &mut ProcTable, pid: u32, r: &mut Reader) -> Ve
         whence::END => size,
         _ => return resp(errno::INVAL, 0),
     };
-    let new = (base + offset).max(0) as u64;
+    let new = base.saturating_add(offset).max(0) as u64;
     if let Some(d) = procs.fd_mut(pid, fd) {
         d.offset = new;
     }
@@ -1267,6 +1294,10 @@ fn k_pipe(procs: &mut ProcTable, pipes: &mut PipeTable, pid: u32, _r: &mut Reade
 /// Largest surface dimension the kernel will allocate (guards host SAB OOM).
 const MAX_SURFACE_DIM: u32 = 4096;
 
+/// Most surfaces a single process may own at once. Without this a GPU-capable
+/// process could loop on `win_surface` and exhaust surface-id space / host SABs.
+const MAX_SURFACES_PER_PID: usize = 64;
+
 /// `wasmos_kernel.win_surface(width, height)` — allocate a compositor surface
 /// (M3, FR-23). Requires the Gpu capability (default-deny, FR-31). The kernel is
 /// the surface-id authority; the owning process worker allocates the framebuffer
@@ -1282,6 +1313,9 @@ fn win_surface(procs: &mut ProcTable, pid: u32, r: &mut Reader) -> SyscallOutcom
     };
     if w == 0 || h == 0 || w > MAX_SURFACE_DIM || h > MAX_SURFACE_DIM {
         return SyscallOutcome::ready(resp(errno::INVAL, 0));
+    }
+    if procs.surface_count(pid) >= MAX_SURFACES_PER_PID {
+        return SyscallOutcome::ready(resp(errno::NOSPC, 0));
     }
     let id = procs.alloc_surface(pid);
     SyscallOutcome::ready(resp(errno::SUCCESS, id))
@@ -1315,6 +1349,11 @@ fn k_wait(procs: &mut ProcTable, pid: u32, r: &mut Reader) -> SyscallOutcome {
     let resp = |e: u16, code: i32| Writer::new().u16(e).u32(code as u32).build();
     let Some(child) = r.u32() else { return SyscallOutcome::ready(resp(errno::INVAL, 0)) };
     if let Some(code) = procs.exit_code(child) {
+        // POSIX reap: the parent has now collected the child's status, so the zombie
+        // can leave the table. Without this, every finished process (e.g. each stage
+        // of a shell pipeline) lingers forever — the table grows unbounded and the
+        // linear scans behind get/get_mut/has_cap degrade every later syscall.
+        procs.reap(child);
         SyscallOutcome::ready(resp(errno::SUCCESS, code))
     } else if procs.get(child).is_none() {
         SyscallOutcome::ready(resp(errno::NOENT, 0)) // no such child
@@ -2042,6 +2081,29 @@ mod tests {
         let resp = drive(&mut vfs, &mut procs, &mut pipes, sh, &req_kwait(child));
         assert_eq!(read_u16(&resp), errno::SUCCESS);
         assert_eq!(read_u32_at(&resp, 2), 0); // exit code
+    }
+
+    #[test]
+    fn kwait_reaps_the_zombie_so_the_table_does_not_grow_unbounded() {
+        let (mut vfs, mut procs, mut pipes, sh) = shell_setup();
+        let before = procs.count();
+        let child = read_u32_at(
+            &dispatch(&mut vfs, &mut procs, &mut pipes, sh, &req_kspawn_term("/bin/echo", &["echo"]))
+                .reply
+                .unwrap(),
+            2,
+        );
+        // Child exits → zombie present in the table.
+        dispatch(&mut vfs, &mut procs, &mut pipes, child, &req_proc_exit(0));
+        assert_eq!(procs.get(child).map(|p| p.state), Some(ProcState::Zombie));
+        // Parent collects the status → the zombie is reaped, restoring the table size.
+        let resp = drive(&mut vfs, &mut procs, &mut pipes, sh, &req_kwait(child));
+        assert_eq!(read_u16(&resp), errno::SUCCESS);
+        assert!(procs.get(child).is_none(), "zombie must be reaped after wait()");
+        assert_eq!(procs.count(), before, "table returns to its pre-spawn size");
+        // Waiting again on the reaped pid is a clean no-such-child, not a hang.
+        let again = drive(&mut vfs, &mut procs, &mut pipes, sh, &req_kwait(child));
+        assert_eq!(read_u16(&again), errno::NOENT);
     }
 
     // --- M3: compositor surfaces (win_surface) ---

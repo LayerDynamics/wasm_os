@@ -134,19 +134,31 @@ fn tokenize(src: &str) -> Vec<String> {
     toks
 }
 
+/// Deepest nesting the parser/evaluator will descend before reporting an error.
+/// Without it, input like `(((((…` recurses one native frame per `(` and traps the
+/// whole process on a stack overflow — the REPL is supposed to *report* errors, not
+/// die. Each eval level is several native frames and the guest's wasi stack is ~1 MiB
+/// (no `-z stack-size` override), so this stays conservative: 128 gives ~6x headroom
+/// over the deepest realistic program here (`fib 20` recurses ~20) while keeping a
+/// wide margin below the on-target stack limit.
+const MAX_DEPTH: usize = 128;
+
 /// Parse all top-level forms from `src`.
 pub fn parse(src: &str) -> Result<Vec<Value>, String> {
     let toks = tokenize(src);
     let mut pos = 0;
     let mut forms = Vec::new();
     while pos < toks.len() {
-        let v = parse_form(&toks, &mut pos)?;
+        let v = parse_form(&toks, &mut pos, 0)?;
         forms.push(v);
     }
     Ok(forms)
 }
 
-fn parse_form(toks: &[String], pos: &mut usize) -> Result<Value, String> {
+fn parse_form(toks: &[String], pos: &mut usize, depth: usize) -> Result<Value, String> {
+    if depth > MAX_DEPTH {
+        return Err("input nested too deeply".to_string());
+    }
     if *pos >= toks.len() {
         return Err("unexpected end of input".to_string());
     }
@@ -156,7 +168,7 @@ fn parse_form(toks: &[String], pos: &mut usize) -> Result<Value, String> {
         "(" => {
             let mut items = Vec::new();
             while *pos < toks.len() && toks[*pos] != ")" {
-                items.push(parse_form(toks, pos)?);
+                items.push(parse_form(toks, pos, depth + 1)?);
             }
             if *pos >= toks.len() {
                 return Err("missing )".to_string());
@@ -165,7 +177,7 @@ fn parse_form(toks: &[String], pos: &mut usize) -> Result<Value, String> {
             Ok(list_from(items))
         }
         ")" => Err("unexpected )".to_string()),
-        "'" => Ok(list_from(vec![Value::sym("quote"), parse_form(toks, pos)?])),
+        "'" => Ok(list_from(vec![Value::sym("quote"), parse_form(toks, pos, depth + 1)?])),
         _ => Ok(atom(t)),
     }
 }
@@ -230,7 +242,35 @@ impl Value {
 // Evaluator
 // ---------------------------------------------------------------------------
 
+thread_local! {
+    /// Current native recursion depth of `eval`. A runaway recursive lambda
+    /// (e.g. `(define (loop) (loop)) (loop)`) would otherwise blow the wasi stack
+    /// and trap the process instead of returning a reportable error.
+    static EVAL_DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// RAII counter for the `eval` recursion depth; decrements on scope exit (including
+/// the `?` early-returns), so the count stays accurate across errors.
+struct DepthGuard;
+impl Drop for DepthGuard {
+    fn drop(&mut self) {
+        EVAL_DEPTH.with(|d| d.set(d.get().saturating_sub(1)));
+    }
+}
+fn enter_eval() -> Result<DepthGuard, String> {
+    EVAL_DEPTH.with(|d| {
+        let n = d.get() + 1;
+        if n > MAX_DEPTH {
+            Err("evaluation nested too deeply (possible infinite recursion)".to_string())
+        } else {
+            d.set(n);
+            Ok(DepthGuard)
+        }
+    })
+}
+
 pub fn eval(expr: &Value, env: &Env) -> Result<Value, String> {
+    let _depth = enter_eval()?;
     match expr {
         Value::Int(_)
         | Value::Float(_)
@@ -837,6 +877,22 @@ mod tests {
         assert_eq!(format!("{}", run("(fact 10)", &env).unwrap().0), "3628800");
         run("(define (fib n) (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2)))))", &env).unwrap();
         assert_eq!(format!("{}", run("(fib 15)", &env).unwrap().0), "610");
+    }
+
+    #[test]
+    fn pathological_input_errors_instead_of_trapping() {
+        let env = global_env();
+        // Deeply nested parens must be *reported* by the parser, never overflow the
+        // native stack and trap the whole process.
+        let deep = "(".repeat(5_000) + &")".repeat(5_000);
+        assert!(run(&deep, &env).is_err());
+        // Unbounded self-recursion must hit the evaluator's depth guard and return
+        // an error rather than trapping.
+        run("(define (loop) (loop))", &env).unwrap();
+        assert!(run("(loop)", &env).is_err());
+        // The depth counter unwinds cleanly on error: ordinary recursion still works.
+        run("(define (fact n) (if (= n 0) 1 (* n (fact (- n 1)))))", &env).unwrap();
+        assert_eq!(format!("{}", run("(fact 10)", &env).unwrap().0), "3628800");
     }
 
     #[test]

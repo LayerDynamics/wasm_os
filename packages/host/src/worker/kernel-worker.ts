@@ -207,17 +207,18 @@ function driveSyscall(pid: number, request: Uint8Array): void {
   if (outcome.termOutput.length > 0) {
     ctx.postMessage({ type: "output", pid, bytes: outcome.termOutput });
   }
-  if (outcome.spawn) handleSpawnRequest(outcome.spawn);
-  if (outcome.net) handleNetRequest(outcome.net);
   applyTermMode(pid, outcome.termMode);
   if (outcome.reply === undefined) {
     parked.set(pid, request); // park — do NOT complete the ring
   } else {
     rt.server.complete(outcome.reply);
   }
-  // SIGKILL (M4-T5): the kernel zombified these; tear down their workers. Done
-  // AFTER completing this caller's reply so a self-kill's reply lands first.
-  for (const r of outcome.reap) killProcess(r);
+  // Side-effects run AFTER the caller's reply is completed: a failing child spawn
+  // (e.g. an unreadable image) must not strand the parent blocked in the ring, and
+  // a self-kill's reply must land before its worker is torn down.
+  if (outcome.spawn) handleSpawnRequest(outcome.spawn);
+  if (outcome.net) handleNetRequest(outcome.net);
+  for (const r of outcome.reap) killProcess(r); // SIGKILL reap (M4-T5)
   processWakeups(outcome.wakeups);
 }
 
@@ -240,14 +241,16 @@ function processWakeups(wakeups: Uint32Array | number[]): void {
     if (outcome.termOutput.length > 0) {
       ctx.postMessage({ type: "output", pid: w, bytes: outcome.termOutput });
     }
-    if (outcome.spawn) handleSpawnRequest(outcome.spawn);
-    if (outcome.net) handleNetRequest(outcome.net);
     applyTermMode(w, outcome.termMode);
     if (outcome.reply === undefined) {
       parked.set(w, request); // parked again (e.g. wait on a not-yet-exited child)
     } else {
       rt.server.complete(outcome.reply);
     }
+    // Side-effects after the reply (see driveSyscall) so a failed spawn can't strand
+    // the re-driven caller.
+    if (outcome.spawn) handleSpawnRequest(outcome.spawn);
+    if (outcome.net) handleNetRequest(outcome.net);
     for (const r of outcome.reap) killProcess(r); // SIGKILL reap (M4-T5)
     for (const nw of outcome.wakeups) if (!queue.includes(nw)) queue.push(nw);
   }
@@ -358,6 +361,12 @@ function onProcExit(pid: number, msg: ExitMessage): void {
   // compositor closes any windows it owned (crash containment, FR-34).
   for (const [sid, owner] of surfaceOwners) if (owner === pid) surfaceOwners.delete(sid);
   ctx.postMessage({ type: "exit", pid });
+
+  // Free the runtime entry — its ~128 KiB ring SAB and dead RingServer would
+  // otherwise leak for the whole session (every short-lived shell command leaks
+  // one). Waiters are already resolved above; a late waitFor() falls back to the
+  // kernel's recorded exit code via the !rt branch.
+  procs.delete(pid);
 }
 
 /** Host-initiated kill (M3): close a window → reap its process. Records the exit
@@ -441,6 +450,9 @@ function reapEmulator(pid: number, emu: EmulatorRuntime): void {
   emu.worker.terminate();
   for (const [sid, owner] of surfaceOwners) if (owner === pid) surfaceOwners.delete(sid);
   ctx.postMessage({ type: "exit", pid });
+  // Free the runtime entry — otherwise the EmulatorRuntime (including its
+  // accumulated serial buffer) is retained for the rest of the session.
+  emulators.delete(pid);
 }
 
 /**
@@ -529,24 +541,54 @@ function spawnByPath(spec: SpawnSpec, imagePath: string): number {
  * bring it to life.
  */
 function handleSpawnRequest(req: { pid: number; imagePath: string; terminalStdin: boolean }): void {
-  const image = requireControl().fsRead(req.imagePath);
-  instantiateProcess(req.pid, image);
+  try {
+    const image = requireControl().fsRead(req.imagePath);
+    instantiateProcess(req.pid, image);
+  } catch (e) {
+    // The kernel already allocated the child PID. If we cannot bring it to life
+    // (unreadable/corrupt image), forge its exit so a parent parked in wait() is
+    // released and the zombie is reaped — never leave it as a process that was
+    // allocated but never started, which would hang the shell forever.
+    console.error(`spawn of pid ${req.pid} (${req.imagePath}) failed:`, e);
+    if (requireControl().exitCode(req.pid) === undefined) {
+      const outcome = requireControl().serviceSyscall(req.pid, encodeProcExit(127));
+      processWakeups(outcome.wakeups);
+    }
+    return;
+  }
   // A foreground job (its fd 0 is the terminal) becomes the new keystroke target
   // until it exits; the shell that spawned it is parked in wait() beneath it.
   if (req.terminalStdin) terminalFg.push(req.pid);
 }
 
+/** Cap a brokered network response so a large or hostile URL cannot balloon kernel
+ * memory in one shot (the body is copied into the kernel by deliverNet). */
+const MAX_NET_BYTES = 8 * 1024 * 1024;
+
 /** Perform a guest's brokered network request (M5-T6): the kernel parked the
  * caller after checking its Net capability; we fetch the URL and deliver the
  * body back (waking the caller). A failure delivers ok=false (guest sees IO). */
 function handleNetRequest(req: { pid: number; url: string }): void {
+  // Deliver exactly once, guarding deliverNet itself: the parked caller may have
+  // exited, in which case there is simply nothing to wake (no unhandled rejection).
+  const deliver = (ok: boolean, body: Uint8Array): void => {
+    let wakeups: Uint32Array | number[] | undefined;
+    try {
+      wakeups = requireControl().deliverNet(req.pid, ok, body);
+    } catch (e) {
+      console.error(`deliverNet for pid ${req.pid} failed:`, e);
+      return;
+    }
+    if (wakeups) processWakeups(wakeups);
+  };
   void fetch(req.url)
-    .then((r) => r.arrayBuffer())
-    .then((buf) => requireControl().deliverNet(req.pid, true, new Uint8Array(buf)))
-    .catch(() => requireControl().deliverNet(req.pid, false, new Uint8Array()))
-    .then((wakeups) => {
-      if (wakeups) processWakeups(wakeups);
-    });
+    .then(async (r) => {
+      const bytes = new Uint8Array(await r.arrayBuffer());
+      // Clamp what reaches the kernel; the worker still reads the full body, but the
+      // kernel copy (and the guest-visible payload) is bounded.
+      deliver(true, bytes.length > MAX_NET_BYTES ? bytes.subarray(0, MAX_NET_BYTES) : bytes);
+    })
+    .catch(() => deliver(false, new Uint8Array()));
 }
 
 function waitFor(pid: number): Promise<{ exitCode: number; sharedMemory: boolean }> {

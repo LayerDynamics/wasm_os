@@ -327,6 +327,12 @@ impl ProcTable {
         id
     }
 
+    /// How many surfaces `pid` currently owns — used to cap per-process surface
+    /// allocation so a GPU-capable process cannot exhaust kernel/host memory.
+    pub fn surface_count(&self, pid: u32) -> usize {
+        self.surface_owners.values().filter(|&&p| p == pid).count()
+    }
+
     /// Release every surface owned by `pid` (called on process exit, M3-T9), and
     /// return the freed surface ids so the host can tear down their windows.
     pub fn free_surfaces_of(&mut self, pid: u32) -> Vec<u32> {

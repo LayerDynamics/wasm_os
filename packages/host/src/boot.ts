@@ -290,7 +290,17 @@ export async function boot(): Promise<BootResult> {
       // Fetch a small image descriptor at runtime, then boot the config it names
       // ("run the image from within it", M5-T7). The descriptor is small enough to
       // travel any path; the bios/kernel/rootfs are loaded by TinyEMU from the cfg.
-      const m = (await (await fetch(manifestUrl)).json()) as ImageManifest;
+      const res = await fetch(manifestUrl);
+      if (!res.ok) {
+        throw new Error(`image manifest fetch failed: ${res.status} ${res.statusText}`);
+      }
+      const m = (await res.json()) as ImageManifest;
+      // Constrain a provided configUrl to a same-origin absolute path so a manifest
+      // cannot aim TinyEMU at an arbitrary external config (which itself names the
+      // bios/kernel/rootfs it loads). An empty/absent value uses the default config.
+      if (m.configUrl && !(m.configUrl.startsWith("/") && !m.configUrl.startsWith("//"))) {
+        throw new Error(`image manifest configUrl must be a same-origin path: ${m.configUrl}`);
+      }
       return call<number>("spawnEmulator", {
         name: m.name ?? "linux",
         boot: emulatorBoot(m.configUrl, m.cmdline),

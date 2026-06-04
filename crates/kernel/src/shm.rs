@@ -13,6 +13,10 @@ use std::collections::{BTreeMap, BTreeSet};
 /// Largest shm region (fits one SAB ring payload, so a read/write is one syscall).
 pub const MAX_SHM_SIZE: usize = 60 * 1024;
 
+/// Most regions a single process may own at once. Bounds resource exhaustion: a
+/// process can otherwise loop on `shm_create` and grow kernel memory without limit.
+pub const MAX_REGIONS_PER_PID: usize = 64;
+
 #[derive(Default)]
 pub struct ShmTable {
     regions: BTreeMap<u32, Vec<u8>>,
@@ -27,14 +31,23 @@ impl ShmTable {
         Self { regions: BTreeMap::new(), owners: BTreeMap::new(), granted: BTreeMap::new(), next_id: 1 }
     }
 
+    /// How many regions `pid` currently owns.
+    pub fn owned_count(&self, pid: u32) -> usize {
+        self.owners.values().filter(|&&o| o == pid).count()
+    }
+
     /// Create a zeroed region of `size` bytes owned by (and accessible to) `pid`.
-    pub fn create(&mut self, pid: u32, size: usize) -> u32 {
+    /// Returns `None` if `pid` already owns `MAX_REGIONS_PER_PID` regions.
+    pub fn create(&mut self, pid: u32, size: usize) -> Option<u32> {
+        if self.owned_count(pid) >= MAX_REGIONS_PER_PID {
+            return None;
+        }
         let id = self.next_id;
         self.next_id += 1;
         self.regions.insert(id, vec![0u8; size.min(MAX_SHM_SIZE)]);
         self.owners.insert(id, pid);
         self.granted.entry(id).or_default().insert(pid);
-        id
+        Some(id)
     }
 
     pub fn exists(&self, id: u32) -> bool {
@@ -63,7 +76,13 @@ impl ShmTable {
     /// Copy up to `len` bytes from `off` in region `id`.
     pub fn read(&self, id: u32, off: usize, len: usize) -> Vec<u8> {
         match self.regions.get(&id) {
-            Some(r) if off < r.len() => r[off..(off + len).min(r.len())].to_vec(),
+            // `off`/`len` are guest-supplied; `off + len` would wrap on the 32-bit
+            // wasm target and yield `end < off`, panicking on the reversed range.
+            // `saturating_add` keeps `end >= off`, so the slice is always valid.
+            Some(r) if off < r.len() => {
+                let end = off.saturating_add(len).min(r.len());
+                r[off..end].to_vec()
+            }
             _ => Vec::new(),
         }
     }
@@ -102,7 +121,7 @@ mod tests {
     #[test]
     fn create_grants_owner_access_others_denied() {
         let mut t = ShmTable::new();
-        let id = t.create(7, 64);
+        let id = t.create(7, 64).unwrap();
         assert!(t.has_access(id, 7)); // owner
         assert!(!t.has_access(id, 8)); // default-deny
         assert_eq!(t.size(id), 64);
@@ -111,7 +130,7 @@ mod tests {
     #[test]
     fn grant_shares_access_and_data_round_trips() {
         let mut t = ShmTable::new();
-        let id = t.create(7, 32);
+        let id = t.create(7, 32).unwrap();
         // Owner grants pid 8.
         assert!(t.grant(id, 7, 8));
         assert!(t.has_access(id, 8));
@@ -125,9 +144,9 @@ mod tests {
     #[test]
     fn size_is_capped_and_writes_clip_to_region() {
         let mut t = ShmTable::new();
-        let id = t.create(1, MAX_SHM_SIZE * 2);
+        let id = t.create(1, MAX_SHM_SIZE * 2).unwrap();
         assert_eq!(t.size(id), MAX_SHM_SIZE); // capped
-        let small = t.create(1, 4);
+        let small = t.create(1, 4).unwrap();
         assert!(t.write(small, 2, b"ABCD")); // off 2 + 4 > 4 → clipped to 2 bytes
         assert_eq!(t.read(small, 0, 4), vec![0, 0, b'A', b'B']);
     }
@@ -135,7 +154,7 @@ mod tests {
     #[test]
     fn free_owned_releases_regions_and_grants() {
         let mut t = ShmTable::new();
-        let id = t.create(7, 16);
+        let id = t.create(7, 16).unwrap();
         t.grant(id, 7, 8);
         t.free_owned(7); // owner exits
         assert!(!t.exists(id));

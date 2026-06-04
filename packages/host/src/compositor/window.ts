@@ -216,14 +216,18 @@ export class Win {
       this.geom.y = Math.max(0, Math.min(ny, ws.h - TITLEBAR_H));
       this.applyGeom();
     };
-    const onUp = (ev: PointerEvent) => {
-      target.releasePointerCapture(ev.pointerId);
+    // `lostpointercapture` is the universal end-of-drag signal: the browser
+    // implicitly releases capture after pointerup/pointercancel AND when the
+    // captured element is removed (e.g. the owning process exits and the window is
+    // torn down mid-drag). Keying teardown off it — rather than only pointerup —
+    // guarantees the move listener and its closure are always removed.
+    const finish = () => {
       target.removeEventListener("pointermove", onMove);
-      target.removeEventListener("pointerup", onUp);
+      target.removeEventListener("lostpointercapture", finish);
       this.delegate.onChanged(this.id);
     };
     target.addEventListener("pointermove", onMove);
-    target.addEventListener("pointerup", onUp);
+    target.addEventListener("lostpointercapture", finish);
   }
 
   private beginResize(e: PointerEvent, dir: ResizeDir): void {
@@ -260,13 +264,15 @@ export class Win {
       this.geom = { x, y, w, h };
       this.applyGeom();
     };
-    const onUp = (ev: PointerEvent) => {
-      target.releasePointerCapture(ev.pointerId);
+    // See beginMove: lostpointercapture fires on pointerup/pointercancel and on
+    // element removal, so the resize listeners never leak even if the drag is
+    // interrupted by the window being torn down.
+    const finish = () => {
       target.removeEventListener("pointermove", onMove);
-      target.removeEventListener("pointerup", onUp);
+      target.removeEventListener("lostpointercapture", finish);
       this.delegate.onChanged(this.id);
     };
     target.addEventListener("pointermove", onMove);
-    target.addEventListener("pointerup", onUp);
+    target.addEventListener("lostpointercapture", finish);
   }
 }

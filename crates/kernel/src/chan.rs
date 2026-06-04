@@ -97,6 +97,16 @@ impl ChannelTable {
     pub fn close(&mut self, id: u32, end: u8) {
         if let Some(c) = self.chans.get_mut(&id) {
             c.ends[end as usize].open = false;
+            // A still-pending channel never found its peer. If its creator (endpoint
+            // 0) gives up, drop the channel and release its name — otherwise gc keeps
+            // it forever (gc only collects non-pending channels) and a later opener
+            // of the same name would connect to the dead endpoint instead of starting
+            // fresh.
+            if c.pending && end == 0 {
+                self.chans.remove(&id);
+                self.by_name.retain(|_, v| *v != id);
+                return;
+            }
         }
         self.gc(id);
     }
@@ -159,6 +169,19 @@ mod tests {
         // ...and then the receiver sees EOF (peer gone, inbox drained).
         assert!(!t.peer_open(id, 1));
         assert!(t.recv(id, 1).is_none());
+    }
+
+    #[test]
+    fn abandoned_pending_rendezvous_is_dropped_on_creator_close() {
+        let mut t = ChannelTable::new();
+        let (id, end) = t.open("solo");
+        assert_eq!(end, 0);
+        t.close(id, 0); // creator gives up before any peer connects
+        assert!(!t.exists(id), "abandoned pending channel must be dropped");
+        // The name is freed: a later opener starts a brand-new channel as endpoint 0.
+        let (id2, end2) = t.open("solo");
+        assert_ne!(id2, id);
+        assert_eq!(end2, 0);
     }
 
     #[test]

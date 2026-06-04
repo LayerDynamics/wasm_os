@@ -70,8 +70,15 @@ export function makeWasiImports(getMemory: () => WebAssembly.Memory, ring: RingC
     return { errno: resp.u16(), ready: resp.u8() !== 0, nbytes: resp.u64() };
   };
   // Current value of a WASI clock in nanoseconds (REALTIME = epoch; else monotonic).
-  const clockNowNs = (clockId: number): bigint =>
-    BigInt(Math.round((clockId === 0 ? performance.timeOrigin + performance.now() : performance.now()) * 1e6));
+  // The scaling is done in BigInt: `ms * 1e6` (~1.8e18 for an epoch timestamp) is
+  // ~200x Number.MAX_SAFE_INTEGER, so computing it in float64 would quantize the
+  // result to ~256 ns and add rounding noise. Splitting into whole/fractional
+  // milliseconds preserves the sub-microsecond resolution performance.now() offers.
+  const clockNowNs = (clockId: number): bigint => {
+    const ms = clockId === 0 ? performance.timeOrigin + performance.now() : performance.now();
+    const whole = Math.trunc(ms);
+    return BigInt(whole) * 1_000_000n + BigInt(Math.round((ms - whole) * 1e6));
+  };
 
   const handlers: Wasi = {
     fd_write(fd: number, iovsPtr: number, iovsLen: number, nwrittenPtr: number): number {
@@ -374,10 +381,9 @@ export function makeWasiImports(getMemory: () => WebAssembly.Memory, ring: RingC
       // Real wall-clock / monotonic time, host-sourced (the deterministic kernel
       // cannot read a clock). REALTIME (0) = nanoseconds since the Unix epoch;
       // MONOTONIC (1) and the CPU clocks (2/3) = nanoseconds since the worker's
-      // time origin. `performance.now()` is monotonic and sub-millisecond.
-      const ms =
-        clockId === 0 ? performance.timeOrigin + performance.now() : performance.now();
-      dv().setBigUint64(timePtr, BigInt(Math.round(ms * 1e6)), true);
+      // time origin. clockNowNs does the ns scaling in BigInt to avoid float64
+      // quantization (see its definition).
+      dv().setBigUint64(timePtr, clockNowNs(clockId), true);
       return ERRNO.SUCCESS;
     },
 

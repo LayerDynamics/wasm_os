@@ -1,7 +1,7 @@
 import { defineConfig, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
 import { readFile } from "node:fs/promises";
-import { dirname, extname, join, normalize } from "node:path";
+import { dirname, extname, join, normalize, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 // The repo root, two levels up from apps/web.
@@ -42,7 +42,8 @@ function repoAssets(): Plugin {
     if (!ASSET_PREFIXES.some((p) => url.startsWith(p))) return next();
     try {
       const file = normalize(join(ROOT, decodeURIComponent(url)));
-      if (!file.startsWith(ROOT)) {
+      // Separator boundary so a sibling dir sharing ROOT's prefix can't slip through.
+      if (file !== ROOT && !file.startsWith(ROOT + sep)) {
         res.statusCode = 403;
         return res.end("forbidden");
       }

@@ -1,6 +1,6 @@
 import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
-import { extname, join, normalize } from "node:path";
+import { extname, join, normalize, sep } from "node:path";
 
 const ROOT = process.cwd();
 const PORT = Number(process.env.PORT ?? 8080);
@@ -16,7 +16,8 @@ createServer(async (req, res) => {
     let path = decodeURIComponent(url.pathname);
     if (path === "/") path = "/packages/host/index.html";
     const file = normalize(join(ROOT, path));
-    if (!file.startsWith(ROOT)) { res.writeHead(403).end("forbidden"); return; }
+    // Separator boundary so a sibling dir sharing ROOT's prefix can't slip through.
+    if (file !== ROOT && !file.startsWith(ROOT + sep)) { res.writeHead(403).end("forbidden"); return; }
     const body = await readFile(file);
     res.writeHead(200, {
       "Content-Type": MIME[extname(file)] ?? "application/octet-stream",

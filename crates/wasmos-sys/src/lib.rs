@@ -110,16 +110,23 @@ fn call(req: &[u8]) -> Vec<u8> {
     resp
 }
 
+// The readers tolerate a short/truncated kernel reply by yielding 0 rather than
+// indexing out of bounds and panicking the guest. A well-formed success frame is
+// always long enough; this only guards against a malformed reply.
 fn rd_u16(b: &[u8], at: usize) -> u16 {
-    u16::from_le_bytes([b[at], b[at + 1]])
+    b.get(at..at + 2).map(|s| u16::from_le_bytes([s[0], s[1]])).unwrap_or(0)
 }
 fn rd_u32(b: &[u8], at: usize) -> u32 {
-    u32::from_le_bytes([b[at], b[at + 1], b[at + 2], b[at + 3]])
+    b.get(at..at + 4).map(|s| u32::from_le_bytes([s[0], s[1], s[2], s[3]])).unwrap_or(0)
 }
 fn rd_u64(b: &[u8], at: usize) -> u64 {
-    let mut v = [0u8; 8];
-    v.copy_from_slice(&b[at..at + 8]);
-    u64::from_le_bytes(v)
+    b.get(at..at + 8)
+        .map(|s| {
+            let mut v = [0u8; 8];
+            v.copy_from_slice(s);
+            u64::from_le_bytes(v)
+        })
+        .unwrap_or(0)
 }
 
 /// Spawn a child process from a VFS image with argv and stdio wiring. Returns

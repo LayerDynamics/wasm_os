@@ -61,7 +61,13 @@ export class RingServer {
       }
       if (opts.signal?.aborted) return null; // doorbell may have been a teardown wake
       this.expected = Atomics.load(this.h, REQ_SEQ);
-      const opLen = Atomics.load(this.h, OPLEN);
+      // OPLEN is written by the (untrusted) process worker across the trust
+      // boundary. Validate it against the region rather than trusting the peer: a
+      // negative value would make slice() read from the end, and an oversized one
+      // would silently clamp — either way the syscall decoder sees a mis-framed
+      // request. Out-of-range → empty request, which the kernel rejects cleanly.
+      const raw = Atomics.load(this.h, OPLEN);
+      const opLen = raw >= 0 && raw <= this.req.length ? raw : 0;
       return this.req.slice(0, opLen);
     }
   }

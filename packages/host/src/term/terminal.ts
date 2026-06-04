@@ -91,15 +91,15 @@ export function attachTerminal(
   //   • printable text    → batched, then echoed + forwarded verbatim.
   //   • other control bytes (tab, Ctrl-keys, …) → dropped (a line-oriented shell has
   //                        no use for them and they would corrupt the command).
-  // A chunk that begins with ESC is an escape sequence (arrow/F-key); we drop the
-  // whole chunk so its "[A"/"[B" tail is never inserted into the command line.
+  // Escape sequences (arrow/F-keys) are skipped IN PLACE — only the sequence
+  // itself is dropped, so ordinary text typed or pasted in the same chunk still
+  // reaches the command line (and a sequence's "[A"/"[B" tail is never inserted).
   term.onData((data) => {
     if (rawMode) {
       // Pass through unchanged; the foreground program owns echo + rendering.
       void control.terminalInput(enc.encode(data));
       return;
     }
-    if (data.charCodeAt(0) === 0x1b) return; // ESC-prefixed: arrows, F-keys, etc.
     let pending = "";
     const flush = () => {
       if (pending.length === 0) return;
@@ -108,7 +108,28 @@ export function attachTerminal(
       void control.terminalInput(enc.encode(pending));
       pending = "";
     };
-    for (const ch of data) {
+    const chars = [...data];
+    let i = 0;
+    while (i < chars.length) {
+      const ch = chars[i]!; // in-bounds per the loop condition
+      if (ch === "\x1b") {
+        // Skip a terminal escape sequence in place rather than discarding the rest
+        // of the chunk. CSI: ESC [ params… final(0x40–0x7e). SS3: ESC O final.
+        i++;
+        if (chars[i] === "[") {
+          i++;
+          while (i < chars.length) {
+            const c = chars[i]!.charCodeAt(0); // in-bounds per the loop condition
+            i++;
+            if (c >= 0x40 && c <= 0x7e) break; // CSI final byte ends the sequence
+          }
+        } else if (chars[i] === "O") {
+          i += 2; // ESC O <final>
+        } else {
+          i++; // bare ESC or ESC <char>
+        }
+        continue;
+      }
       if (ch === "\r" || ch === "\n") {
         flush();
         write("\r\n");
@@ -125,6 +146,7 @@ export function attachTerminal(
         const code = ch.charCodeAt(0);
         if (code >= 0x20 && code !== 0x7f) pending += ch; // printable; drop other control bytes
       }
+      i++;
     }
     flush();
   });

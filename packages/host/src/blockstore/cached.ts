@@ -17,6 +17,8 @@ import type { Blockstore } from "./types.js";
 export class CachedStore {
   private mirror = new Map<string, Uint8Array>();
   private pending: Promise<unknown> = Promise.resolve();
+  /** First backing-store write failure since the last flush(), surfaced there. */
+  private writeError: unknown = undefined;
 
   private constructor(private backing: Blockstore) {}
 
@@ -57,11 +59,30 @@ export class CachedStore {
   }
 
   private enqueue(op: () => Promise<unknown> | unknown): void {
-    this.pending = this.pending.then(op, op);
+    // Run each op after the previous one SETTLES (keeps writes ordered), but capture
+    // the first backing failure instead of swallowing it. The previous form,
+    // `pending.then(op, op)`, reused `op` as the catch handler — so a rejected write
+    // silently re-ran the next op against the rejection value and consumed the
+    // error, leaving flush() resolving as if every write had succeeded.
+    const run = () =>
+      Promise.resolve()
+        .then(op)
+        .catch((e) => {
+          if (this.writeError === undefined) this.writeError = e;
+          console.error("CachedStore: backing write failed:", e);
+        });
+    this.pending = this.pending.then(run, run);
   }
 
-  /** Await all queued writes so they are durable in the backing store. */
+  /** Await all queued writes so they are durable in the backing store. Rejects if
+   * any queued write failed since the last flush, so a caller relying on durability
+   * (the E2E) sees the lost write instead of a false success. */
   async flush(): Promise<void> {
     await this.pending;
+    if (this.writeError !== undefined) {
+      const e = this.writeError;
+      this.writeError = undefined;
+      throw e instanceof Error ? e : new Error(String(e));
+    }
   }
 }

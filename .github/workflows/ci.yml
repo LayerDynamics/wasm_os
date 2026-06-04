@@ -49,6 +49,12 @@ jobs:
         # across CPU arch, so we do NOT byte-diff committed output; correctness is
         # enforced by typecheck (below) + the E2E exercising the fresh bindings.
         run: npm run build
+      - name: Kernel WIT ↔ wasmos-sys stub conformance (FR-36 drift gate)
+        # Every verb in kernel.wit must have a matching wasmos-sys stub. This gate
+        # lives in `npm run verify` but was never run in CI, so a new kernel verb
+        # with no guest-side stub could merge undetected. (Bindings *drift* is not
+        # gated here on purpose — jco glue isn't byte-reproducible; see above.)
+        run: npm run binder:kernel-check
       - name: Typecheck host against fresh bindings
         run: npm run typecheck
       - name: Typecheck + build the React web client (apps/web)

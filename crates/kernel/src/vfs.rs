@@ -73,11 +73,13 @@ pub struct Vfs {
     mnt: Box<dyn Blockstore>,     // bound to /mnt  (idb)
     sys: Box<dyn Blockstore>,     // bound to /etc, /var, … (opfs, separate store)
     dev_rng: u64,                 // /dev/[u]random state, seeded with host entropy
+    dev_seeded: bool,             // true once the host has plumbed in real entropy
 }
 
 impl Vfs {
     pub fn new(home: Box<dyn Blockstore>, mnt: Box<dyn Blockstore>, sys: Box<dyn Blockstore>) -> Self {
-        let mut v = Self { tmpfs: BTreeMap::new(), mounts: Vec::new(), home, mnt, sys, dev_rng: 1 };
+        let mut v =
+            Self { tmpfs: BTreeMap::new(), mounts: Vec::new(), home, mnt, sys, dev_rng: 0, dev_seeded: false };
         v.mounts.push(("/".into(), Mount { backend: Backend::Tmpfs }));
         v
     }
@@ -86,16 +88,30 @@ impl Vfs {
     /// kernel has no RNG of its own). Called once at boot.
     pub fn seed_dev_rng(&mut self, state: u64) {
         self.dev_rng = state;
+        self.dev_seeded = true;
+    }
+
+    /// Whether reading `path` should be refused because the entropy source is not yet
+    /// seeded — guards against emitting a predictable, constant-seed stream from
+    /// `/dev/[u]random` if `seed_dev_rng` was never called.
+    fn dev_blocked_unseeded(&self, path: &str) -> bool {
+        !self.dev_seeded && (path == "/dev/random" || path == "/dev/urandom")
     }
 
     /// Read `len` bytes from a /dev device node (advances the RNG for random/urandom).
     pub fn dev_read(&mut self, path: &str, len: usize) -> Option<Vec<u8>> {
+        if self.dev_blocked_unseeded(path) {
+            return None; // fail loudly rather than serve predictable "randomness"
+        }
         crate::devfs::read(path, len, &mut self.dev_rng)
     }
 
     /// A bounded, read-only device sample (does not advance the shared RNG). Lets the
     /// host control read a fixed-size chunk of an endless device (`zero`, `urandom`).
     pub fn dev_sample(&self, path: &str, len: usize) -> Option<Vec<u8>> {
+        if self.dev_blocked_unseeded(path) {
+            return None;
+        }
         let mut rng = self.dev_rng;
         crate::devfs::read(path, len, &mut rng)
     }
@@ -180,6 +196,16 @@ impl Vfs {
             Backend::Opfs => self.home.delete(key),
             Backend::Idb => self.mnt.delete(key),
             Backend::Sys => self.sys.delete(key),
+        }
+    }
+    /// Like `kv_put` but surfaces a backend write failure as `IoFailure` instead of
+    /// silently discarding the write — a dropped put would lose a file or directory
+    /// marker that the caller (and the user) believes was persisted.
+    fn kv_put_checked(&mut self, b: Backend, key: &str, value: Vec<u8>) -> Result<(), FsError> {
+        if self.kv_put(b, key, value) {
+            Ok(())
+        } else {
+            Err(FsError::IoFailure(key.into()))
         }
     }
     fn kv_keys(&self, b: Backend, prefix: &str) -> Vec<String> {
@@ -270,8 +296,7 @@ impl Vfs {
         if self.exists(path) {
             return Err(FsError::Exists);
         }
-        self.kv_put(b, &dir_marker(path), Vec::new());
-        Ok(())
+        self.kv_put_checked(b, &dir_marker(path), Vec::new())
     }
 
     /// Create a directory and all missing parents (`mkdir -p`); idempotent. Each
@@ -289,7 +314,7 @@ impl Vfs {
             }
             if !self.is_dir(&acc) {
                 let b = self.resolve(&acc)?;
-                self.kv_put(b, &dir_marker(&acc), Vec::new());
+                self.kv_put_checked(b, &dir_marker(&acc), Vec::new())?;
             }
         }
         Ok(())
@@ -377,7 +402,7 @@ impl Vfs {
             if self.exists(to) {
                 return Err(FsError::Exists);
             }
-            self.kv_put(bt, to, content);
+            self.kv_put_checked(bt, to, content)?;
             self.kv_delete(bf, from);
             Ok(())
         } else if self.is_dir(from) {
@@ -393,8 +418,10 @@ impl Vfs {
                     continue;
                 }
                 if let Some(rest) = key.strip_prefix(&from_slash) {
-                    let content = self.kv_get(bf, &key).unwrap_or_default();
-                    self.kv_put(bt, &format!("{to_slash}{rest}"), content);
+                    // A key returned by kv_keys must read back; a missing/failed read
+                    // is an IO error, not an excuse to move an empty file in its place.
+                    let content = self.kv_get(bf, &key).ok_or_else(|| FsError::IoFailure(key.clone()))?;
+                    self.kv_put_checked(bt, &format!("{to_slash}{rest}"), content)?;
                     self.kv_delete(bf, &key);
                 }
             }
@@ -402,13 +429,13 @@ impl Vfs {
             for key in self.kv_keys(bf, &dir_marker(&from_slash)) {
                 let marked = key[DIR_PREFIX.len()..].to_string();
                 if let Some(rest) = marked.strip_prefix(&from_slash) {
-                    self.kv_put(bt, &dir_marker(&format!("{to_slash}{rest}")), Vec::new());
+                    self.kv_put_checked(bt, &dir_marker(&format!("{to_slash}{rest}")), Vec::new())?;
                     self.kv_delete(bf, &key);
                 }
             }
             // The directory's own marker (if any) → new marker.
             self.kv_delete(bf, &dir_marker(from));
-            self.kv_put(bt, &dir_marker(to), Vec::new());
+            self.kv_put_checked(bt, &dir_marker(to), Vec::new())?;
             Ok(())
         } else {
             Err(FsError::NotFound)

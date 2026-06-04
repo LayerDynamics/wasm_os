@@ -20,9 +20,12 @@ fn main() {
 }
 
 fn report(bytes: &[u8], name: Option<&str>) {
-    let text = String::from_utf8_lossy(bytes);
-    let lines = text.lines().count();
-    let words = text.split_whitespace().count();
+    // Count over raw bytes so lines/words/bytes all describe the same input. Going
+    // through String::from_utf8_lossy would substitute U+FFFD for invalid UTF-8 and
+    // drift the line/word counts away from the byte count on binary input. Counting
+    // newline bytes also matches canonical `wc -l`.
+    let lines = bytes.iter().filter(|&&b| b == b'\n').count();
+    let words = bytes.split(|b| b.is_ascii_whitespace()).filter(|w| !w.is_empty()).count();
     let count = bytes.len();
     match name {
         Some(n) => println!("{lines:>8} {words:>7} {count:>7} {n}"),

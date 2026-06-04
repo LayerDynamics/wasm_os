@@ -14,7 +14,7 @@
 import { createServer } from "node:http";
 import { createReadStream } from "node:fs";
 import { stat } from "node:fs/promises";
-import { extname, join, normalize, dirname, relative, isAbsolute } from "node:path";
+import { extname, join, normalize, dirname, relative, isAbsolute, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = normalize(join(dirname(fileURLToPath(import.meta.url)), ".."));
@@ -55,7 +55,12 @@ function setBaseHeaders(res, contentType) {
 /** Resolve a request URL to an on-disk file, or null if it escapes its base/404s. */
 async function resolveFile(base, urlPath) {
   const file = normalize(join(base, decodeURIComponent(urlPath)));
-  if (!file.startsWith(base)) return null; // path traversal guard
+  // Path-traversal guard with a separator boundary: a bare `startsWith(base)` would
+  // also admit a sibling dir sharing the prefix (e.g. base `…/dist` vs `…/dist-x`).
+  // `base` may arrive with a trailing separator (join(ROOT, "/wit/")), so strip it
+  // before re-appending one for the boundary check.
+  const root = base.endsWith(sep) ? base.slice(0, -sep.length) : base;
+  if (file !== root && !file.startsWith(root + sep)) return null;
   try {
     const st = await stat(file);
     if (st.isDirectory()) return null;

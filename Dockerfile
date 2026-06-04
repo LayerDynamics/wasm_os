@@ -88,5 +88,8 @@ COPY third_party/tinyemu/lib.js third_party/tinyemu/README.md ./third_party/tiny
 COPY --from=emu /src/third_party/tinyemu/riscvemu64-wasm.wasm /src/third_party/tinyemu/riscvemu64-wasm.js ./third_party/tinyemu/
 COPY --from=image /out/bbl64.bin /out/kernel-riscv64.bin ./assets/linux/
 COPY --from=image /out/riscv64-rootfs ./assets/linux/riscv64-rootfs
+# Drop root: the server only reads world-readable static files and binds $PORT
+# (>1024, so no privileged-port need). The `node` user ships with the base image.
+USER node
 # Railway injects PORT; the server binds 0.0.0.0:$PORT.
 CMD ["node", "tools/prod-server.mjs"]

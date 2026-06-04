@@ -82,7 +82,13 @@ function pollShareWriteback(): void {
   }
 }
 
-/** Full serial console captured so far (boot log + shell I/O). */
+/** Serial console scrollback (boot log + shell I/O), bounded to the most recent
+ * MAX_SERIAL chars. Without the bound this string grows for the whole VM session
+ * and — because the full buffer is re-posted every flush — turns serial output
+ * into unbounded memory and O(n²) postMessage traffic. The screen renderer only
+ * uses the last ~8000 chars and the prompt-detection regex only the recent tail,
+ * so a bounded scrollback loses nothing observable. */
+const MAX_SERIAL = 64 * 1024;
 let serial = "";
 let flushQueued = false;
 let heartbeat: ReturnType<typeof setInterval> | undefined;
@@ -165,6 +171,7 @@ async function boot(m: BootMessage): Promise<void> {
   (globalThis as unknown as { __wasmosEmu: unknown }).__wasmosEmu = {
     serial: (bytes: Uint8Array) => {
       serial += dec.decode(bytes, { stream: true });
+      if (serial.length > MAX_SERIAL) serial = serial.slice(-MAX_SERIAL);
       flushSerial();
       scheduleRender();
       // FR-29: once the guest shell is up, auto-mount the host 9p share on /mnt and

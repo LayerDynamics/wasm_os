@@ -154,7 +154,10 @@ pub(crate) fn locate(obj: &[u8]) -> Result<Located, Error> {
                 if wend > obj.len() || header.capacity < 4 {
                     return Err(Error::OutOfBounds);
                 }
-                if header.content_len + 4 > header.capacity {
+                // `content_len` comes straight from untrusted file bytes; release
+                // builds don't overflow-check, so `content_len + 4` could wrap and
+                // sneak a malformed header past this guard. checked_add → reject.
+                if header.content_len.checked_add(4).is_none_or(|needed| needed > header.capacity) {
                     return Err(Error::OutOfBounds);
                 }
                 return Ok(Located {
@@ -205,5 +208,16 @@ mod tests {
         assert_eq!(b.len(), 14);
         assert_eq!(&b[1..5], &0x1122_3344u32.to_le_bytes());
         assert_eq!(Header::decode(&b).unwrap(), h);
+    }
+
+    #[test]
+    fn overflowing_content_len_is_rejected_not_wrapped() {
+        // A clean object verifies; corrupt its wob0 content_len to u32::MAX. In a
+        // release build `content_len + 4` would wrap to 3 and slip past the capacity
+        // check — the checked_add guard must reject it as OutOfBounds instead.
+        let mut obj = crate::mint::mint(Tier::B256, 0);
+        let off = locate(&obj).unwrap().wob0_content_len_off;
+        obj[off..off + 4].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert!(matches!(locate(&obj), Err(Error::OutOfBounds)));
     }
 }
