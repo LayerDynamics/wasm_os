@@ -442,7 +442,7 @@ M-BBS-1 (format + io + tests)
 | OQ-2 | Keep the crate name `byteblockstorage`, or rename to avoid collision with the host `Blockstore` (e.g. `wasmobj`)? | LayerDynamics | Before M-BBS-1 |
 | OQ-3 | Post-V1: support payloads > 64 KiB via larger tiers or chained blocks (FR-NG-4)? Which? | LayerDynamics | Post-V1 |
 | OQ-4 | Default destination on save-as — same dir as template, or a user-chosen path each time? Affects FR-7 UX. | LayerDynamics | Before M-BBS-3 |
-| OQ-5 | Should the placeholder byte be ASCII space `0x20` (README says “spaces or ascii”), or `0x00`? Space keeps the window human-readable when dumped; NUL is conventional padding. | LayerDynamics | Before M-BBS-1 |
+| OQ-5 | ✅ **RESOLVED** — padding byte is ASCII space `0x20` (matches the README's "spaces or ascii" seed; keeps the reserved window human-readable). The one downside (content→padding boundary is ambiguous in a raw hex dump when text content ends in spaces) is inert: `read`/`extract`/`_start` all use `content_len`, never the padding, so nothing infers the boundary from bytes. Eyeball-debugging is served by `wobj info` (FR-13) printing the header. | LayerDynamics | Resolved 2026-06-04 |
 | OQ-6 | Does the `render` export (FR-9) write to stdout, or also draw to a compositor surface for non-text content? | LayerDynamics | Before M-BBS-2 |
 | OQ-7 | Should opening an existing `mydoc.wasm` and re-saving overwrite the same file in place (true in-place FR-5 on the persisted file) or always write a new file? Affects whether FR-5’s no-re-encode win is realized on disk or only in memory. | LayerDynamics | Before M-BBS-3 |
 
