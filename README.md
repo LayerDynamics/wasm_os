@@ -62,23 +62,25 @@ links to them rather than duplicating numbers that go stale.
 ## How it works (architecture)
 
 ```text
-   Browser tab (COOP/COEP → cross-origin isolated, Tier A: SAB + Atomics)
-   ┌─────────────────────────────────────────────────────────────────────┐
-   │ main thread                                                           │
-   │   compositor (windows, taskbar, focus, input)  ── async postMessage ──┼─┐
-   └───────────────────────────────────────────────────────────────────────┘ │
-                                                                               │
-   ┌───────────────────────── kernel worker ("kworker") ───────────────────────┘
-   │   jco-transpiled kernel component (Rust → WASM)                       │
-   │   owns every process's SAB syscall ring; services them with          │
-   │   Atomics.waitAsync (never blocks); VFS over OPFS/IndexedDB           │
-   └───────────────────────────────────────────────────────────────────────┘
-                    │ one SAB ring per process (Atomics.wait / waitAsync)
-   ┌────────────────┴──────────────────────────────────────────────────────┐
-   │ process worker(s)   guest .wasm (wasm32-wasi)  ── blocking syscalls ──▶ │
-   │   hand-written WASI shim marshals guest memory (iovecs); the kernel     │
-   │   syscall router only ever sees resolved values, never a guest pointer  │
-   └─────────────────────────────────────────────────────────────────────────┘
+Browser tab — COOP/COEP cross-origin isolated  (Tier A: SharedArrayBuffer + Atomics)
+
+┌─ main thread ──────────────────────────────────────────────────────────────────┐
+│ compositor: windows, taskbar, focus, brokered input                            │
+└────────────────────────────────────────────────────────────────────────────────┘
+                  │ ▲
+                  ▼ │  async postMessage (surfaces, input, process lifecycle)
+┌─ kernel worker ("kworker") ────────────────────────────────────────────────────┐
+│ jco-transpiled kernel component (Rust → WASM)                                  │
+│ owns every process's SAB syscall ring; services it with Atomics.waitAsync      │
+│ (never blocks); VFS over OPFS / IndexedDB                                      │
+└────────────────────────────────────────────────────────────────────────────────┘
+                  │ ▲
+                  ▼ │  one SAB syscall ring per process (Atomics.wait / waitAsync)
+┌─ process worker(s) ────────────────────────────────────────────────────────────┐
+│ guest .wasm (wasm32-wasi) — makes blocking WASI syscalls                       │
+│ hand-written WASI shim marshals guest memory (iovecs); the kernel syscall      │
+│ router only ever sees resolved values, never a guest pointer                   │
+└────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 - **Kernel** ([`crates/kernel`](crates/kernel)) — Rust compiled to a WASM
