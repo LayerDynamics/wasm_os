@@ -159,15 +159,44 @@ impl State {
     }
 }
 
-/// Launch a file as a process. Graphical apps need Gpu+Input, which the file
-/// manager holds and delegates; a `.txt` opens in the editor (when installed).
+/// What "opening" a file should do.
+#[derive(Debug, PartialEq, Eq)]
+enum OpenAs {
+    /// Execute it as a process (a real `wasm32-wasi` executable module).
+    Run,
+    /// Open it in the editor (documents and data — never executed).
+    Edit,
+}
+
+/// Decide how to open a file from its bytes. Only a genuine executable wasm module
+/// is run; everything else — wasmobj documents, text, and arbitrary data — opens in
+/// the editor. This is the guard against the old behaviour of `spawn`-ing any
+/// non-`.txt` file, which tried to execute non-wasm bytes as a process.
+fn open_action(bytes: &[u8]) -> OpenAs {
+    let is_wasm_module = bytes.starts_with(b"\0asm");
+    // A wasmobj document is also a valid wasm module, but it is a *document* — open
+    // it for editing, not execution. (It can still be run from the terminal.)
+    if is_wasm_module && wasmobj::verify(bytes).is_err() {
+        OpenAs::Run
+    } else {
+        OpenAs::Edit
+    }
+}
+
+/// Launch a file: run a real executable module, or open everything else in the
+/// editor. Graphical apps need Gpu+Input, which the file manager holds and delegates.
 fn launch(path: &str) {
     let stdio = [Stdio::Terminal, Stdio::Terminal, Stdio::Terminal];
-    if path.ends_with(".txt") {
-        // Open with the associated app (the editor): `editor <path>`.
-        let _ = spawn("/bin/editor", &["editor", path], &stdio, "/", true, true, false, false);
-    } else {
-        let _ = spawn(path, &[path], &stdio, "/", true, true, false, false);
+    // Read the file to classify it; an unreadable file falls back to the editor
+    // (an empty buffer) rather than being executed.
+    let bytes = std::fs::read(path).unwrap_or_default();
+    match open_action(&bytes) {
+        OpenAs::Run => {
+            let _ = spawn(path, &[path], &stdio, "/", true, true, false, false);
+        }
+        OpenAs::Edit => {
+            let _ = spawn("/bin/editor", &["editor", path], &stdio, "/", true, true, false, false);
+        }
     }
 }
 
@@ -276,5 +305,32 @@ fn main() {
         }
         draw(&mut fb, &st);
         win_present(surface, fb.bytes());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn text_and_data_open_in_editor_not_executed() {
+        assert_eq!(open_action(b"# readme\nhello world"), OpenAs::Edit);
+        assert_eq!(open_action(b"{\"json\":true}"), OpenAs::Edit);
+        assert_eq!(open_action(&[0xff, 0xd8, 0xff, 0xe0]), OpenAs::Edit); // JPEG header
+        assert_eq!(open_action(b""), OpenAs::Edit); // empty / unreadable
+    }
+
+    #[test]
+    fn wasmobj_document_opens_in_editor() {
+        let mut obj = wasmobj::mint(wasmobj::Tier::K4, 0);
+        wasmobj::save(&mut obj, b"a saved document").unwrap();
+        assert_eq!(open_action(&obj), OpenAs::Edit);
+    }
+
+    #[test]
+    fn executable_wasm_module_runs() {
+        // A wasm module that is NOT a wasmobj document (no wob0 header) -> executable.
+        let exe = b"\0asm\x01\x00\x00\x00";
+        assert_eq!(open_action(exe), OpenAs::Run);
     }
 }
