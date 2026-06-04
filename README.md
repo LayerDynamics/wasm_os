@@ -1,9 +1,25 @@
 # WASM_OS
 
+[![CI](https://github.com/LayerDynamics/wasm_os/actions/workflows/ci.yml/badge.svg)](https://github.com/LayerDynamics/wasm_os/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+![Status: experimental](https://img.shields.io/badge/status-experimental-orange.svg)
+
 > A layered operating system that runs entirely inside a browser tab — a WASM
 > microkernel that schedules WASI processes, a Unix-style userland and terminal, a
-> windowed desktop compositor, and (eventually) an emulator capable of booting a
-> real Linux. *A whole OS in wasm/wat/wasi — into a web OS. Yup.*
+> windowed desktop compositor, and an emulator that boots a real Linux. *A whole OS
+> in wasm/wat/wasi — into a web OS. Yup.*
+
+> [!NOTE]
+> **WASM_OS is an experimental project — a proof of concept, not production software.**
+> It was built to answer one question: *can you stand up a genuine operating-system
+> abstraction — a scheduling microkernel, isolated processes, blocking syscalls, IPC,
+> a windowed compositor, even a nested Linux — on top of the WebAssembly VM, inside a
+> single browser tab, with no native code and no app server?* The answer turned out to
+> be **yes**: all five layers (L0–L5) are implemented and gated by `npm run verify`.
+> But it is a research and learning vehicle, not a product — there is no hardening
+> against hostile or multi-tenant use, no compatibility guarantee across versions, and
+> the "machine" lives only as long as the browser tab is open. Read it, run it, learn
+> from it — don't run anything that matters on it.
 
 WASM_OS treats the WebAssembly virtual machine as the "hardware" and builds the
 operating system that belongs on top of it. Every `wasm32-wasi` module is a
@@ -31,10 +47,10 @@ The four "kinds of web OS" the project set out to build are not competing design
 |-------|-----------|-----------|--------|
 | **L0 — Microkernel** | WASM microkernel: scheduler, tri-backend VFS, capability-mediated syscalls | [M0](docs/M0-STATUS.md) | ✅ Complete |
 | **L1 — WASI process ABI** | Any language targeting `wasm32-wasi` runs as a scheduled, isolated process making blocking syscalls over the SAB ring | [M1](docs/M1-STATUS.md) | ✅ Complete |
-| **L2 — Userland & terminal** | Rust shell + 13 coreutils + xterm terminal; kernel pipes, redirection, exit codes; polyglot proof (Zig `echo`) | [M2](docs/M2-STATUS.md) | ✅ Complete |
-| **L3 — Compositor & desktop** | Host compositor: real windows (move/resize/focus/min/max/z-order), taskbar, process-owned canvas surfaces, brokered input; file manager + Paint + Editor + Mandelbrot apps | [M3](docs/M3-STATUS.md) | ✅ Complete |
+| **L2 — Userland & terminal** | Rust shell ($PATH, pipelines, redirection, builtins) + a coreutils suite (`ls`/`cat`/`grep`/`cp`/`mv`/`rm`/`wc`/`head`/`tail`/`env`/`ps`/`top`/`kill`/…) + xterm terminal; kernel pipes, exit codes; polyglot proof (Zig `echo`) | [M2](docs/M2-STATUS.md) | ✅ Complete |
+| **L3 — Compositor & desktop** | Host compositor: real windows (move/resize/focus/min/max/z-order), taskbar, process-owned canvas surfaces, brokered input; graphical apps — file manager, Paint, Editor, System Monitor, a Lisp REPL, Welcome, the Zig Mandelbrot — plus the in-terminal `nano` editor | [M3](docs/M3-STATUS.md) | ✅ Complete |
 | **L4 — Multi-process, IPC, persistence** | ≥32 concurrent processes, message channels + shared memory, signals, live `ps`/`top`, runtime priority, session restore | [M4](docs/M4-STATUS.md) | ✅ Complete |
-| **L5 — Emulator** | A v86 x86 emulator running *as a single privileged process* — boots a real Linux to a shell in a framebuffer window; brokered networking + a 9p shared folder; killable; session-restored | [M5](docs/M5-STATUS.md) | ✅ Complete |
+| **L5 — Emulator** | The MIT [TinyEMU](third_party/tinyemu) riscv64 emulator running *as a single privileged process* — boots a real Linux to a shell in a framebuffer window; brokered networking + a 9p shared folder; killable; session-restored | [M5](docs/M5-STATUS.md) | ✅ Complete |
 
 Each `docs/MX-STATUS.md` records that milestone's exit criteria, the verified
 `npm run verify` gate breakdown (rust / host / e2e), and every as-built deviation
@@ -138,7 +154,7 @@ Individual gates:
 | `npm run binder:kernel-check` | Enforce guest syscall stubs conform to `wit/` (FR-36) |
 | `npm run lint` | `cargo clippy` on the workspace + the kernel's `wasm32` target (`-D warnings`) |
 | `npm run typecheck` | `tsc --noEmit` on the host |
-| `npm run test:rust` | Kernel + `wasmgfx` unit tests |
+| `npm run test:rust` | Rust unit tests — kernel, `wasmgfx`, `wasmobj` (format/round-trip/self-exec), filemanager |
 | `npm run test:host` | Vitest (features, blockstores, ring, polyglot byte-diff) |
 | `npm run test:e2e` | Playwright — real Chromium, real OPFS/IndexedDB, real workers |
 
@@ -156,17 +172,19 @@ crates/
   kernel/          # the microkernel (scheduler, VFS, syscall router, pipes, IPC, shm)
   wasmos-sys/      # guest-side syscall stubs for the wasmos_kernel ABI (spawn/pipe/wait/win_*/chan/shm)
   wasmgfx/         # guest graphics SDK: software RGBA framebuffer + 8×8 font
-  sh/              # the Rust shell ($PATH, pipelines, redirection, builtins)
-  coreutils/       # the 13 FR-18 coreutils (ls, cat, cp, mv, rm, wc, head, tail, …)
-  hello, crash, catfile, spinner, chandemo, shmdemo   # demo / fault-injection / IPC-demo guests
-  apps/            # graphical process apps: filemanager, paint, editor
+  wasmobj/         # wasm-object document container: a document that IS a self-executing .wasm module
+  sh/              # the Rust shell ($PATH, pipelines, redirection, builtins; opens in $HOME)
+  coreutils/       # the FR-18 coreutils (ls, cat, grep, cp, mv, rm, wc, head, tail, env, ps, top, kill, …)
+  apps/            # process apps: filemanager, paint, editor, sysmon, lisp, welcome, nano
+  hello, crash, catfile, spinner, gfxspike, chandemo, shmdemo, sigdemo  # demo / fault-injection / IPC / signal guests
 guests/zig/        # polyglot guests built by a non-Cargo toolchain (echo.zig, mandelbrot.zig)
 packages/
   host/            # TypeScript host: workers, SAB ring, compositor, terminal, blockstores
   abi/             # generated jco bindings (build artifact, gitignored)
 wit/               # the ABI single source of truth (control.wit, blockstore.wit, world.wit)
+third_party/       # MIT TinyEMU (vendored, built from source) — the L5 riscv64 Linux emulator
 tools/             # binder (wit → bindings), serve.mjs (COOP/COEP dev server), bootstrap.sh
-docs/              # SPEC-1, per-milestone status reports (M0–M3), and implementation plans
+docs/              # SPEC-1 & SPEC-2, per-milestone status reports (M0–M5), and implementation plans
 e2e/               # Playwright end-to-end specs (real browser, real storage, real workers)
 ```
 
@@ -181,6 +199,44 @@ Zig (for the polyglot guests), Node 24, and Playwright/Chromium. CI
 ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs the full pipeline on
 Linux x86_64 on every push.
 
+## Status & intent
+
+WASM_OS is **an experiment that reached its goal**, not an ongoing product.
+
+It set out to test a thesis: that the WebAssembly virtual machine is enough of a
+"machine" to host a real operating-system design — not a webtop that arranges
+iframes, and not a foreign-CPU emulator, but an actual microkernel that *schedules*
+sandboxed processes, services their **blocking** syscalls, brokers their IPC, and
+mediates every privileged action through capabilities. The five milestones (L0–L5)
+were the way of proving it end-to-end, each one demoable and gated by `npm run verify`
+in real Chromium against real OPFS/IndexedDB and real Web Workers — no mocked layers.
+
+What it demonstrates:
+
+- A browser tab can run a genuine **process model** — preemption-free cooperative
+  scheduling, isolation by default, crash containment (a trapping guest becomes a
+  zombie; the kernel and its peers survive).
+- **Blocking** WASI syscalls are achievable in the browser via a `SharedArrayBuffer`
+  ring + `Atomics`, with the kernel servicing them on `Atomics.waitAsync` so it never
+  itself blocks.
+- "Any language that targets `wasm32-wasi`" is real, not aspirational — the userland
+  is Rust **and** Zig, running as the same kind of scheduled process.
+- The abstraction nests: an entire **riscv64 Linux** (MIT TinyEMU) runs *as one
+  privileged process* inside the same model.
+
+What it is **not**, by design:
+
+- Not hardened for hostile or multi-tenant use — there is no threat model for running
+  untrusted third-party guests against each other.
+- Not API/ABI-stable across versions; the WIT contract evolves freely.
+- Not persistent beyond the browser's own storage — the "machine" exists only while
+  the tab is open, and state lives in that origin's OPFS/IndexedDB.
+
+Treat it as a reference, a teaching artifact, and a proof that the idea works — read
+the code, run the gate, boot the desktop, and learn from it.
+
 ## License
 
-MIT.
+MIT — see [`LICENSE`](LICENSE). The L5 emulator vendors **TinyEMU** (also MIT) under
+[`third_party/tinyemu/`](third_party/tinyemu), built from source; its license is at
+[`third_party/tinyemu/MIT-LICENSE.txt`](third_party/tinyemu/MIT-LICENSE.txt).

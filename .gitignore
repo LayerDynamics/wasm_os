@@ -43,3 +43,4 @@ development/reference_only
 # Vite production build of the web client (build output)
 apps/web/dist
 .riscv-build/
+CLAUDE.md

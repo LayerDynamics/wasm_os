@@ -35,10 +35,10 @@
 **Step 1: Initialize the repository**
 
 ```bash
-cd /Users/ryanoboyle/wasm_os && git init -b main
+cd ~/wasm_os && git init -b main
 ```
 
-→ Expected: `Initialized empty Git repository in /Users/ryanoboyle/wasm_os/.git/`
+→ Expected: `Initialized empty Git repository in ~/wasm_os/.git/`
 
 **Step 2: Write `.gitignore`**
 
