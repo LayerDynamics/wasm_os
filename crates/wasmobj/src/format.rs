@@ -1,5 +1,5 @@
 //! Byte layout, types, and low-level encoders. See the "Design contract" in
-//! docs/plans/2026-06-03-byteblockstorage-impl.md.
+//! docs/plans/2026-06-03-wasmobj-impl.md.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tier {
@@ -111,14 +111,14 @@ pub(crate) fn section(id: u8, payload: &[u8], out: &mut Vec<u8>) {
     out.extend_from_slice(payload);
 }
 
-/// Located `bbs0` metadata + the file offset of its content_len field.
+/// Located `wob0` metadata + the file offset of its content_len field.
 pub(crate) struct Located {
     pub header: Header,
-    /// File offset of the 4-byte content_len field inside the bbs0 section data.
-    pub bbs0_content_len_off: usize,
+    /// File offset of the 4-byte content_len field inside the wob0 section data.
+    pub wob0_content_len_off: usize,
 }
 
-/// Manually scan the module sections for the `bbs0` custom section (no wasmparser
+/// Manually scan the module sections for the `wob0` custom section (no wasmparser
 /// in the guest hot path). Returns the header + the file offset of its content_len.
 pub(crate) fn locate(obj: &[u8]) -> Result<Located, Error> {
     if obj.len() < 8 || &obj[0..4] != b"\0asm" {
@@ -139,7 +139,7 @@ pub(crate) fn locate(obj: &[u8]) -> Result<Located, Error> {
             let mut np = body_start;
             let name_len = read_leb_u32(obj, &mut np).ok_or(Error::Malformed)? as usize;
             let name_end = np.checked_add(name_len).ok_or(Error::Malformed)?;
-            if name_end <= body_end && &obj[np..name_end] == b"bbs0" {
+            if name_end <= body_end && &obj[np..name_end] == b"wob0" {
                 let data = &obj[name_end..body_end];
                 let header = Header::decode(data)?;
                 if header.version != 1 {
@@ -159,7 +159,7 @@ pub(crate) fn locate(obj: &[u8]) -> Result<Located, Error> {
                 }
                 return Ok(Located {
                     header,
-                    bbs0_content_len_off: cl_off,
+                    wob0_content_len_off: cl_off,
                 });
             }
         }

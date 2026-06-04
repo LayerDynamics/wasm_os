@@ -125,7 +125,7 @@ struct Editor {
     rows: usize,
     cols: usize,
     quit: bool,
-    /// Some(bytes) when this file is a byteblockstorage wasm object (FR-7/FR-12):
+    /// Some(bytes) when this file is a wasmobj wasm object (FR-7/FR-12):
     /// save writes the content back into a wasm module instead of plain bytes.
     obj: Option<Vec<u8>>,
 }
@@ -169,7 +169,7 @@ impl Editor {
     /// Resolve the initial buffer text + (for `.wasm` documents) the object bytes.
     /// Returns `(text, obj, forced_status)`:
     ///   - `text=None` → no readable file → "New File" (plain).
-    ///   - A `.wasm` that verifies as a byteblockstorage object → its content + the
+    ///   - A `.wasm` that verifies as a wasmobj object → its content + the
     ///     object bytes (save rewrites the object in place / repacks).
     ///   - A `.wasm` that DOES NOT EXIST → a new mintable document (blank + empty obj).
     ///   - A `.wasm` that exists but does NOT verify → a plain file (obj=None); we must
@@ -180,8 +180,8 @@ impl Editor {
         }
         if filename.ends_with(".wasm") {
             match fs::read(filename) {
-                Ok(bytes) if byteblockstorage::verify(&bytes).is_ok() => {
-                    let content = byteblockstorage::read(&bytes).unwrap_or_default();
+                Ok(bytes) if wasmobj::verify(&bytes).is_ok() => {
+                    let content = wasmobj::read(&bytes).unwrap_or_default();
                     (Some(String::from_utf8_lossy(&content).into_owned()), Some(bytes), None)
                 }
                 Ok(bytes) => (Some(String::from_utf8_lossy(&bytes).into_owned()), None, None),
@@ -377,7 +377,7 @@ impl Editor {
         text
     }
 
-    /// Ctrl-O: write the buffer to its file. For a byteblockstorage document the
+    /// Ctrl-O: write the buffer to its file. For a wasmobj document the
     /// content is written into a wasm object (minting one on first save, repacking
     /// when it outgrows its tier); otherwise it is written as plain bytes.
     fn save(&mut self) {
@@ -387,15 +387,15 @@ impl Editor {
         let text = self.to_text();
         let result: io::Result<()> = match &mut self.obj {
             Some(obj) => {
-                if byteblockstorage::verify(obj).is_err() {
+                if wasmobj::verify(obj).is_err() {
                     // New document: mint an object sized to the content.
-                    let tier = byteblockstorage::Tier::for_len(text.len() as u32 + 4)
-                        .unwrap_or(byteblockstorage::Tier::K64);
-                    *obj = byteblockstorage::mint(tier, 0);
+                    let tier = wasmobj::Tier::for_len(text.len() as u32 + 4)
+                        .unwrap_or(wasmobj::Tier::K64);
+                    *obj = wasmobj::mint(tier, 0);
                 }
-                match byteblockstorage::save(obj, text.as_bytes()) {
+                match wasmobj::save(obj, text.as_bytes()) {
                     Ok(_) => fs::write(&self.filename, &obj[..]),
-                    Err(e) => Err(io::Error::other(format!("byteblockstorage: {e:?}"))),
+                    Err(e) => Err(io::Error::other(format!("wasmobj: {e:?}"))),
                 }
             }
             None => fs::write(&self.filename, text),

@@ -1,11 +1,11 @@
-# byteblockstorage Implementation Plan (V1: M-BBS-1..3)
+# wasmobj Implementation Plan (V1: M-BBS-1..3)
 
 > **For Claude:** REQUIRED SUB-SKILL: Use lore:execute to implement this plan task-by-task.
 > **Scope guard:** Do ONLY what is listed here. If you discover adjacent issues, note them as a TODO and continue. Do NOT fix them.
 
-**Goal:** Implement `crates/byteblockstorage` — a guest/userland Rust library that stores a document as a self-executing `wasm32-wasip1` module — and wire it into the editor, per [SPEC-2](../specs/SPEC-2-byteblockstorage.md) milestones M-BBS-1..3.
+**Goal:** Implement `crates/wasmobj` — a guest/userland Rust library that stores a document as a self-executing `wasm32-wasip1` module — and wire it into the editor, per [SPEC-2](../specs/SPEC-2-wasmobj.md) milestones M-BBS-1..3.
 
-**Architecture:** A document is a hand-emitted, deterministic `wasm32-wasip1` module with one active data segment (the "window") pre-filled with `0x20`. The window's first 4 bytes are `content_len` (u32 LE), followed by content, padded with `0x20` to the tier capacity. The module's fixed `_start` reads `content_len` from its own linear memory and writes the content to stdout via `fd_write` (FR-9 self-execution) — so the code section never changes when content does. A `bbs0` custom section records `{version, window_offset, capacity, content_len, content_type}` for external readers. Save (FR-5) overwrites the window in place (content fits) or re-packs to the next power-of-two tier (FR-6). The editor links the crate and branches on whether the opened file is a wasm object.
+**Architecture:** A document is a hand-emitted, deterministic `wasm32-wasip1` module with one active data segment (the "window") pre-filled with `0x20`. The window's first 4 bytes are `content_len` (u32 LE), followed by content, padded with `0x20` to the tier capacity. The module's fixed `_start` reads `content_len` from its own linear memory and writes the content to stdout via `fd_write` (FR-9 self-execution) — so the code section never changes when content does. A `wob0` custom section records `{version, window_offset, capacity, content_len, content_type}` for external readers. Save (FR-5) overwrites the window in place (content fits) or re-packs to the next power-of-two tier (FR-6). The editor links the crate and branches on whether the opened file is a wasm object.
 
 **Tech Stack:** Rust 2021 (`wasm32-wasip1` target), `proptest` + `wasmparser` + `wasmtime`/`wasmtime-wasi` as dev-dependencies, cargo tests (native), Playwright E2E.
 
@@ -19,7 +19,7 @@
 
 ### On-disk byte layout of a wasm object
 
-A valid `wasm32-wasip1` module emitted in this exact section order. **All sections except the data section's bytes and the `bbs0` field values are byte-for-byte constant** for a given tier — that is the in-place invariant.
+A valid `wasm32-wasip1` module emitted in this exact section order. **All sections except the data section's bytes and the `wob0` field values are byte-for-byte constant** for a given tier — that is the in-place invariant.
 
 ```text
 magic+version : 00 61 73 6d 01 00 00 00
@@ -31,7 +31,7 @@ export  (7)   : "memory" mem0 ; "_start" func1
 code    (10)  : _start body (FIXED — reads content_len from memory, calls fd_write)
 data    (11)  : 1 active segment, memidx0, offset = i32.const 256,
                 bytes = WINDOW (length = capacity)            ← window_offset points here
-custom  (0)   : name "bbs0", payload = HEADER (14 bytes)
+custom  (0)   : name "wob0", payload = HEADER (14 bytes)
 ```
 
 **WINDOW (length = `capacity` = tier bytes), lives in linear memory at offset 256:**
@@ -40,7 +40,7 @@ custom  (0)   : name "bbs0", payload = HEADER (14 bytes)
 content_capacity = capacity - 4
 ```
 
-**HEADER (`bbs0` custom-section payload, 14 bytes, all little-endian):**
+**HEADER (`wob0` custom-section payload, 14 bytes, all little-endian):**
 ```text
 offset size field
 0      1    version       = 1
@@ -49,7 +49,7 @@ offset size field
 9      4    content_len    u32 — valid content bytes (mirrors the in-band prefix)
 13     1    content_type   0 = text, 1 = binary
 ```
-The section **name** `bbs0` is the magic (no separate magic field). `content_len` appears twice — in-band (read by the running module) and in `bbs0` (read by external tools); save updates both. Both are fixed-width and outside the code section, so updating them never changes any LEB length.
+The section **name** `wob0` is the magic (no separate magic field). `content_len` appears twice — in-band (read by the running module) and in `wob0` (read by external tools); save updates both. Both are fixed-width and outside the code section, so updating them never changes any LEB length.
 
 **`_start` body (fixed bytes — content-independent):** builds an iovec at mem[16] = `{buf: 260, len: *mem[256]}`, calls `fd_write(1, 16, 1, 8)`, drops, ends. (260 = window_offset_in_mem 256 + 4; content_len read from mem[256].)
 
@@ -62,24 +62,24 @@ The section **name** `bbs0` is the magic (no separate magic field). `content_len
 ## Task 0: Create the crate and register it
 
 **Files:**
-- Create: `crates/byteblockstorage/Cargo.toml`
-- Create: `crates/byteblockstorage/src/lib.rs`
+- Create: `crates/wasmobj/Cargo.toml`
+- Create: `crates/wasmobj/src/lib.rs`
 - Modify: `Cargo.toml` (root, add to `members`)
 - Modify: `package.json` (`test:rust` script)
 
-**Step 1: Write `crates/byteblockstorage/Cargo.toml`**
+**Step 1: Write `crates/wasmobj/Cargo.toml`**
 ```toml
 [package]
-name = "byteblockstorage"
+name = "wasmobj"
 edition.workspace = true
 version.workspace = true
 license.workspace = true
 
 # A document container that IS a wasm32-wasip1 module: a fixed-size data-segment
 # "window" pre-filled with 0x20 holds the content; the module's _start renders
-# that content to stdout (self-executing). See docs/specs/SPEC-2-byteblockstorage.md.
+# that content to stdout (self-executing). See docs/specs/SPEC-2-wasmobj.md.
 [lib]
-name = "byteblockstorage"
+name = "wasmobj"
 path = "src/lib.rs"
 
 [dev-dependencies]
@@ -88,12 +88,12 @@ wasmparser = "0.221"
 wasmtime = "27"
 wasmtime-wasi = "27"
 ```
-> Note: pin `wasmparser`/`wasmtime` to whatever resolves under the workspace `Cargo.lock`; if `27` is unavailable run `cargo add --dev wasmtime wasmtime-wasi wasmparser proptest -p byteblockstorage` and accept the resolved versions. These are **dev-only** — they are NOT pulled into the `wasm32-wasip1` guest build.
+> Note: pin `wasmparser`/`wasmtime` to whatever resolves under the workspace `Cargo.lock`; if `27` is unavailable run `cargo add --dev wasmtime wasmtime-wasi wasmparser proptest -p wasmobj` and accept the resolved versions. These are **dev-only** — they are NOT pulled into the `wasm32-wasip1` guest build.
 
-**Step 2: Write `crates/byteblockstorage/src/lib.rs` (module wiring only)**
+**Step 2: Write `crates/wasmobj/src/lib.rs` (module wiring only)**
 ```rust
-//! byteblockstorage — a document stored as a self-executing wasm32-wasip1 module.
-//! See docs/specs/SPEC-2-byteblockstorage.md.
+//! wasmobj — a document stored as a self-executing wasm32-wasip1 module.
+//! See docs/specs/SPEC-2-wasmobj.md.
 
 mod format;
 mod mint;
@@ -105,7 +105,7 @@ pub use io::{extract, read, repack, save, verify, write_in_place};
 pub use mint::mint;
 ```
 
-**Step 3: Register in the root workspace** — `Cargo.toml`, add to `members` after `"crates/byteblockstorage"` does not yet exist; insert `    "crates/byteblockstorage",` into the `members = [ … ]` list.
+**Step 3: Register in the root workspace** — `Cargo.toml`, add to `members` after `"crates/wasmobj"` does not yet exist; insert `    "crates/wasmobj",` into the `members = [ … ]` list.
 
 **Step 4: Make `cargo test` run the crate** — `package.json`, change:
 ```json
@@ -113,21 +113,21 @@ pub use mint::mint;
 ```
 to:
 ```json
-"test:rust": "cargo test -p kernel -p wasmgfx -p byteblockstorage",
+"test:rust": "cargo test -p kernel -p wasmgfx -p wasmobj",
 ```
 
 **Step 5: Verify it builds (empty modules will fail to compile until Task 1; create stub module files first)**
-Create empty `src/format.rs`, `src/mint.rs`, `src/io.rs`, `src/wasi.rs` so `cargo build -p byteblockstorage` parses. Expected: compile errors about missing items — that is fine; the next tasks fill them. Run `cargo build -p byteblockstorage 2>&1 | head` to confirm the crate is recognized by the workspace.
+Create empty `src/format.rs`, `src/mint.rs`, `src/io.rs`, `src/wasi.rs` so `cargo build -p wasmobj` parses. Expected: compile errors about missing items — that is fine; the next tasks fill them. Run `cargo build -p wasmobj 2>&1 | head` to confirm the crate is recognized by the workspace.
 
 **Step 6: Commit**
-`git add crates/byteblockstorage Cargo.toml package.json && git commit -m "feat(byteblockstorage): scaffold crate + workspace + test wiring"`
+`git add crates/wasmobj Cargo.toml package.json && git commit -m "feat(wasmobj): scaffold crate + workspace + test wiring"`
 
 ---
 
 ## Task 1 (contract-first + typed-first): `format.rs` — types, LEB/section helpers, header codec, window scanner
 
 **Files:**
-- Modify: `crates/byteblockstorage/src/format.rs`
+- Modify: `crates/wasmobj/src/format.rs`
 
 **Step 1: Write the failing tests** (append to `format.rs`)
 ```rust
@@ -166,12 +166,12 @@ mod tests {
 }
 ```
 
-**Step 2: Run to verify it fails** — `cargo test -p byteblockstorage format` → Expected: FAIL (items undefined).
+**Step 2: Run to verify it fails** — `cargo test -p wasmobj format` → Expected: FAIL (items undefined).
 
 **Step 3: Write the implementation** (prepend above the test module in `format.rs`)
 ```rust
 //! Byte layout, types, and low-level encoders. See the "Design contract" in
-//! docs/plans/2026-06-03-byteblockstorage-impl.md.
+//! docs/plans/2026-06-03-wasmobj-impl.md.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tier { B256, K1, K4, K16, K64 }
@@ -252,14 +252,14 @@ pub(crate) fn section(id: u8, payload: &[u8], out: &mut Vec<u8>) {
     out.extend_from_slice(payload);
 }
 
-/// Located `bbs0` metadata + the file offset of its content_len field.
+/// Located `wob0` metadata + the file offset of its content_len field.
 pub(crate) struct Located {
     pub header: Header,
-    /// File offset of the 4-byte content_len field inside the bbs0 section data.
-    pub bbs0_content_len_off: usize,
+    /// File offset of the 4-byte content_len field inside the wob0 section data.
+    pub wob0_content_len_off: usize,
 }
 
-/// Manually scan the module sections for the `bbs0` custom section (no wasmparser
+/// Manually scan the module sections for the `wob0` custom section (no wasmparser
 /// in the guest hot path). Returns the header + the file offset of its content_len.
 pub(crate) fn locate(obj: &[u8]) -> Result<Located, Error> {
     if obj.len() < 8 || &obj[0..4] != b"\0asm" { return Err(Error::Malformed); }
@@ -275,7 +275,7 @@ pub(crate) fn locate(obj: &[u8]) -> Result<Located, Error> {
             let mut np = body_start;
             let name_len = read_leb_u32(obj, &mut np).ok_or(Error::Malformed)? as usize;
             let name_end = np.checked_add(name_len).ok_or(Error::Malformed)?;
-            if name_end <= body_end && &obj[np..name_end] == b"bbs0" {
+            if name_end <= body_end && &obj[np..name_end] == b"wob0" {
                 let data = &obj[name_end..body_end];
                 let header = Header::decode(data)?;
                 if header.version != 1 { return Err(Error::BadVersion); }
@@ -286,7 +286,7 @@ pub(crate) fn locate(obj: &[u8]) -> Result<Located, Error> {
                     .checked_add(header.capacity as usize).ok_or(Error::Malformed)?;
                 if wend > obj.len() || header.capacity < 4 { return Err(Error::OutOfBounds); }
                 if header.content_len + 4 > header.capacity { return Err(Error::OutOfBounds); }
-                return Ok(Located { header, bbs0_content_len_off: cl_off });
+                return Ok(Located { header, wob0_content_len_off: cl_off });
             }
         }
         pos = body_end;
@@ -295,17 +295,17 @@ pub(crate) fn locate(obj: &[u8]) -> Result<Located, Error> {
 }
 ```
 
-**Step 4: Run to verify it passes** — `cargo test -p byteblockstorage format` → Expected: PASS.
+**Step 4: Run to verify it passes** — `cargo test -p wasmobj format` → Expected: PASS.
 
 **Step 5: Commit**
-`git add crates/byteblockstorage/src/format.rs && git commit -m "feat(byteblockstorage): byte-layout contract — types, LEB/section codecs, bbs0 scanner"`
+`git add crates/wasmobj/src/format.rs && git commit -m "feat(wasmobj): byte-layout contract — types, LEB/section codecs, wob0 scanner"`
 
 ---
 
 ## Task 2: `mint.rs` — emit a valid, self-executing object
 
 **Files:**
-- Modify: `crates/byteblockstorage/src/mint.rs`
+- Modify: `crates/wasmobj/src/mint.rs`
 
 **Step 1: Write the failing test**
 ```rust
@@ -339,12 +339,12 @@ mod tests {
 }
 ```
 
-**Step 2: Run to verify it fails** — `cargo test -p byteblockstorage mint` → Expected: FAIL.
+**Step 2: Run to verify it fails** — `cargo test -p wasmobj mint` → Expected: FAIL.
 
 **Step 3: Write the implementation**
 ```rust
 //! Deterministic emitter for wasm objects. The non-data sections are fixed bytes;
-//! only the memory page count, data segment length/bytes, and bbs0 vary by tier.
+//! only the memory page count, data segment length/bytes, and wob0 vary by tier.
 
 use crate::format::{leb_u32, section, Header, Tier};
 
@@ -431,10 +431,10 @@ pub fn mint(tier: Tier, content_type: u8) -> Vec<u8> {
     let window_offset = (out.len() + 1 + leb_len.len() + window_start_in_data) as u32;
     section(11, &data, &mut out);
 
-    // --- custom section (id 0): "bbs0" header
+    // --- custom section (id 0): "wob0" header
     let header = Header { version: 1, window_offset, capacity, content_len: 0, content_type };
     let mut custom = Vec::new();
-    leb_u32(4, &mut custom); custom.extend_from_slice(b"bbs0");
+    leb_u32(4, &mut custom); custom.extend_from_slice(b"wob0");
     custom.extend_from_slice(&header.encode());
     section(0, &custom, &mut out);
 
@@ -443,17 +443,17 @@ pub fn mint(tier: Tier, content_type: u8) -> Vec<u8> {
 ```
 > Implementation note for the executor: the `window_offset` math must equal the index in `out` where the first window byte lands. Verify it against `locate()` in the Task 2 tests (the `mint_is_locatable_blank_and_well_formed` test asserts the window bytes at `window_offset` are `[0,0,0,0, 0x20…]`). If the assertion fails, the offset arithmetic is wrong — fix it (do not adjust the test).
 
-**Step 4: Run to verify it passes** — `cargo test -p byteblockstorage mint` → Expected: PASS (both tests, including wasmparser validation of all tiers).
+**Step 4: Run to verify it passes** — `cargo test -p wasmobj mint` → Expected: PASS (both tests, including wasmparser validation of all tiers).
 
 **Step 5: Commit**
-`git add crates/byteblockstorage/src/mint.rs && git commit -m "feat(byteblockstorage): deterministic mint of valid self-executing wasm objects"`
+`git add crates/wasmobj/src/mint.rs && git commit -m "feat(wasmobj): deterministic mint of valid self-executing wasm objects"`
 
 ---
 
 ## Task 3: `io.rs` — `verify`, `read`, `extract`
 
 **Files:**
-- Modify: `crates/byteblockstorage/src/io.rs`
+- Modify: `crates/wasmobj/src/io.rs`
 
 **Step 1: Write the failing test**
 ```rust
@@ -480,7 +480,7 @@ mod tests {
 }
 ```
 
-**Step 2: Run to verify it fails** — `cargo test -p byteblockstorage io` → Expected: FAIL.
+**Step 2: Run to verify it fails** — `cargo test -p wasmobj io` → Expected: FAIL.
 
 **Step 3: Write the implementation** (the rest — `write_in_place`/`repack`/`save` — lands in Task 4/5, but include their `use` now)
 ```rust
@@ -490,7 +490,7 @@ use crate::format::{locate, Error, Header};
 use crate::mint::mint as mint_obj;
 use crate::Tier;
 
-/// Validate the bbs0 header + window bounds; returns the parsed header.
+/// Validate the wob0 header + window bounds; returns the parsed header.
 pub fn verify(obj: &[u8]) -> Result<Header, Error> {
     Ok(locate(obj)?.header)
 }
@@ -508,17 +508,17 @@ pub fn read(obj: &[u8]) -> Result<Vec<u8>, Error> {
 pub fn extract(obj: &[u8]) -> Result<Vec<u8>, Error> { read(obj) }
 ```
 
-**Step 4: Run to verify it passes** — `cargo test -p byteblockstorage io` → Expected: PASS.
+**Step 4: Run to verify it passes** — `cargo test -p wasmobj io` → Expected: PASS.
 
 **Step 5: Commit**
-`git add crates/byteblockstorage/src/io.rs && git commit -m "feat(byteblockstorage): verify/read/extract over wasm objects"`
+`git add crates/wasmobj/src/io.rs && git commit -m "feat(wasmobj): verify/read/extract over wasm objects"`
 
 ---
 
 ## Task 4: `write_in_place` + the in-place invariant
 
 **Files:**
-- Modify: `crates/byteblockstorage/src/io.rs`
+- Modify: `crates/wasmobj/src/io.rs`
 
 **Step 1: Write the failing test** (append to `io.rs` tests)
 ```rust
@@ -530,16 +530,16 @@ pub fn extract(obj: &[u8]) -> Result<Vec<u8>, Error> { read(obj) }
         let w = h.window_offset as usize;
         let cap = h.capacity as usize;
 
-        let content = b"hello byteblockstorage".to_vec();
+        let content = b"hello wasmobj".to_vec();
         write_in_place(&mut obj, &content).unwrap();
 
         assert_eq!(read(&obj).unwrap(), content);
-        // in-band len + bbs0 content_len both updated
+        // in-band len + wob0 content_len both updated
         assert_eq!(verify(&obj).unwrap().content_len as usize, content.len());
         assert_eq!(&obj[w..w + 4], &(content.len() as u32).to_le_bytes());
         // padding after content is 0x20
         assert!(obj[w + 4 + content.len()..w + cap].iter().all(|&b| b == 0x20));
-        // EVERYTHING outside the window AND outside the bbs0 content_len field is unchanged
+        // EVERYTHING outside the window AND outside the wob0 content_len field is unchanged
         assert_eq!(obj.len(), before.len());
         for i in 0..obj.len() {
             let in_window = i >= w && i < w + cap;
@@ -557,12 +557,12 @@ pub fn extract(obj: &[u8]) -> Result<Vec<u8>, Error> { read(obj) }
         assert!(matches!(write_in_place(&mut obj, &too_big), Err(crate::Error::TooLarge)));
     }
 
-    // test helper: file offset of bbs0 content_len in a freshly minted/clean object
-    fn locate_cl(obj: &[u8]) -> usize { crate::format::locate(obj).unwrap().bbs0_content_len_off }
+    // test helper: file offset of wob0 content_len in a freshly minted/clean object
+    fn locate_cl(obj: &[u8]) -> usize { crate::format::locate(obj).unwrap().wob0_content_len_off }
 ```
-> `locate` is `pub(crate)`; the test accesses it via `crate::format::locate`. Confirm `format` exposes `locate`/`Located.bbs0_content_len_off` at `pub(crate)` (Task 1 already does).
+> `locate` is `pub(crate)`; the test accesses it via `crate::format::locate`. Confirm `format` exposes `locate`/`Located.wob0_content_len_off` at `pub(crate)` (Task 1 already does).
 
-**Step 2: Run to verify it fails** — `cargo test -p byteblockstorage write_in_place` → Expected: FAIL.
+**Step 2: Run to verify it fails** — `cargo test -p wasmobj write_in_place` → Expected: FAIL.
 
 **Step 3: Write the implementation** (append to `io.rs`)
 ```rust
@@ -582,25 +582,25 @@ pub fn write_in_place(obj: &mut [u8], content: &[u8]) -> Result<(), Error> {
     obj[w + 4..w + 4 + content.len()].copy_from_slice(content);
     // padding
     for b in &mut obj[w + 4 + content.len()..w + cap] { *b = 0x20; }
-    // mirror into bbs0
-    let cl = loc.bbs0_content_len_off;
+    // mirror into wob0
+    let cl = loc.wob0_content_len_off;
     obj[cl..cl + 4].copy_from_slice(&len.to_le_bytes());
     Ok(())
 }
 ```
 
-**Step 4: Run to verify it passes** — `cargo test -p byteblockstorage write_in_place` → Expected: PASS.
+**Step 4: Run to verify it passes** — `cargo test -p wasmobj write_in_place` → Expected: PASS.
 
 **Step 5: Commit**
-`git add crates/byteblockstorage/src/io.rs && git commit -m "feat(byteblockstorage): in-place window overwrite preserving all non-window bytes (FR-5)"`
+`git add crates/wasmobj/src/io.rs && git commit -m "feat(wasmobj): in-place window overwrite preserving all non-window bytes (FR-5)"`
 
 ---
 
 ## Task 5: `repack` + `save` + property tests (FR-6, FR-10)
 
 **Files:**
-- Modify: `crates/byteblockstorage/src/io.rs`
-- Create: `crates/byteblockstorage/tests/properties.rs`
+- Modify: `crates/wasmobj/src/io.rs`
+- Create: `crates/wasmobj/tests/properties.rs`
 
 **Step 1: Write the failing tests**
 
@@ -625,9 +625,9 @@ Append to `io.rs` tests:
     }
 ```
 
-Create `crates/byteblockstorage/tests/properties.rs`:
+Create `crates/wasmobj/tests/properties.rs`:
 ```rust
-use byteblockstorage::{mint, read, save, verify, Tier};
+use wasmobj::{mint, read, save, verify, Tier};
 use proptest::prelude::*;
 
 proptest! {
@@ -647,7 +647,7 @@ proptest! {
 ```
 > Add `wasmparser` usage in this integration test; it is already a dev-dependency (Task 0).
 
-**Step 2: Run to verify it fails** — `cargo test -p byteblockstorage` → Expected: FAIL (`save`/`repack` undefined).
+**Step 2: Run to verify it fails** — `cargo test -p wasmobj` → Expected: FAIL (`save`/`repack` undefined).
 
 **Step 3: Write the implementation** (append to `io.rs`)
 ```rust
@@ -675,22 +675,22 @@ pub fn save(obj: &mut Vec<u8>, content: &[u8]) -> Result<Option<Vec<u8>>, Error>
 }
 ```
 
-**Step 4: Run to verify it passes** — `cargo test -p byteblockstorage` → Expected: PASS (unit + proptest).
+**Step 4: Run to verify it passes** — `cargo test -p wasmobj` → Expected: PASS (unit + proptest).
 
 **Step 5: Commit**
-`git add crates/byteblockstorage/src/io.rs crates/byteblockstorage/tests/properties.rs && git commit -m "feat(byteblockstorage): repack + save + proptest round-trip/validity (FR-6,FR-10)"`
+`git add crates/wasmobj/src/io.rs crates/wasmobj/tests/properties.rs && git commit -m "feat(wasmobj): repack + save + proptest round-trip/validity (FR-6,FR-10)"`
 
 ---
 
 ## Task 6: Self-execution proof with wasmtime (FR-9)
 
 **Files:**
-- Create: `crates/byteblockstorage/tests/self_exec.rs`
+- Create: `crates/wasmobj/tests/self_exec.rs`
 
 **Step 1: Write the failing test**
 ```rust
 //! Proves FR-9: a filled object, run as a wasip1 module, writes its content to stdout.
-use byteblockstorage::{mint, save, Tier};
+use wasmobj::{mint, save, Tier};
 use wasmtime::*;
 use wasmtime_wasi::preview1::{self, WasiP1Ctx};
 use wasmtime_wasi::pipe::MemoryOutputPipe;
@@ -719,14 +719,14 @@ fn filled_object_renders_its_content_to_stdout() {
 ```
 > The exact `wasmtime_wasi` API names depend on the resolved version. If `WasiP1Ctx`/`preview1` differ, adapt to the resolved crate's preview1 sync API (the intent is fixed: build a WASI ctx with a capturing stdout, link preview1, instantiate, call `_start`, assert stdout). Run `cargo doc -p wasmtime-wasi --open` if the path is unclear.
 
-**Step 2: Run to verify it fails** — `cargo test -p byteblockstorage --test self_exec` → Expected: FAIL (until APIs line up / module correct).
+**Step 2: Run to verify it fails** — `cargo test -p wasmobj --test self_exec` → Expected: FAIL (until APIs line up / module correct).
 
 **Step 3: Make it pass** — no library code should be needed if Tasks 2/4 are correct; this test *validates* them. If it fails because the module traps or prints wrong bytes, the defect is in `mint`'s code body or `write_in_place` — fix the library, not the test.
 
-**Step 4: Run to verify it passes** — `cargo test -p byteblockstorage --test self_exec` → Expected: PASS.
+**Step 4: Run to verify it passes** — `cargo test -p wasmobj --test self_exec` → Expected: PASS.
 
 **Step 5: Commit**
-`git add crates/byteblockstorage/tests/self_exec.rs && git commit -m "test(byteblockstorage): wasmtime proof that objects self-execute (FR-9)"`
+`git add crates/wasmobj/tests/self_exec.rs && git commit -m "test(wasmobj): wasmtime proof that objects self-execute (FR-9)"`
 
 **M-BBS-1 + M-BBS-2 (library core) exit criteria now met: FR-1..6,8,9,10,11 verified.**
 
@@ -735,7 +735,7 @@ fn filled_object_renders_its_content_to_stdout() {
 ## Task 7: `wasi.rs` glue + confirm the guest target builds
 
 **Files:**
-- Modify: `crates/byteblockstorage/src/wasi.rs`
+- Modify: `crates/wasmobj/src/wasi.rs`
 
 **Step 1: Write the implementation** (no separate unit test — exercised by the editor + E2E)
 ```rust
@@ -753,10 +753,10 @@ pub fn write_file(path: &str, bytes: &[u8]) -> io::Result<()> {
 }
 ```
 
-**Step 2: Build for the guest target** — `cargo build -p byteblockstorage --target wasm32-wasip1 --release` → Expected: builds clean (the dev-deps wasmtime/proptest are NOT compiled for this target).
+**Step 2: Build for the guest target** — `cargo build -p wasmobj --target wasm32-wasip1 --release` → Expected: builds clean (the dev-deps wasmtime/proptest are NOT compiled for this target).
 
 **Step 3: Commit**
-`git add crates/byteblockstorage/src/wasi.rs && git commit -m "feat(byteblockstorage): WASI VFS glue; builds on wasm32-wasip1"`
+`git add crates/wasmobj/src/wasi.rs && git commit -m "feat(wasmobj): WASI VFS glue; builds on wasm32-wasip1"`
 
 ---
 
@@ -768,7 +768,7 @@ pub fn write_file(path: &str, bytes: &[u8]) -> io::Result<()> {
 
 **Step 1: Add the dependency** — `crates/apps/editor/Cargo.toml`, under `[dependencies]` add:
 ```toml
-byteblockstorage = { path = "../../byteblockstorage" }
+wasmobj = { path = "../../wasmobj" }
 ```
 
 **Step 2: Modify the `Editor` struct** (`main.rs:27-34`) — add an `obj` field:
@@ -789,8 +789,8 @@ struct Editor {
     fn load(path: String) -> Editor {
         // A wasm object? (path ends .wasm AND verifies). Read content out of it.
         let bytes = std::fs::read(&path).unwrap_or_default();
-        let (text, obj) = if path.ends_with(".wasm") && byteblockstorage::verify(&bytes).is_ok() {
-            let content = byteblockstorage::read(&bytes).unwrap_or_default();
+        let (text, obj) = if path.ends_with(".wasm") && wasmobj::verify(&bytes).is_ok() {
+            let content = wasmobj::read(&bytes).unwrap_or_default();
             (String::from_utf8_lossy(&content).into_owned(), Some(bytes))
         } else if path.ends_with(".wasm") {
             // New wasm doc that doesn't exist yet: start blank, save will mint.
@@ -816,12 +816,12 @@ struct Editor {
         let ok = match &mut self.obj {
             Some(obj) => {
                 // Ensure we have a live object to write into; mint one sized to content.
-                if byteblockstorage::verify(obj).is_err() {
-                    let tier = byteblockstorage::Tier::for_len(text.len() as u32 + 4)
-                        .unwrap_or(byteblockstorage::Tier::K64);
-                    *obj = byteblockstorage::mint(tier, 0);
+                if wasmobj::verify(obj).is_err() {
+                    let tier = wasmobj::Tier::for_len(text.len() as u32 + 4)
+                        .unwrap_or(wasmobj::Tier::K64);
+                    *obj = wasmobj::mint(tier, 0);
                 }
-                byteblockstorage::save(obj, text.as_bytes()).is_ok()
+                wasmobj::save(obj, text.as_bytes()).is_ok()
                     && std::fs::write(&self.path, &obj[..]).is_ok()
             }
             None => std::fs::write(&self.path, text.as_bytes()).is_ok(),
@@ -836,7 +836,7 @@ struct Editor {
 `cargo build -p editor --target wasm32-wasip1 --release` → Expected: builds clean.
 
 **Step 6: Commit**
-`git add crates/apps/editor/Cargo.toml crates/apps/editor/src/main.rs && git commit -m "feat(editor): open/save documents as wasm objects via byteblockstorage (FR-7,FR-12)"`
+`git add crates/apps/editor/Cargo.toml crates/apps/editor/src/main.rs && git commit -m "feat(editor): open/save documents as wasm objects via wasmobj (FR-7,FR-12)"`
 
 ---
 
@@ -847,19 +847,19 @@ struct Editor {
 **Step 1: Rebuild all guests** — `npm run build:guests` → Expected: succeeds; `packages/host/guests/editor.wasm` is regenerated.
 > The crate is a *library* dependency of `editor`, so it does NOT need a line in the `build:guests` `-p` list. Confirm `editor.wasm` rebuilt (check its mtime).
 
-**Step 2: Run the Rust + clippy gates** — `npm run lint && npm run test:rust` → Expected: PASS (clippy clean — fix any warnings; `test:rust` now includes `byteblockstorage`).
+**Step 2: Run the Rust + clippy gates** — `npm run lint && npm run test:rust` → Expected: PASS (clippy clean — fix any warnings; `test:rust` now includes `wasmobj`).
 
 **Step 3: Commit** (only if lint required fixes; otherwise skip)
-`git add -A && git commit -m "chore(byteblockstorage): clippy-clean across workspace"`
+`git add -A && git commit -m "chore(wasmobj): clippy-clean across workspace"`
 
 ---
 
-> **As-built deviation (Task 8 + Task 10):** the canvas **editor** is unreachable as a document opener — the shell can't launch GUI apps (no `Gpu`/`Input` caps) and host spawn can't pass an argv path. The reachable integration shipped in **nano** (terminal editor, shell-launchable with argv; in scope per "editor/nano"). The editor keeps the same guarded branch as forward-looking code. Both guard against mint-overwriting an existing non-document `.wasm` (only a non-existent `.wasm` path becomes a new document). The E2E below was implemented against nano (`e2e/byteblockstorage.spec.ts`) and additionally **runs the saved object in WASM_OS** (typing `/home/note.wasm` in the terminal) to prove FR-9 through the real kernel, not only under wasmtime.
+> **As-built deviation (Task 8 + Task 10):** the canvas **editor** is unreachable as a document opener — the shell can't launch GUI apps (no `Gpu`/`Input` caps) and host spawn can't pass an argv path. The reachable integration shipped in **nano** (terminal editor, shell-launchable with argv; in scope per "editor/nano"). The editor keeps the same guarded branch as forward-looking code. Both guard against mint-overwriting an existing non-document `.wasm` (only a non-existent `.wasm` path becomes a new document). The E2E below was implemented against nano (`e2e/wasmobj.spec.ts`) and additionally **runs the saved object in WASM_OS** (typing `/home/note.wasm` in the terminal) to prove FR-9 through the real kernel, not only under wasmtime.
 
 ## Task 10: Real E2E — create → edit → save → reload → reopen → run (M-BBS-3)
 
 **Files:**
-- Create: `e2e/byteblockstorage.spec.ts`
+- Create: `e2e/wasmobj.spec.ts`
 
 **Step 1: Write the test** (model it on `probe-boot-persist.mjs` + existing `e2e/*.spec.ts`)
 ```typescript
@@ -892,28 +892,28 @@ test("a document is saved as a wasm object and survives reload", async ({ page }
 ```
 > The helper functions (`launchEditor`, `typeIntoEditor`, `flushVfs`, `readVfsFile`, `editorVisibleText`) must be implemented against the project's existing E2E harness — copy the exact mechanisms from the current editor/persistence specs in `e2e/` and the `probe-*.mjs` files (e.g. how `probe-editor-keys.mjs` drives keys and how `probe-boot-persist.mjs` flushes + reads VFS). Do NOT invent new host hooks; reuse what those probes already expose.
 
-**Step 2: Run to verify it fails** (before wiring helpers, or if save path is wrong) — `npx playwright test e2e/byteblockstorage.spec.ts --project=fast` → Expected: FAIL initially.
+**Step 2: Run to verify it fails** (before wiring helpers, or if save path is wrong) — `npx playwright test e2e/wasmobj.spec.ts --project=fast` → Expected: FAIL initially.
 
 **Step 3: Make it pass** — implement helpers from existing probes; fix any real defect surfaced (e.g. editor not branching on `.wasm`). The test must exercise the **real** stack: browser → editor guest → kernel VFS → OPFS/IndexedDB → reload → reread. No mocks.
 
-**Step 4: Run to verify it passes** — `npx playwright test e2e/byteblockstorage.spec.ts --project=fast` → Expected: PASS.
+**Step 4: Run to verify it passes** — `npx playwright test e2e/wasmobj.spec.ts --project=fast` → Expected: PASS.
 
 **Step 5: Commit**
-`git add e2e/byteblockstorage.spec.ts && git commit -m "test(e2e): document saved as wasm object survives reload + reopens (M-BBS-3)"`
+`git add e2e/wasmobj.spec.ts && git commit -m "test(e2e): document saved as wasm object survives reload + reopens (M-BBS-3)"`
 
 ---
 
 ## Task 11: Crate README + full verify gate (M-BBS-3 close)
 
 **Files:**
-- Modify: `crates/byteblockstorage/README.md` (replace the one-line seed)
+- Modify: `crates/wasmobj/README.md` (replace the one-line seed)
 
-**Step 1: Replace `crates/byteblockstorage/README.md`** with a real description: what a wasm object is, the `bbs0` header + window layout (link to SPEC-2 and this plan), the public API (`mint`/`read`/`save`/`verify`/`extract`), and how the editor uses it. Tag all code blocks with their language.
+**Step 1: Replace `crates/wasmobj/README.md`** with a real description: what a wasm object is, the `wob0` header + window layout (link to SPEC-2 and this plan), the public API (`mint`/`read`/`save`/`verify`/`extract`), and how the editor uses it. Tag all code blocks with their language.
 
 **Step 2: Run the full gate** — `npm run verify` → Expected: PASS (build → guests → binder:kernel-check → lint → typecheck → test:rust → test:host → test:e2e). Fix anything red before claiming done; do not skip a stage.
 
 **Step 3: Commit**
-`git add crates/byteblockstorage/README.md && git commit -m "docs(byteblockstorage): document the wasm-object format and editor integration"`
+`git add crates/wasmobj/README.md && git commit -m "docs(wasmobj): document the wasm-object format and editor integration"`
 
 ---
 
@@ -929,6 +929,6 @@ test("a document is saved as a wasm object and survives reload", async ({ page }
 | Plain-file no regression (Constraint 5) | Task 10 + existing editor specs still green under `npm run verify` |
 
 ## Out of scope (V1) — note as TODOs, do NOT implement
-- `wobj` CLI (FR-13), plain-text export wiring (FR-7b), `bbs0` extra metadata (FR-14), richer content-type (FR-15) → M-BBS-4.
+- `wobj` CLI (FR-13), plain-text export wiring (FR-7b), `wob0` extra metadata (FR-14), richer content-type (FR-15) → M-BBS-4.
 - Payloads > 64 KiB (FR-NG-4), compression/encryption (FR-NG-1), multi-writer (FR-NG-2).
 - Open questions OQ-2 (crate rename), OQ-4 (save-as destination UX), OQ-5 (`0x20` vs `0x00` padding) — leave as specified unless the user resolves them.

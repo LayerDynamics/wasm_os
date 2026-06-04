@@ -36,15 +36,15 @@ struct Editor {
 
 impl Editor {
     fn load(path: String) -> Editor {
-        // Decide if this is a byteblockstorage document. Guard against clobbering an
+        // Decide if this is a wasmobj document. Guard against clobbering an
         // existing non-document .wasm (e.g. an executable guest): only a .wasm path
         // that DOES NOT EXIST yet becomes a new mintable document. An existing .wasm
         // that does not verify is treated as a plain file (obj=None → no mint on save).
         let read = std::fs::read(&path);
         let (text, obj) = if path.ends_with(".wasm") {
             match &read {
-                Ok(bytes) if byteblockstorage::verify(bytes).is_ok() => {
-                    let content = byteblockstorage::read(bytes).unwrap_or_default();
+                Ok(bytes) if wasmobj::verify(bytes).is_ok() => {
+                    let content = wasmobj::read(bytes).unwrap_or_default();
                     (String::from_utf8_lossy(&content).into_owned(), Some(bytes.clone()))
                 }
                 Ok(bytes) => (String::from_utf8_lossy(bytes).into_owned(), None),
@@ -69,12 +69,12 @@ impl Editor {
         let ok = match &mut self.obj {
             Some(obj) => {
                 // Ensure we have a live object to write into; mint one sized to content.
-                if byteblockstorage::verify(obj).is_err() {
-                    let tier = byteblockstorage::Tier::for_len(text.len() as u32 + 4)
-                        .unwrap_or(byteblockstorage::Tier::K64);
-                    *obj = byteblockstorage::mint(tier, 0);
+                if wasmobj::verify(obj).is_err() {
+                    let tier = wasmobj::Tier::for_len(text.len() as u32 + 4)
+                        .unwrap_or(wasmobj::Tier::K64);
+                    *obj = wasmobj::mint(tier, 0);
                 }
-                byteblockstorage::save(obj, text.as_bytes()).is_ok()
+                wasmobj::save(obj, text.as_bytes()).is_ok()
                     && std::fs::write(&self.path, &obj[..]).is_ok()
             }
             None => std::fs::write(&self.path, text.as_bytes()).is_ok(),

@@ -2,7 +2,7 @@
 resolver = "2"
 members = [
     "crates/kernel",
-    "crates/byteblockstorage",
+    "crates/wasmobj",
     "crates/hello",
     "crates/crash",
     "crates/catfile",

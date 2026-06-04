@@ -119,16 +119,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
 
 [[package]]
-name = "byteblockstorage"
-version = "0.0.0"
-dependencies = [
- "proptest",
- "wasmparser 0.221.3",
- "wasmtime",
- "wasmtime-wasi",
-]
-
-[[package]]
 name = "byteorder"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -517,8 +507,8 @@ dependencies = [
 name = "editor"
 version = "0.0.0"
 dependencies = [
- "byteblockstorage",
  "wasmgfx",
+ "wasmobj",
  "wasmos-sys",
 ]
 
@@ -1158,7 +1148,7 @@ dependencies = [
 name = "nano"
 version = "0.0.0"
 dependencies = [
- "byteblockstorage",
+ "wasmobj",
  "wasmos-sys",
 ]
 
@@ -2083,6 +2073,16 @@ dependencies = [
 [[package]]
 name = "wasmgfx"
 version = "0.0.0"
+
+[[package]]
+name = "wasmobj"
+version = "0.0.0"
+dependencies = [
+ "proptest",
+ "wasmparser 0.221.3",
+ "wasmtime",
+ "wasmtime-wasi",
+]
 
 [[package]]
 name = "wasmos-sys"

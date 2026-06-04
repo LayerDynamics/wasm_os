@@ -1,5 +1,5 @@
 //! Deterministic emitter for wasm objects. The non-data sections are fixed bytes;
-//! only the memory page count, data segment length/bytes, and bbs0 vary by tier.
+//! only the memory page count, data segment length/bytes, and wob0 vary by tier.
 
 use crate::format::{leb_u32, section, Header, Tier};
 
@@ -94,7 +94,7 @@ pub fn mint(tier: Tier, content_type: u8) -> Vec<u8> {
     let window_offset = (out.len() + 1 + leb_len.len() + window_start_in_data) as u32;
     section(11, &data, &mut out);
 
-    // --- custom section (id 0): "bbs0" header
+    // --- custom section (id 0): "wob0" header
     let header = Header {
         version: 1,
         window_offset,
@@ -104,7 +104,7 @@ pub fn mint(tier: Tier, content_type: u8) -> Vec<u8> {
     };
     let mut custom = Vec::new();
     leb_u32(4, &mut custom);
-    custom.extend_from_slice(b"bbs0");
+    custom.extend_from_slice(b"wob0");
     custom.extend_from_slice(&header.encode());
     section(0, &custom, &mut out);
 

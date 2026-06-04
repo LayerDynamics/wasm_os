@@ -1,14 +1,14 @@
 [package]
-name = "byteblockstorage"
+name = "wasmobj"
 edition.workspace = true
 version.workspace = true
 license.workspace = true
 
 # A document container that IS a wasm32-wasip1 module: a fixed-size data-segment
 # "window" pre-filled with 0x20 holds the content; the module's _start renders
-# that content to stdout (self-executing). See docs/specs/SPEC-2-byteblockstorage.md.
+# that content to stdout (self-executing). See docs/specs/SPEC-2-wasmobj.md.
 [lib]
-name = "byteblockstorage"
+name = "wasmobj"
 path = "src/lib.rs"
 
 [dev-dependencies]

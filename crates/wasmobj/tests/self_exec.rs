@@ -1,5 +1,5 @@
 //! Proves FR-9: a filled object, run as a wasip1 module, writes its content to stdout.
-use byteblockstorage::{mint, save, Tier};
+use wasmobj::{mint, save, Tier};
 use wasmtime::*;
 use wasmtime_wasi::pipe::MemoryOutputPipe;
 use wasmtime_wasi::preview1::{self, WasiP1Ctx};

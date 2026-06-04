@@ -1,9 +1,9 @@
 import { test, expect, type Page } from "@playwright/test";
 
-// M-BBS-3 (SPEC-2): a document saved by nano is a real byteblockstorage wasm
+// M-BBS-3 (SPEC-2): a document saved by nano is a real wasmobj wasm
 // object that survives a tab reload and re-opens to its content. Real stack, no
 // mocks: keystrokes → xterm → terminal foreground stdin → nano (raw mode) →
-// byteblockstorage::save → kernel VFS → OPFS/IndexedDB → reload → reread + reopen.
+// wasmobj::save → kernel VFS → OPFS/IndexedDB → reload → reread + reopen.
 // Mirrors e2e/nano.spec.ts (the in-terminal editor) — nano is shell-launchable
 // with argv, so the whole flow runs through the real shell, unlike the GUI editor.
 

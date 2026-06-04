@@ -4,7 +4,7 @@ use crate::format::{locate, Error, Header};
 use crate::mint::mint as mint_obj;
 use crate::Tier;
 
-/// Validate the bbs0 header + window bounds; returns the parsed header.
+/// Validate the wob0 header + window bounds; returns the parsed header.
 pub fn verify(obj: &[u8]) -> Result<Header, Error> {
     Ok(locate(obj)?.header)
 }
@@ -24,7 +24,7 @@ pub fn extract(obj: &[u8]) -> Result<Vec<u8>, Error> {
 }
 
 /// Overwrite the window in place: content + 0x20 padding, update both content_len
-/// copies (in-band prefix + bbs0). No module re-encode. Errors if content exceeds
+/// copies (in-band prefix + wob0). No module re-encode. Errors if content exceeds
 /// capacity-4.
 pub fn write_in_place(obj: &mut [u8], content: &[u8]) -> Result<(), Error> {
     let loc = locate(obj)?;
@@ -44,8 +44,8 @@ pub fn write_in_place(obj: &mut [u8], content: &[u8]) -> Result<(), Error> {
     for b in &mut obj[w + 4 + content.len()..w + cap] {
         *b = 0x20;
     }
-    // mirror into bbs0
-    let cl = loc.bbs0_content_len_off;
+    // mirror into wob0
+    let cl = loc.wob0_content_len_off;
     obj[cl..cl + 4].copy_from_slice(&len.to_le_bytes());
     Ok(())
 }
@@ -94,9 +94,9 @@ mod tests {
         assert!(verify(&obj).is_err());
     }
 
-    // test helper: file offset of bbs0 content_len in a freshly minted/clean object
+    // test helper: file offset of wob0 content_len in a freshly minted/clean object
     fn locate_cl(obj: &[u8]) -> usize {
-        crate::format::locate(obj).unwrap().bbs0_content_len_off
+        crate::format::locate(obj).unwrap().wob0_content_len_off
     }
 
     #[test]
@@ -107,16 +107,16 @@ mod tests {
         let w = h.window_offset as usize;
         let cap = h.capacity as usize;
 
-        let content = b"hello byteblockstorage".to_vec();
+        let content = b"hello wasmobj".to_vec();
         write_in_place(&mut obj, &content).unwrap();
 
         assert_eq!(read(&obj).unwrap(), content);
-        // in-band len + bbs0 content_len both updated
+        // in-band len + wob0 content_len both updated
         assert_eq!(verify(&obj).unwrap().content_len as usize, content.len());
         assert_eq!(&obj[w..w + 4], &(content.len() as u32).to_le_bytes());
         // padding after content is 0x20
         assert!(obj[w + 4 + content.len()..w + cap].iter().all(|&b| b == 0x20));
-        // EVERYTHING outside the window AND outside the bbs0 content_len field is unchanged
+        // EVERYTHING outside the window AND outside the wob0 content_len field is unchanged
         assert_eq!(obj.len(), before.len());
         let cl = locate_cl(&before);
         for i in 0..obj.len() {

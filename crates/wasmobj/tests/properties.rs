@@ -1,4 +1,4 @@
-use byteblockstorage::{mint, read, save, verify, Tier};
+use wasmobj::{mint, read, save, verify, Tier};
 use proptest::prelude::*;
 
 proptest! {
