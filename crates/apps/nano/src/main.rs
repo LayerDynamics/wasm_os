@@ -125,12 +125,16 @@ struct Editor {
     rows: usize,
     cols: usize,
     quit: bool,
+    /// Some(bytes) when this file is a byteblockstorage wasm object (FR-7/FR-12):
+    /// save writes the content back into a wasm module instead of plain bytes.
+    obj: Option<Vec<u8>>,
 }
 
 impl Editor {
     fn new(filename: String, rows: usize, cols: usize) -> Self {
-        let (lines, status) = match fs::read_to_string(&filename) {
-            Ok(text) => {
+        let (text, obj, status) = Self::read_source(&filename);
+        let (lines, status) = match text {
+            Some(text) => {
                 let mut parts: Vec<&str> = text.split('\n').collect();
                 // A trailing newline yields a spurious empty final element — drop it
                 // so the file's real last line is the buffer's last line.
@@ -140,9 +144,11 @@ impl Editor {
                 let lines: Vec<Vec<char>> = parts.iter().map(|s| s.chars().collect()).collect();
                 let lines = if lines.is_empty() { vec![Vec::new()] } else { lines };
                 let n = lines.len();
-                (lines, format!("Read {n} line{}", if n == 1 { "" } else { "s" }))
+                let status = status
+                    .unwrap_or_else(|| format!("Read {n} line{}", if n == 1 { "" } else { "s" }));
+                (lines, status)
             }
-            Err(_) => (vec![Vec::new()], "New File".to_string()),
+            None => (vec![Vec::new()], status.unwrap_or_else(|| "New File".to_string())),
         };
         Editor {
             lines,
@@ -156,6 +162,36 @@ impl Editor {
             rows: rows.max(5),
             cols: cols.max(20),
             quit: false,
+            obj,
+        }
+    }
+
+    /// Resolve the initial buffer text + (for `.wasm` documents) the object bytes.
+    /// Returns `(text, obj, forced_status)`:
+    ///   - `text=None` → no readable file → "New File" (plain).
+    ///   - A `.wasm` that verifies as a byteblockstorage object → its content + the
+    ///     object bytes (save rewrites the object in place / repacks).
+    ///   - A `.wasm` that DOES NOT EXIST → a new mintable document (blank + empty obj).
+    ///   - A `.wasm` that exists but does NOT verify → a plain file (obj=None); we must
+    ///     never mint over it (it could be an executable guest — clobber guard).
+    fn read_source(filename: &str) -> (Option<String>, Option<Vec<u8>>, Option<String>) {
+        if filename.is_empty() {
+            return (None, None, None);
+        }
+        if filename.ends_with(".wasm") {
+            match fs::read(filename) {
+                Ok(bytes) if byteblockstorage::verify(&bytes).is_ok() => {
+                    let content = byteblockstorage::read(&bytes).unwrap_or_default();
+                    (Some(String::from_utf8_lossy(&content).into_owned()), Some(bytes), None)
+                }
+                Ok(bytes) => (Some(String::from_utf8_lossy(&bytes).into_owned()), None, None),
+                Err(_) => (Some(String::new()), Some(Vec::new()), Some("New File".to_string())),
+            }
+        } else {
+            match fs::read_to_string(filename) {
+                Ok(text) => (Some(text), None, None),
+                Err(_) => (None, None, None),
+            }
         }
     }
 
@@ -341,12 +377,30 @@ impl Editor {
         text
     }
 
-    /// Ctrl-O: write the buffer to its file.
+    /// Ctrl-O: write the buffer to its file. For a byteblockstorage document the
+    /// content is written into a wasm object (minting one on first save, repacking
+    /// when it outgrows its tier); otherwise it is written as plain bytes.
     fn save(&mut self) {
         if self.filename.is_empty() {
             self.filename = "untitled.txt".to_string();
         }
-        match fs::write(&self.filename, self.to_text()) {
+        let text = self.to_text();
+        let result: io::Result<()> = match &mut self.obj {
+            Some(obj) => {
+                if byteblockstorage::verify(obj).is_err() {
+                    // New document: mint an object sized to the content.
+                    let tier = byteblockstorage::Tier::for_len(text.len() as u32 + 4)
+                        .unwrap_or(byteblockstorage::Tier::K64);
+                    *obj = byteblockstorage::mint(tier, 0);
+                }
+                match byteblockstorage::save(obj, text.as_bytes()) {
+                    Ok(_) => fs::write(&self.filename, &obj[..]),
+                    Err(e) => Err(io::Error::other(format!("byteblockstorage: {e:?}"))),
+                }
+            }
+            None => fs::write(&self.filename, text),
+        };
+        match result {
             Ok(()) => {
                 let n = self.lines.len();
                 self.status = format!("[ Wrote {n} line{} ]", if n == 1 { "" } else { "s" });

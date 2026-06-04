@@ -15,3 +15,4 @@ path = "src/main.rs"
 
 [dependencies]
 wasmos-sys = { path = "../../wasmos-sys" }
+byteblockstorage = { path = "../../byteblockstorage" }

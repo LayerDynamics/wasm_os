@@ -36,15 +36,22 @@ struct Editor {
 
 impl Editor {
     fn load(path: String) -> Editor {
-        // A wasm object? (path ends .wasm AND verifies). Read content out of it.
-        let bytes = std::fs::read(&path).unwrap_or_default();
-        let (text, obj) = if path.ends_with(".wasm") && byteblockstorage::verify(&bytes).is_ok() {
-            let content = byteblockstorage::read(&bytes).unwrap_or_default();
-            (String::from_utf8_lossy(&content).into_owned(), Some(bytes))
-        } else if path.ends_with(".wasm") {
-            // New wasm doc that doesn't exist yet: start blank, save will mint.
-            (String::new(), Some(Vec::new()))
+        // Decide if this is a byteblockstorage document. Guard against clobbering an
+        // existing non-document .wasm (e.g. an executable guest): only a .wasm path
+        // that DOES NOT EXIST yet becomes a new mintable document. An existing .wasm
+        // that does not verify is treated as a plain file (obj=None → no mint on save).
+        let read = std::fs::read(&path);
+        let (text, obj) = if path.ends_with(".wasm") {
+            match &read {
+                Ok(bytes) if byteblockstorage::verify(bytes).is_ok() => {
+                    let content = byteblockstorage::read(bytes).unwrap_or_default();
+                    (String::from_utf8_lossy(&content).into_owned(), Some(bytes.clone()))
+                }
+                Ok(bytes) => (String::from_utf8_lossy(bytes).into_owned(), None),
+                Err(_) => (String::new(), Some(Vec::new())), // new doc → save mints
+            }
         } else {
+            let bytes = read.unwrap_or_default();
             (String::from_utf8_lossy(&bytes).into_owned(), None)
         };
         let mut lines: Vec<String> = text
