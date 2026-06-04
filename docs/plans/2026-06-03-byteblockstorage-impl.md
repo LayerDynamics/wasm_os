@@ -854,7 +854,9 @@ struct Editor {
 
 ---
 
-## Task 10: Real E2E — create → edit → save → reload → reopen (M-BBS-3)
+> **As-built deviation (Task 8 + Task 10):** the canvas **editor** is unreachable as a document opener — the shell can't launch GUI apps (no `Gpu`/`Input` caps) and host spawn can't pass an argv path. The reachable integration shipped in **nano** (terminal editor, shell-launchable with argv; in scope per "editor/nano"). The editor keeps the same guarded branch as forward-looking code. Both guard against mint-overwriting an existing non-document `.wasm` (only a non-existent `.wasm` path becomes a new document). The E2E below was implemented against nano (`e2e/byteblockstorage.spec.ts`) and additionally **runs the saved object in WASM_OS** (typing `/home/note.wasm` in the terminal) to prove FR-9 through the real kernel, not only under wasmtime.
+
+## Task 10: Real E2E — create → edit → save → reload → reopen → run (M-BBS-3)
 
 **Files:**
 - Create: `e2e/byteblockstorage.spec.ts`

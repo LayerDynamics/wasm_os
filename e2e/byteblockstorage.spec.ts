@@ -107,4 +107,18 @@ test("a document saved by nano is a wasm object that survives reload and reopens
   const text = asLatin1(reopened);
   expect(text).toContain("PERSIST");
   expect(text).toContain("TWO");
+
+  // 8. The document is a LIVE module IN WASM_OS (FR-9): run it as a process through
+  //    the real shell/kernel — its _start renders its own content to the terminal.
+  //    (sh resolves a '/'-path arg and spawns it with the terminal as stdout.)
+  const before = (await readLog(page)).length;
+  await page.keyboard.type("/home/note.wasm", { delay: 10 });
+  await page.keyboard.press("Enter");
+  const out = await waitForLog(
+    page,
+    (l) => l.slice(before).includes("PERSIST") && l.slice(before).includes("TWO"),
+    "the saved wasm object to render its own content when run in WASM_OS",
+  );
+  expect(out.slice(before)).toContain("PERSIST");
+  expect(out.slice(before)).toContain("TWO");
 });

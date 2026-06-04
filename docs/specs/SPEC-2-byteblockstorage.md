@@ -486,6 +486,7 @@ offset  size  field          notes
 | D-4 | Overflow → re-pack to next tier (not error/truncate/chain) | User selection; tiers bound re-pack frequency (FR-6/FR-10) |
 | D-5 | Guest/userland Rust library, not a kernel VFS backend or host module | User selection; reaches VFS via WASI only (Constraint 1, 4) |
 | D-6 | Metadata in a `bbs0` custom section | Only spec-blessed place for non-executable metadata; keeps module valid (Constraint 3) |
+| D-7 | V1 editor integration (FR-12) shipped in **nano**, not the canvas editor | During implementation the canvas editor proved unreachable as a document opener: the shell cannot launch GUI apps (no `Gpu`/`Input` caps to delegate) and the host spawn API cannot pass an argv path, so nothing could open the editor on a `.wasm`. nano is a terminal editor — shell-launchable with argv, no GPU caps — and is within the author's chosen "editor/nano" scope. nano carries the FR-7/FR-12 flow end-to-end (browser E2E); the canvas editor keeps the same (guarded) branch as forward-looking code for when a GUI argv-launch path exists. Both apps guard against mint-overwriting an existing non-document `.wasm`. |
 
 ### Appendix D — Validation Checklist (Phase 4 of authoring)
 
