@@ -7,7 +7,8 @@
 
 use std::io::{Read, Write};
 use wasmos_sys::{
-    close, kill, pipe, spawn, wait, Stdio, FILE_APPEND, FILE_READ, FILE_TRUNC, SIGKILL, SIGTERM,
+    chdir_to_pwd, close, kill, pipe, spawn, wait, Stdio, FILE_APPEND, FILE_READ, FILE_TRUNC,
+    SIGKILL, SIGTERM,
 };
 
 fn main() {
@@ -16,12 +17,25 @@ fn main() {
     if let Ok(motd) = std::fs::read_to_string("/etc/motd") {
         print!("{motd}");
     }
-    if let Some(path) = read_profile_path() {
+    if let Some(path) = read_profile_var("PATH") {
         std::env::set_var("PATH", path);
     }
 
+    // Open in the user's home directory (HOME from /etc/profile, default /home) so the
+    // terminal lands where the user's files live — falling back to "/" if it is absent.
+    let home = read_profile_var("HOME").unwrap_or_else(|| "/home".to_string());
+    std::env::set_var("HOME", &home);
+    let mut cwd = if std::fs::metadata(&home).map(|m| m.is_dir()).unwrap_or(false) {
+        home
+    } else {
+        String::from("/")
+    };
+    // Keep the shell's own libc cwd aligned with $PWD (it resolves to absolute paths
+    // anyway, but this keeps the process environment consistent for children/builtins).
+    std::env::set_var("PWD", &cwd);
+    chdir_to_pwd();
+
     let mut stdin = std::io::stdin();
-    let mut cwd = String::from("/");
     let mut last_status: i32 = 0;
 
     loop {
@@ -107,8 +121,11 @@ fn try_builtin(s: &str, cwd: &mut String) -> Option<i32> {
             Some(0)
         }
         "cd" => {
-            let target = toks.get(1).copied().unwrap_or("/");
+            // Bare `cd` goes to $HOME (like a real shell), not "/".
+            let home = std::env::var("HOME").unwrap_or_else(|_| "/".to_string());
+            let target = toks.get(1).copied().unwrap_or(home.as_str());
             *cwd = resolve_path(cwd, target);
+            std::env::set_var("PWD", &*cwd);
             Some(0)
         }
         // `kill [-SIG] <pid>` (M4-T5) — a builtin because it runs in the shell's
@@ -265,13 +282,14 @@ fn resolve_cmd(cwd: &str, prog: &str) -> String {
     format!("{first}/{prog}")
 }
 
-/// PATH value declared in /etc/profile (`export PATH=…` or `PATH=…`), if present.
-fn read_profile_path() -> Option<String> {
+/// Value of `key` declared in /etc/profile (`export KEY=…` or `KEY=…`), if present.
+fn read_profile_var(key: &str) -> Option<String> {
     let content = std::fs::read_to_string("/etc/profile").ok()?;
+    let prefix = format!("{key}=");
     content.lines().find_map(|line| {
         let l = line.trim();
         let l = l.strip_prefix("export ").unwrap_or(l);
-        l.strip_prefix("PATH=").map(|v| v.trim().to_string())
+        l.strip_prefix(&prefix).map(|v| v.trim().to_string())
     })
 }
 

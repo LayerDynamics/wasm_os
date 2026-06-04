@@ -155,8 +155,9 @@ test("Backspace deletes the last character in the terminal line", async ({ page 
   );
 
   await page.locator("#terminal").click();
-  // Type "lsX", delete the stray X, then run — the shell must execute `ls`, not `lsX`.
-  await page.keyboard.type("lsX", { delay: 30 });
+  // Type "ls /X", delete the stray X, then run — the shell must execute `ls /`, not
+  // `ls /X`. (Target root explicitly so this is independent of the shell's cwd.)
+  await page.keyboard.type("ls /X", { delay: 30 });
   await page.keyboard.press("Backspace");
   await page.keyboard.press("Enter");
 
@@ -168,8 +169,8 @@ test("Backspace deletes the last character in the terminal line", async ({ page 
     if (/\bbin\b/.test(log)) break;
     await page.waitForTimeout(150);
   }
-  expect(log).toMatch(/\bbin\b/); // `ls` ran and listed /bin
-  expect(log).not.toContain("lsX: command not found"); // the X was truly deleted
+  expect(log).toMatch(/\bbin\b/); // `ls /` ran and listed /bin (so the X was deleted)
+  expect(log).not.toMatch(/No such file|not found/i); // not `ls /X` and not an unknown cmd
 
   // Backspace at an empty prompt must not eat the prompt or the previous output.
   const before = await readLog();
@@ -260,8 +261,9 @@ test("terminal keeps working after switching to another window and back (focus r
   // The xterm textarea must have regained keyboard focus.
   expect(await page.evaluate(() => !!document.getElementById("terminal")?.contains(document.activeElement))).toBe(true);
 
-  // And real typing + Backspace must now reach the shell: "lsX" → Backspace → `ls`.
-  await page.keyboard.type("lsX", { delay: 30 });
+  // And real typing + Backspace must now reach the shell: "ls /X" → Backspace → `ls /`
+  // (root listed explicitly so the check is independent of the shell's cwd).
+  await page.keyboard.type("ls /X", { delay: 30 });
   await page.keyboard.press("Backspace");
   await page.keyboard.press("Enter");
   const readLog = () =>
@@ -272,8 +274,8 @@ test("terminal keeps working after switching to another window and back (focus r
     if (/\bbin\b/.test(log)) break;
     await page.waitForTimeout(150);
   }
-  expect(log).toMatch(/\bbin\b/); // `ls` ran — the terminal was NOT keyboard-dead
-  expect(log).not.toContain("lsX: command not found");
+  expect(log).toMatch(/\bbin\b/); // `ls /` ran — the terminal was NOT keyboard-dead
+  expect(log).not.toMatch(/No such file|not found/i);
 });
 
 test("pasting a multi-character command ending in a newline runs it", async ({ page }) => {
@@ -291,9 +293,10 @@ test("pasting a multi-character command ending in a newline runs it", async ({ p
   );
 
   // Paste delivers the text to xterm as a single onData chunk (incl. the newline).
+  // Target root explicitly so the assertion is independent of the shell's cwd.
   await page.evaluate(() => {
     const w = window as unknown as { __wasmos: { term: { term: { paste(s: string): void } } } };
-    w.__wasmos.term.term.paste("ls\n");
+    w.__wasmos.term.term.paste("ls /\n");
   });
 
   const readLog = () =>
@@ -305,7 +308,7 @@ test("pasting a multi-character command ending in a newline runs it", async ({ p
     await page.waitForTimeout(150);
   }
   expect(log).toContain("ls"); // the printable run was delivered, not dropped
-  expect(log).toMatch(/\bbin\b/); // ...and the newline submitted it, so `ls` ran
+  expect(log).toMatch(/\bbin\b/); // ...and the newline submitted it, so `ls /` ran
 });
 
 test("env prints the real per-process environment end-to-end (FR-18)", async ({ page }) => {
@@ -368,4 +371,37 @@ test("the Zig coreutil (echo.zig) runs end-to-end through the terminal (FR-14)",
   // Output line distinct from the echoed input → the Zig binary actually ran.
   expect((log.match(/zig-polyglot-OK/g) || []).length).toBeGreaterThanOrEqual(2);
   expect((log.match(/wasmos:/g) || []).length).toBeGreaterThanOrEqual(2); // prompt returned
+});
+
+test("the terminal opens in the home directory (/home)", async ({ page }) => {
+  // The shell should land in $HOME (/home) on boot, not "/", so the user starts
+  // where their files live. Verified two ways: the boot prompt shows /home, and the
+  // `pwd` builtin reports /home.
+  const errors = captureErrors(page);
+  await page.goto("/");
+  await waitReady(page, errors);
+
+  const readLog = () =>
+    page.evaluate(() => (window as unknown as { __wasmos: { term: { log(): string } } }).__wasmos.term.log());
+
+  // The boot prompt is rendered as "wasmos:/home$ ".
+  let log = "";
+  for (let i = 0; i < 50; i++) {
+    log = await readLog();
+    if (log.includes("wasmos:/home$")) break;
+    await page.waitForTimeout(200);
+  }
+  expect(log, "boot prompt should be in /home").toContain("wasmos:/home$");
+
+  // `pwd` confirms the working directory is /home.
+  await page.locator("#terminal").click();
+  const before = (await readLog()).length;
+  await page.keyboard.type("pwd");
+  await page.keyboard.press("Enter");
+  for (let i = 0; i < 50; i++) {
+    log = await readLog();
+    if (log.slice(before).includes("/home")) break;
+    await page.waitForTimeout(200);
+  }
+  expect(log.slice(before), "pwd should print /home").toContain("/home");
 });
