@@ -6,8 +6,9 @@ use crate::format::{leb_u32, section, Header, Tier};
 /// Emit a fresh wasm object at `tier`, window pre-filled with 0x20 and content_len 0.
 pub fn mint(tier: Tier, content_type: u8) -> Vec<u8> {
     let capacity = tier.bytes();
-    // Window lives in linear memory at offset 256; ensure enough pages for it.
-    let pages = ((256 + capacity + 0xFFFF) / 0x10000).max(1);
+    // Window lives in linear memory at offset 256; ensure enough pages for it
+    // (>= 1 always, since 256 + capacity > 0).
+    let pages = (256 + capacity).div_ceil(0x10000);
 
     let mut out = Vec::new();
     out.extend_from_slice(b"\0asm");
