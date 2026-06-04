@@ -24,6 +24,15 @@ const SEL_BG: Color = rgb(43, 108, 176);
 const DIR_ICON: Color = rgb(232, 196, 80);
 const FILE_ICON: Color = rgb(120, 200, 210);
 
+// Header navigation affordances (FR-24 usability): an explicit "↑ Up" button and a
+// clickable breadcrumb path, so ascending out of a folder is obvious — not just the
+// "../" row or the (undiscoverable) Backspace key.
+const UP_X0: i32 = 4;
+const UP_X1: i32 = 44; // "↑ Up" button hit region [UP_X0, UP_X1)
+const CRUMB_X0: i32 = 50; // breadcrumb starts here
+const SEP_FG: Color = rgb(120, 126, 138);
+const CRUMB_FG: Color = rgb(150, 200, 235); // ancestor crumbs look link-like (clickable)
+
 struct Entry {
     name: String,
     is_dir: bool,
@@ -50,6 +59,42 @@ fn join(cwd: &str, name: &str) -> String {
     } else {
         format!("{cwd}/{name}")
     }
+}
+
+/// One clickable breadcrumb segment: its pixel x-range in the header and the cwd it
+/// navigates to when clicked.
+struct Crumb {
+    x0: i32,
+    x1: i32,
+    label: String,
+    path: String,
+}
+
+/// Lay out the breadcrumb for `cwd` into clickable segments. The layout is fully
+/// determined by `cwd` and the fixed glyph width, so `draw` (rendering) and the click
+/// handler (hit-testing) agree on every segment's pixel range. For example,
+/// `/home/docs` renders as `/ > home > docs`, where `/`, `home`, and `docs` are
+/// clickable and navigate to `/`, `/home`, and `/home/docs` respectively.
+fn crumbs_for(cwd: &str) -> Vec<Crumb> {
+    let gw = GLYPH_W as i32;
+    let sep_w = 3 * gw; // " > " between crumbs
+    let mut out = vec![Crumb {
+        x0: CRUMB_X0,
+        x1: CRUMB_X0 + gw, // "/" is one glyph
+        label: "/".to_string(),
+        path: "/".to_string(),
+    }];
+    let mut x = CRUMB_X0 + gw;
+    let mut cum = String::new();
+    for comp in cwd.split('/').filter(|s| !s.is_empty()) {
+        x += sep_w;
+        cum.push('/');
+        cum.push_str(comp);
+        let w = gw * comp.chars().count() as i32;
+        out.push(Crumb { x0: x, x1: x + w, label: comp.to_string(), path: cum.clone() });
+        x += w;
+    }
+    out
 }
 
 impl State {
@@ -93,6 +138,25 @@ impl State {
             launch(&join(&self.cwd, &entry.name));
         }
     }
+
+    /// Handle a click in the header bar at pixel `x`: the "↑ Up" button ascends one
+    /// level; a breadcrumb segment jumps straight to that ancestor.
+    fn activate_header(&mut self, x: i32) {
+        if self.cwd != "/" && (UP_X0..UP_X1).contains(&x) {
+            self.cwd = parent_of(&self.cwd);
+            self.relist();
+            return;
+        }
+        for c in crumbs_for(&self.cwd) {
+            if (c.x0..c.x1).contains(&x) {
+                if c.path != self.cwd {
+                    self.cwd = c.path;
+                    self.relist();
+                }
+                return;
+            }
+        }
+    }
 }
 
 /// Launch a file as a process. Graphical apps need Gpu+Input, which the file
@@ -110,7 +174,24 @@ fn launch(path: &str) {
 fn draw(fb: &mut Framebuffer, st: &State) {
     fb.clear(BG);
     fb.fill_rect(0, 0, W as i32, HEADER_H, HEADER_BG);
-    fb.text(4, 7, &format!("Files: {}", st.cwd), FG);
+
+    // "↑ Up" button — dimmed and inert at the root, where there is nowhere to go up to.
+    let at_root = st.cwd == "/";
+    let up_bg = if at_root { rgb(34, 40, 54) } else { rgb(60, 72, 96) };
+    fb.fill_rect(UP_X0, 2, UP_X1 - UP_X0, HEADER_H - 4, up_bg);
+    let up_fg = if at_root { rgb(96, 102, 116) } else { FG };
+    fb.text(UP_X0 + 4, 7, "\u{2191} Up", up_fg);
+
+    // Clickable breadcrumb path. The current (last) crumb is plain; ancestors are
+    // tinted to read as links.
+    let crumbs = crumbs_for(&st.cwd);
+    for (i, c) in crumbs.iter().enumerate() {
+        if i > 0 {
+            fb.text(c.x0 - 3 * GLYPH_W as i32, 7, " > ", SEP_FG);
+        }
+        let fg = if i + 1 == crumbs.len() { FG } else { CRUMB_FG };
+        fb.text(c.x0, 7, &c.label, fg);
+    }
 
     let visible = ((H as i32 - HEADER_H) / ROW_H) as usize;
     let has_dotdot = st.cwd != "/";
@@ -123,15 +204,17 @@ fn draw(fb: &mut Framebuffer, st: &State) {
         if idx == st.selected {
             fb.fill_rect(0, y, W as i32, ROW_H, SEL_BG);
         }
-        let (icon, label, is_dir) = if has_dotdot && idx == 0 {
-            (DIR_ICON, "..".to_string(), true)
+        // The synthetic up-dir row is spelled out so it reads as a control, not two
+        // mysterious dots; real entries keep a trailing "/" on directories.
+        let (icon, text) = if has_dotdot && idx == 0 {
+            (DIR_ICON, ".. (up one level)".to_string())
         } else {
             let e = &st.entries[idx - if has_dotdot { 1 } else { 0 }];
-            (if e.is_dir { DIR_ICON } else { FILE_ICON }, e.name.clone(), e.is_dir)
+            let suffix = if e.is_dir { "/" } else { "" };
+            (if e.is_dir { DIR_ICON } else { FILE_ICON }, format!("{}{}", e.name, suffix))
         };
         fb.fill_rect(5, y + 3, GLYPH_W as i32, GLYPH_H as i32, icon);
-        let suffix = if is_dir { "/" } else { "" };
-        fb.text(5 + GLYPH_W as i32 + 4, y + 3, &format!("{label}{suffix}"), FG);
+        fb.text(5 + GLYPH_W as i32 + 4, y + 3, &text, FG);
     }
 }
 
@@ -155,8 +238,14 @@ fn main() {
         for ev in &events {
             match ev.kind {
                 EV_POINTER_MOVE | EV_POINTER_DOWN => {
+                    let x = ev.x as i32;
                     let y = ev.y as i32;
-                    if y >= HEADER_H {
+                    if y < HEADER_H {
+                        // Header bar: the "↑ Up" button and breadcrumb act on click only.
+                        if ev.kind == EV_POINTER_DOWN {
+                            st.activate_header(x);
+                        }
+                    } else {
                         let row = st.scroll + ((y - HEADER_H) / ROW_H) as usize;
                         if row < st.rows() {
                             st.selected = row;
