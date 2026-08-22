@@ -1,27 +1,26 @@
 # WIT & the ABI in WASM_OS
 
-> How the WebAssembly Interface Type (WIT) language defines the contracts in
-> WASM_OS — the typed kernel↔host boundary that `cargo-component` + `jco` build
-> against, and the separate logical ABI that the drift gate enforces by hand.
+> How WIT defines the component and guest syscall contracts in WASM_OS, and how
+> the Binder keeps the generated host bindings and guest stubs aligned.
 >
 > Companion docs: [WASM](wasm.md) (component vs core modules) and [WASI](wasi.md)
 > (the syscall surface the extension augments).
 
 WIT is the IDL of the Component Model: it declares packages, `interface`s (records,
 variants, enums, funcs), and `world`s (what a component imports/exports). In
-WASM_OS, WIT plays **two distinct roles**, in two separate trees:
+WASM_OS, WIT describes two transports under the same `wit/` source tree:
 
 | | `wasmos:abi` | `wasmos:kernel` |
 |---|--------------|-----------------|
-| Files | [`wit/`](../../wit) (`world.wit`, `control.wit`, `blockstore.wit`) | [`crates/wasmos-sys/wit/kernel.wit`](../../crates/wasmos-sys/wit/kernel.wit) |
+| Files | [`wit/`](../../wit) (`world.wit`, `control.wit`, `blockstore.wit`) | [`wit/kernel/kernel.wit`](../../wit/kernel/kernel.wit) |
 | Describes | the kernel **component's** real contract | the **syscall extension** (beyond WASI) |
-| Consumed by | `cargo-component` (build) + `jco transpile` (binder gen) | nobody — it is **documentation** |
-| Enforced by | the build itself + `binder check` (drift) | `binder kernel-check` (regex drift gate) |
+| Consumed by | `cargo-component` (build) + `jco transpile` (Binder) | Binder's signature checker |
+| Enforced by | the build itself + Binder generation check | `binder kernel-check` (signature drift gate) |
 | Transport | Component Model imports/exports | binary messages over the SAB ring |
 
-This split is deliberate, and the second file says so in its own header: the
-extension WIT "lives outside the kernel component's `wit/` tree (which is a single
-`wasmos:abi` package) on purpose — it is not consumed by `cargo-component`/`jco`."
+The transports differ, but the contracts do not live in separate source trees. The
+guest extension remains WIT so Binder can validate its core-module wire shim
+without pretending that `jco` can emit that transport.
 
 ---
 
@@ -88,18 +87,15 @@ resume mechanism. The semantics live in the type.
   `.wasm` bindings to `packages/abi/generated`. That directory is a **build
   artifact, gitignored** — the WIT is the source of truth, the bindings are derived.
 
-- **`binder check`** — re-transpiles into a temp dir and diffs against the committed
-  bindings; if they differ, the WIT/kernel drifted from the generated bindings and
-  the build fails with "run `npm run build && npm run binder gen` and commit."
+- **`binder check`** — re-transpiles into a temp dir, compares the generated host
+  bindings with the build output, and runs `kernel-check` for the guest side.
 
-- **`binder kernel-check`** (`npm run binder:kernel-check`, part of `npm run
-  verify`) — the FR-36 drift gate for the *extension* ABI. Because `wasmos:kernel`
-  is **not** a Component-Model package, it cannot be jco-transpiled. Instead the
-  binder regex-scans [`crates/wasmos-sys/wit/kernel.wit`](../../crates/wasmos-sys/wit/kernel.wit)
-  for every `name: func` and asserts [`crates/wasmos-sys/src/lib.rs`](../../crates/wasmos-sys/src/lib.rs)
-  exposes a matching guest stub. Add a verb to `kernel.wit` without a stub and the
-  build fails. This keeps the documented extension ABI honest even though no tool
-  generates code from it.
+- **`binder kernel-check`** (`npm run binder:kernel-check`) — the FR-36 gate for
+  the extension ABI. Because `wasmos:kernel` travels over a core-module syscall
+  import, it is not passed to `jco`; Binder parses
+  [`wit/kernel/kernel.wit`](../../wit/kernel/kernel.wit) and compares every
+  declared function with [`crates/wasmos-sys/src/lib.rs`](../../crates/wasmos-sys/src/lib.rs),
+  including parameter counts, parameter types, and return types.
 
 ---
 
@@ -143,12 +139,10 @@ calls.
   boundary genuinely is a component boundary — `cargo-component` enforces it at
   compile time and `jco` generates the glue. Changing it without regenerating
   bindings fails `binder check`.
-- `wasmos:kernel` is **documentation-grade** WIT: the guest↔kernel syscall channel
-  is a hand-rolled binary ring (so any `wasm32-wasi` toolchain can speak it without
-  component tooling — see [wasm.md](wasm.md)), but we still want a typed, readable
-  spec of that surface and a gate against silent drift. Writing it in WIT keeps the
-  whole ABI described in one language; `binder kernel-check` substitutes for the
-  codegen that a real component would get.
+- `wasmos:kernel` uses a hand-rolled binary ring so any `wasm32-wasi` toolchain can
+  speak it without component tooling (see [wasm.md](wasm.md)). Binder owns the WIT
+  contract and validates the real Rust transport shim instead of using a weaker
+  name-only check.
 
 ---
 
@@ -159,10 +153,10 @@ calls.
 | [`wit/world.wit`](../../wit/world.wit) | the `kernel` world (imports stores, exports control) |
 | [`wit/control.wit`](../../wit/control.wit) | the host-driven control surface + all shared types |
 | [`wit/blockstore.wit`](../../wit/blockstore.wit) | the three host-implemented storage interfaces |
-| [`crates/wasmos-sys/wit/kernel.wit`](../../crates/wasmos-sys/wit/kernel.wit) | documented `wasmos_kernel` extension ABI (process + compositor) |
+| [`wit/kernel/kernel.wit`](../../wit/kernel/kernel.wit) | `wasmos_kernel` extension ABI (process + compositor) |
 | [`tools/binder/binder.mjs`](../../tools/binder/binder.mjs) | `gen` (jco transpile) · `check` (binding drift) · `kernel-check` (stub drift) |
 | [`packages/abi/generated`](../../packages/abi) | jco output — build artifact, gitignored |
-| [`crates/wasmos-sys/src/lib.rs`](../../crates/wasmos-sys/src/lib.rs) | guest stubs `kernel-check` verifies against `kernel.wit` |
+| [`crates/wasmos-sys/src/lib.rs`](../../crates/wasmos-sys/src/lib.rs) | guest transport shim checked against `wit/kernel/kernel.wit` |
 
 See also: [WASM](wasm.md) for how the component is built and transpiled, [WASI](wasi.md)
 for the syscall path the `control` surface drives, and

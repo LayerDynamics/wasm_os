@@ -1,6 +1,6 @@
 import { test, expect, type Page } from "@playwright/test";
 
-// M3-T7 — text editor (FR-24 association target). A real Rust canvas app: it opens
+// editor app — text editor (FR-24 association target). A real Rust canvas app: it opens
 // a file, edits it from brokered keyboard input, and saves with Ctrl+S. The proof
 // rounds-trips through the VFS: seed a file → edit → save → read back the bytes.
 

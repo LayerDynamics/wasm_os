@@ -1,9 +1,9 @@
-//! spinner — M4 concurrency stress fixture (FR-3).
+//! spinner — process control and IPC concurrency stress fixture (FR-3).
 //!
 //! Does a little real work — each iteration makes a syscall (`fd_write`), so the
 //! kernel accounts scheduler ticks that `ps`/`top` can show — then parks on stdin
 //! so 32 instances coexist as live processes without burning CPU. A read of EOF
-//! (or SIGTERM, M4-T5) ends it.
+//! (or SIGTERM, signals) ends it.
 
 use std::io::{Read, Write};
 
@@ -19,7 +19,7 @@ fn main() {
     std::hint::black_box(acc);
 
     // Stay alive without spinning: park on stdin. Closing stdin (EOF) — or a
-    // SIGTERM delivered in M4-T5 — ends the process cleanly.
+    // SIGTERM delivered in signals — ends the process cleanly.
     let mut byte = [0u8; 1];
     let _ = std::io::stdin().read(&mut byte);
 }

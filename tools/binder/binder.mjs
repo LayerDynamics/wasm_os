@@ -10,6 +10,8 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 // home-store/mnt-store. Building for wasip1 would link std's phantom WASI imports.
 const KERNEL_WASM = join(ROOT, "target", "wasm32-unknown-unknown", "release", "kernel.wasm");
 const OUT = join(ROOT, "packages", "abi", "generated");
+const KERNEL_WIT = join(ROOT, "wit", "kernel", "kernel.wit");
+const GUEST_SRC = join(ROOT, "crates", "wasmos-sys", "src", "lib.rs");
 
 function transpile(outDir) {
   if (!existsSync(KERNEL_WASM)) {
@@ -25,8 +27,8 @@ function transpile(outDir) {
 }
 
 // The generated *.core*.wasm is a build artifact (a split-out copy of the kernel),
-// not a binding. It is .gitignored and excluded from the drift comparison; only the
-// textual bindings (.js/.d.ts) are committed and gated.
+// not a binding. It is excluded from the drift comparison; the textual bindings
+// (.js/.d.ts) are committed and gated.
 function bindingFiles(dir) {
   const out = [];
   for (const e of readdirSync(dir, { withFileTypes: true })) {
@@ -45,59 +47,167 @@ function gen() {
 
 function check() {
   if (!existsSync(OUT)) {
-    console.error("binder check: no committed bindings at packages/abi/generated — run `binder gen`");
+    console.error("binder check: generated bindings are missing — run `binder gen`");
+    process.exit(1);
+  }
+  const tracked = execFileSync("git", ["ls-files", "--cached", "packages/abi/generated"], { cwd: ROOT, encoding: "utf8" })
+    .trim().split("\n").filter(Boolean).filter((p) => !p.endsWith(".wasm"));
+  if (!tracked.length) {
+    console.error("binder check: packages/abi/generated has no tracked textual bindings; stage `binder gen` output");
     process.exit(1);
   }
   const tmp = mkdtempSync(join(tmpdir(), "binder-check-"));
   try {
     transpile(tmp);
-    const committed = bindingFiles(OUT).map((p) => relative(OUT, p));
+    const committed = tracked.map((p) => p.slice("packages/abi/generated/".length));
     const fresh = bindingFiles(tmp).map((p) => relative(tmp, p));
     const drift = [];
     const all = new Set([...committed, ...fresh]);
     for (const rel of all) {
-      const a = existsSync(join(OUT, rel)) ? readFileSync(join(OUT, rel), "utf8") : null;
+      const a = committed.includes(rel) ? execFileSync("git", ["show", `:${join("packages/abi/generated", rel)}`], { cwd: ROOT, encoding: "utf8" }) : null;
       const b = existsSync(join(tmp, rel)) ? readFileSync(join(tmp, rel), "utf8") : null;
       if (a !== b) drift.push(rel);
     }
     if (drift.length) {
       console.error("binder check FAILED — generated bindings drifted from wit/ + kernel:");
       for (const d of drift) console.error("  " + d);
-      console.error("Run `npm run build && npm run binder gen` and commit the result.");
+      console.error("Run `npm run build && git add packages/abi/generated` to refresh the tracked result.");
       process.exit(1);
     }
     console.log("binder check: bindings are in sync.");
+    kernelCheck();
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }
 }
 
+function splitTopLevel(value) {
+  const parts = [];
+  let start = 0;
+  let depth = 0;
+  for (let i = 0; i < value.length; i += 1) {
+    if ("(<[{".includes(value[i])) depth += 1;
+    if (")>]}".includes(value[i])) depth -= 1;
+    if (value[i] === "," && depth === 0) {
+      parts.push(value.slice(start, i).trim());
+      start = i + 1;
+    }
+  }
+  if (value.slice(start).trim()) parts.push(value.slice(start).trim());
+  return parts;
+}
+
+function splitGeneric(type) {
+  const start = type.indexOf("<");
+  if (start < 0 || !type.endsWith(">")) return null;
+  return [type.slice(0, start), type.slice(start + 1, -1)];
+}
+
+function rustTypeForWit(type, { returnType = false } = {}) {
+  const t = type.replace(/\s+/g, " ").trim();
+  const generic = splitGeneric(t);
+  if (generic?.[0] === "list") {
+    const inner = rustTypeForWit(generic[1], { returnType });
+    if (generic[1].trim() === "u8") return returnType ? "Vec<u8>" : "&[u8]";
+    if (generic[1].trim() === "string") return returnType ? "Vec<&str>" : "&[&str]";
+    return `Vec<${inner}>`;
+  }
+  if (generic?.[0] === "result") {
+    const values = splitTopLevel(generic[1]);
+    return `Result<${rustTypeForWit(values[0], { returnType: true })}, ${rustTypeForWit(values[1], { returnType: true })}>`;
+  }
+  if (generic?.[0] === "tuple") {
+    return returnType ? `(${splitTopLevel(generic[1]).map((v) => rustTypeForWit(v, { returnType: true })).join(", ")})` : "&[Stdio; 3]";
+  }
+  const primitive = {
+    string: "&str",
+    bool: "bool",
+    u8: "u8",
+    u16: "u16",
+    u32: "u32",
+    u64: "u64",
+    s32: "i32",
+  }[t];
+  if (primitive) return primitive;
+  return t.split("-").map((part) => part[0].toUpperCase() + part.slice(1)).join("");
+}
+
+function parseWitFunctions(wit) {
+  const functions = [];
+  const pattern = /^\s*([a-z][a-z0-9-]*)\s*:\s*func\(([^)]*)\)(?:\s*->\s*([^;]+))?\s*;/gim;
+  for (const match of wit.matchAll(pattern)) {
+    const params = splitTopLevel(match[2]).map((param) => {
+      const colon = param.indexOf(":");
+      if (colon < 0) throw new Error(`invalid WIT parameter: ${param}`);
+      return { name: param.slice(0, colon).trim(), type: rustTypeForWit(param.slice(colon + 1), { returnType: false }) };
+    });
+    functions.push({
+      name: match[1].replace(/-/g, "_"),
+      params,
+      result: match[3] ? rustTypeForWit(match[3], { returnType: true }) : "()",
+    });
+  }
+  return functions;
+}
+
+function parseRustFunctions(src) {
+  const functions = new Map();
+  const pattern = /pub\s+fn\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*\(([^]*?)\)\s*(?:->\s*([^\{]+))?\s*\{/g;
+  for (const match of src.matchAll(pattern)) {
+    const params = splitTopLevel(match[2].replace(/\/\/[^\n]*/g, "")).map((param) => {
+      const colon = param.indexOf(":");
+      if (colon < 0) return { name: param.trim(), type: "" };
+      return { name: param.slice(0, colon).trim(), type: param.slice(colon + 1).replace(/\s+/g, " ").trim() };
+    }).filter((param) => param.name);
+    functions.set(match[1], { params, result: match[3] ? match[3].replace(/\s+/g, " ").trim() : "()" });
+  }
+  return functions;
+}
+
+function normalizeRustType(type) {
+  return type.replace(/\s+/g, " ").replace(/&'static /g, "&").trim();
+}
+
 /**
- * Conformance gate for the wasmos_kernel guest extension (M2, FR-36). The
- * `wasmos:kernel` world is transported over the SAB ring rather than the
- * Component Model, so it cannot be jco-transpiled like wasmos:abi. Instead we
- * verify the hand-written guest stub crate (crates/wasmos-sys) exposes a public
- * function for every `func` declared in crates/wasmos-sys/wit/kernel.wit — so a
- * new kernel.wit verb without a matching stub fails the build (drift gate).
+ * Conformance gate for the wasmos_kernel guest extension. The extension uses a
+ * core-module syscall import rather than Component Model calls, so jco cannot
+ * emit its transport. Binder still owns the WIT contract and checks every
+ * public guest stub's parameter and return types against it; a name-only check
+ * would let wire-incompatible changes through.
  */
 function kernelCheck() {
-  const witPath = join(ROOT, "crates", "wasmos-sys", "wit", "kernel.wit");
-  const srcPath = join(ROOT, "crates", "wasmos-sys", "src", "lib.rs");
-  if (!existsSync(witPath) || !existsSync(srcPath)) {
+  if (!existsSync(KERNEL_WIT) || !existsSync(GUEST_SRC)) {
     console.error("binder kernel-check: wasmos-sys wit/ or src/ missing");
     process.exit(1);
   }
-  const wit = readFileSync(witPath, "utf8");
-  const src = readFileSync(srcPath, "utf8");
-  // Every `name: func(...)` in the WIT must have a `pub fn name` in the stub.
-  const funcs = [...wit.matchAll(/^\s*([a-z][a-z0-9-]*)\s*:\s*func/gim)].map((m) => m[1]);
-  const missing = funcs.filter((f) => !new RegExp(`pub fn ${f.replace(/-/g, "_")}\\b`).test(src));
-  if (missing.length) {
-    console.error("binder kernel-check FAILED — wasmos-sys is missing stubs for:");
-    for (const f of missing) console.error("  " + f);
+  const witFunctions = parseWitFunctions(readFileSync(KERNEL_WIT, "utf8"));
+  const rustFunctions = parseRustFunctions(readFileSync(GUEST_SRC, "utf8"));
+  const errors = [];
+  for (const wit of witFunctions) {
+    const rust = rustFunctions.get(wit.name);
+    if (!rust) {
+      errors.push(`${wit.name}: missing public Rust function`);
+      continue;
+    }
+    if (rust.params.length !== wit.params.length) {
+      errors.push(`${wit.name}: WIT declares ${wit.params.length} parameters, Rust has ${rust.params.length}`);
+      continue;
+    }
+    for (let i = 0; i < wit.params.length; i += 1) {
+      const expected = normalizeRustType(wit.params[i].type);
+      const actual = normalizeRustType(rust.params[i].type);
+      if (expected !== actual) errors.push(`${wit.name}.${wit.params[i].name}: WIT expects ${expected}, Rust has ${actual}`);
+    }
+    const expectedResult = normalizeRustType(wit.result);
+    const actualResult = normalizeRustType(rust.result);
+    if (expectedResult !== actualResult) errors.push(`${wit.name}: WIT returns ${expectedResult}, Rust returns ${actualResult}`);
+  }
+  if (errors.length) {
+    console.error("binder kernel-check FAILED — guest stubs do not match kernel.wit:");
+    for (const error of errors) console.error("  " + error);
     process.exit(1);
   }
-  console.log(`binder kernel-check: wasmos-sys conforms to kernel.wit (${funcs.join(", ")}).`);
+  console.log(`binder kernel-check: ${witFunctions.length} wasmos-sys stubs match kernel.wit signatures.`);
 }
 
 const cmd = process.argv[2] ?? "gen";

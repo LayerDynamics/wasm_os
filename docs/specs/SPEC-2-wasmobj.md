@@ -49,7 +49,7 @@ The user selected four reasons, all of which shape scope:
 
 ### 1.5 Assumptions
 
-- A1. The runtime is WASM_OS as built through M5 (SPEC-1): a `wasm32-wasi` guest can `path_open`/`fd_read`/`fd_write` against the VFS, and the editor app can be extended to call a Rust dependency.
+- A1. The runtime is WASM_OS as built through Linux guest integration (SPEC-1): a `wasm32-wasi` guest can `path_open`/`fd_read`/`fd_write` against the VFS, and the editor app can be extended to call a Rust dependency.
 - A2. Documents in V1 are **text-first** but the byte window is content-agnostic (arbitrary bytes are storable; a content-type tag records intent — FR-15).
 - A3. Single-writer at a time per object. No concurrent multi-process editing of the same object in V1.
 - A4. Block tiers are powers of two; the largest V1 tier is 64 KiB (text documents). Larger payloads are an explicit later concern (OQ-3).

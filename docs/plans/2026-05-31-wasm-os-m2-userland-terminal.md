@@ -1,10 +1,10 @@
-# WASM_OS — M2 (Userland & Terminal — V1) — Implementation Plan
+# WASM_OS — shell and userland (Userland & Terminal — V1) — Implementation Plan
 
 > **For Claude:** REQUIRED SUB-SKILL: use `lore:execute` to implement this plan task-by-task.
-> **Scope guard:** Do ONLY what is listed here. This plan delivers SPEC-1 milestone **M2 = V1** (the "terminal runs real WASI binaries" marquee). It STOPS at M2's exit criteria. Do NOT start M3 (the windowed compositor/desktop), M4 (IPC channels/shm at scale, snapshot, signals beyond crash-kill), or M5 (the emulator). If you discover adjacent issues, note them under **TODO / deferred** and continue.
-> **Builds on:** M1 (first WASI process) — 100% complete and merged (`docs/M1-STATUS.md`). M2 extends the M1 kworker + SAB syscall ring + WASI p1 router; it does **not** rebuild them.
+> **Scope guard:** Do ONLY what is listed here. This plan delivers SPEC-1 milestone **shell and userland = V1** (the "terminal runs real WASI binaries" marquee). It STOPS at shell and userland's exit criteria. Do NOT start desktop compositor (the windowed compositor/desktop), process control and IPC (IPC channels/shm at scale, snapshot, signals beyond crash-kill), or Linux guest integration (the emulator). If you discover adjacent issues, note them under **TODO / deferred** and continue.
+> **Builds on:** WASI process runtime (first WASI process) — 100% complete and merged (`docs/M1-STATUS.md`). shell and userland extends the WASI process runtime kworker + SAB syscall ring + WASI p1 router; it does **not** rebuild them.
 
-**Goal:** A real interactive terminal (xterm) bound to a **guest shell process** that runs WASI coreutils with pipelines and I/O redirection. From the terminal a user runs `ls`, `cat f`, `cat f | grep x`, and `... > out` with correct output and exit codes; a deliberately-crashing binary terminates without taking down the shell — SPEC-1 milestone **M2** (Phase 2, §4.1).
+**Goal:** A real interactive terminal (xterm) bound to a **guest shell process** that runs WASI coreutils with pipelines and I/O redirection. From the terminal a user runs `ls`, `cat f`, `cat f | grep x`, and `... > out` with correct output and exit codes; a deliberately-crashing binary terminates without taking down the shell — SPEC-1 milestone **shell and userland** (Phase 2, §4.1).
 
 **Traces:** FR-9..12 (run WASI modules), **FR-14** (polyglot: ≥1 Rust + ≥1 Zig coreutil, identical observable behavior), FR-15 (xterm bound to a shell process), FR-16 (`$PATH`, built-ins + on-disk binaries, exit codes), FR-17 (pipelines `a|b|c` + redirection `>`/`>>`/`<` via kernel pipes/fds), **FR-18** (the 13 coreutils), FR-34 (crash contained — terminal survives), FR-36 (the `wasmos:kernel` guest bindings come from the Binder).
 
@@ -18,13 +18,13 @@
 
 ### Decided substrate (NOT user questions — load-bearing plan content)
 
-- **Park/resume syscalls (the spine).** M1's ring is request→*immediate* response. M2 introduces **deferred** responses: a not-ready blocking syscall (stdin read with no data, pipe read empty, pipe write full, `wait` on a live child) **parks** — the guest stays blocked in `Atomics.wait` while the kworker services other rings — and completes later when the event arrives. This one mechanism unifies stdin, pipes, and `wait`. Built and tested **first** (Task 1) because everything interactive depends on it.
-- **Hierarchical VFS** replaces the M0/M1 flat-key store: a real in-memory directory tree (inodes) that loads from / flushes to the blockstore, with a **versioned superblock** and a **migration** that imports M1's flat keys (the M1 persistence E2E MUST keep passing — no silent data break; Appendix C).
+- **Park/resume syscalls (the spine).** WASI process runtime's ring is request→*immediate* response. shell and userland introduces **deferred** responses: a not-ready blocking syscall (stdin read with no data, pipe read empty, pipe write full, `wait` on a live child) **parks** — the guest stays blocked in `Atomics.wait` while the kworker services other rings — and completes later when the event arrives. This one mechanism unifies stdin, pipes, and `wait`. Built and tested **first** (Task 1) because everything interactive depends on it.
+- **Hierarchical VFS** replaces the kernel/VFS bootstrap/WASI process runtime flat-key store: a real in-memory directory tree (inodes) that loads from / flushes to the blockstore, with a **versioned superblock** and a **migration** that imports WASI process runtime's flat keys (the WASI process runtime persistence E2E MUST keep passing — no silent data break; Appendix C).
 - **Pipes are kernel objects** (bounded byte buffer + wait-queue), built on park/resume.
-- **Streaming I/O**: M1's `take-capture` drains stdout *at exit*; a terminal needs bytes *while the process runs*. A separate main↔kworker **streaming channel** carries keystroke→stdin and stdout/stderr→xterm, distinct from the control RPC.
+- **Streaming I/O**: WASI process runtime's `take-capture` drains stdout *at exit*; a terminal needs bytes *while the process runs*. A separate main↔kworker **streaming channel** carries keystroke→stdin and stdout/stderr→xterm, distinct from the control RPC.
 - **`wasmos:kernel` guest stubs are Binder-generated** from `wit/kernel.wit` (FR-36), with the drift gate; the process-worker shim provides the matching host-side imports.
 - **`/bin` is populated at boot (load executables INTO the VFS).** Coreutils + the shell are built to served `.wasm` assets, but `$PATH` resolution and `wasmos_kernel.spawn(image-path)` read the image **from the kernel VFS** — so the binaries must be loaded into the VFS, not merely fetchable. A **boot-time `/bin` loader** fetches each served `/<name>.wasm` and `control.fsWrite("/bin/<name>", bytes)`. **`/bin` lives in tmpfs and is repopulated every boot** — ephemeral, which deliberately sidesteps any interaction with the OPFS/IDB persistence + flat→hierarchical migration (only `/home` and `/mnt` persist). Without this step every exit-criterion command dies at the prompt with "not found"; it is a hard prerequisite of the Task 7 spine checkpoint.
-- **M1 stays green.** Every M1/M0 test (boot, tri-backend persistence, spawn/stdout/exit, isolation, crash containment, catfile FS) must survive M2's refactors. Streaming stdout supersedes the `take-capture` model — port those assertions, don't delete the coverage.
+- **WASI process runtime stays green.** Every WASI process runtime/kernel/VFS bootstrap test (boot, tri-backend persistence, spawn/stdout/exit, isolation, crash containment, catfile FS) must survive shell and userland's refactors. Streaming stdout supersedes the `take-capture` model — port those assertions, don't delete the coverage.
 
 ---
 
@@ -71,13 +71,13 @@ deliver-stdin: func(pid: u32, bytes: list<u8>) -> list<u32>;
 
 ---
 
-## M2 exit criteria (definition of done)
+## shell and userland exit criteria (definition of done)
 
 1. Boot reaches an **interactive terminal** (xterm) bound to a running Rust **shell process** (`listProcs` shows `shell`); typed characters echo and reach the shell's stdin.
 2. `ls` lists a real directory; `cat f` prints a file's contents; **`cat f | grep x`** prints only matching lines (real kernel pipe between two processes); **`echo hi > out`** then `cat out` shows `hi` (redirection via the VFS). All report correct **exit codes** (`echo $?`-style or shell-reported).
 3. The **13 FR-18 coreutils** run from the terminal, resolved via `$PATH` from the VFS; **≥1 is built in Zig** (FR-14) with observable behavior identical to its Rust sibling.
 4. A deliberately-crashing binary run from the shell (e.g. in a pipeline) **terminates without taking down the shell or terminal** (FR-34); the prompt returns.
-5. `npm run verify` is green, **including** the M0/M1 regression suite (boot, tri-backend persistence across reload, M1 process spawn/isolation/crash), now running through the refactored VFS + streaming I/O.
+5. `npm run verify` is green, **including** the kernel/VFS bootstrap/WASI process runtime regression suite (boot, tri-backend persistence across reload, WASI process runtime process spawn/isolation/crash), now running through the refactored VFS + streaming I/O.
 
 ---
 
@@ -93,13 +93,13 @@ deliver-stdin: func(pid: u32, bytes: list<u8>) -> list<u32>;
 
 **Step 3 — host:** `RingServer` gains a deferred mode — `serve`'s loop, on a `parked` outcome, does **not** bump RESP_SEQ. The kworker keeps `Map<pid, stashedRequest>`; on a wakeup list it re-drives parked pids.
 
-> **Cascade discipline (correctness-critical — the M2 analog of the M1 ring race).** Process wakeups as an **iterative work-queue, not recursion**, and guard against **double-waking**: a pid can appear in two wakeup lists in one drain (e.g. a pipe write *and* a writer-close), but the guest did exactly one `Atomics.wait`, so bumping its `RESP_SEQ` twice corrupts the *next* syscall's response. Rules: (1) **remove a pid from the parked-stash the instant it is scheduled for re-drive**, so a duplicate wakeup is a no-op; (2) **dedup pids within a single wakeup batch**; (3) stash lifecycle — stash on `reply=None`; on re-drive, if it replies → bump `RESP_SEQ` and clear the stash; if it parks *again* (e.g. `wait` re-checking a not-yet-exited child) → re-stash and do not bump. Add a unit test that double-wakes a single parked pid and asserts exactly one `RESP_SEQ` bump.
+> **Cascade discipline (correctness-critical — the shell and userland analog of the WASI process runtime ring race).** Process wakeups as an **iterative work-queue, not recursion**, and guard against **double-waking**: a pid can appear in two wakeup lists in one drain (e.g. a pipe write *and* a writer-close), but the guest did exactly one `Atomics.wait`, so bumping its `RESP_SEQ` twice corrupts the *next* syscall's response. Rules: (1) **remove a pid from the parked-stash the instant it is scheduled for re-drive**, so a duplicate wakeup is a no-op; (2) **dedup pids within a single wakeup batch**; (3) stash lifecycle — stash on `reply=None`; on re-drive, if it replies → bump `RESP_SEQ` and clear the stash; if it parks *again* (e.g. `wait` re-checking a not-yet-exited child) → re-stash and do not bump. Add a unit test that double-wakes a single parked pid and asserts exactly one `RESP_SEQ` bump.
 
 **Step 4 — the spike test (TDD, the gate for the whole milestone):**
 
 - Kernel unit test: process parks on a stdin read (empty); `deliver_stdin(pid, b"hi")` returns `[pid]`; re-driving the read returns `b"hi"`.
 - **Real cross-thread test** (extend `packages/host/test/ring.test.ts` or a new `park.test.ts` with `worker_threads`): a client blocks on a read that parks; the server delivers bytes later; the client's `Atomics.wait` returns the delivered bytes — proving deferred fulfilment works across the real ring.
-- **M1 ring tests stay green** (the request→immediate-response path is the `reply=Some` fast path).
+- **WASI process runtime ring tests stay green** (the request→immediate-response path is the `reply=Some` fast path).
 
 → **Do not proceed past Task 1 until the deferred round-trip passes.** This is the spine.
 
@@ -111,9 +111,9 @@ deliver-stdin: func(pid: u32, bytes: list<u8>) -> list<u32>;
 
 **Step 1 — node model:** an in-memory tree — `Inode { Dir(BTreeMap<String, Ino>) | File(Vec<u8>) }`, a root inode, path resolution that walks components, and ops: `mkdir`, `rmdir` (empty-check), `unlink`, `rename`, `readdir` (immediate children), `read`/`write`/`create`, `stat`. Keep the tri-backend mount table (tmpfs/opfs/idb) — each mount owns a subtree.
 
-**Step 2 — persistence + migration:** persist via the existing blockstores. Write a **superblock** key (`__vfs_version` = 2) + serialize the tree (file content at path keys; directory structure recorded so empty dirs survive). On boot: if the superblock is absent/`<2`, run the **M1 flat-key migration** — interpret every existing `"/home/a/b"` key as a file at that path, building the nested tree — then write the v2 superblock. The CachedStore preload still feeds this at boot.
+**Step 2 — persistence + migration:** persist via the existing blockstores. Write a **superblock** key (`__vfs_version` = 2) + serialize the tree (file content at path keys; directory structure recorded so empty dirs survive). On boot: if the superblock is absent/`<2`, run the **WASI process runtime flat-key migration** — interpret every existing `"/home/a/b"` key as a file at that path, building the nested tree — then write the v2 superblock. The CachedStore preload still feeds this at boot.
 
-**Step 3 — tests:** unit tests for mkdir/readdir/nested paths/rename/rmdir/unlink; a migration test (seed flat keys → boot → tree has nested dirs, files readable); **real `fd_readdir`** replaces the M1 synthesized version (update `syscall::fd_readdir_*` test). **M1 persistence E2E MUST still pass** (run it; if the migration is wrong, fix it — do not weaken the test).
+**Step 3 — tests:** unit tests for mkdir/readdir/nested paths/rename/rmdir/unlink; a migration test (seed flat keys → boot → tree has nested dirs, files readable); **real `fd_readdir`** replaces the WASI process runtime synthesized version (update `syscall::fd_readdir_*` test). **WASI process runtime persistence E2E MUST still pass** (run it; if the migration is wrong, fix it — do not weaken the test).
 
 ---
 
@@ -133,9 +133,9 @@ deliver-stdin: func(pid: u32, bytes: list<u8>) -> list<u32>;
 
 **Step 1:** a process whose fd 1/2 is `Terminal` produces `term-output` in its syscall outcome; the kworker posts `{type:'output', bytes}` to the main thread as a **streaming message** (separate from control RPC ids). Keystrokes arrive from main as `{type:'stdin', pid, bytes}` → kworker calls `deliver-stdin` → re-drives parked readers.
 
-**Step 2:** supersede M1 `take-capture` — the M1 process E2E asserted captured stdout at exit; M2's stdout is streamed. Port those assertions to consume the stream (a host-side accumulator for tests), keeping the coverage. `take-capture` may remain for non-terminal processes (pipelines’ buffered stages) but the terminal path is the stream.
+**Step 2:** supersede WASI process runtime `take-capture` — the WASI process runtime process E2E asserted captured stdout at exit; shell and userland's stdout is streamed. Port those assertions to consume the stream (a host-side accumulator for tests), keeping the coverage. `take-capture` may remain for non-terminal processes (pipelines’ buffered stages) but the terminal path is the stream.
 
-> **Stdin routing limitation (documented, not a bug).** `deliver-stdin` delivers keystrokes to the **shell** pid. None of the M2 exit-criterion commands read interactive stdin (`cat f` uses a file arg; `grep` reads its pipe), so this is sufficient for M2. A bare foreground `cat` with no argument *would* read interactive stdin and hang (keystrokes accumulate in the shell's buffer while it is parked on `wait`). Routing interactive stdin to the running foreground child requires job control (FR-19), which is **explicitly deferred** — so this is a **known, documented M2 limitation**, recorded in `docs/M2-STATUS.md` and the TODO list, not a surprise hang.
+> **Stdin routing limitation (documented, not a bug).** `deliver-stdin` delivers keystrokes to the **shell** pid. None of the shell and userland exit-criterion commands read interactive stdin (`cat f` uses a file arg; `grep` reads its pipe), so this is sufficient for shell and userland. A bare foreground `cat` with no argument *would* read interactive stdin and hang (keystrokes accumulate in the shell's buffer while it is parked on `wait`). Routing interactive stdin to the running foreground child requires job control (FR-19), which is **explicitly deferred** — so this is a **known, documented shell and userland limitation**, recorded in `docs/M2-STATUS.md` and the TODO list, not a surprise hang.
 
 ---
 
@@ -147,7 +147,7 @@ deliver-stdin: func(pid: u32, bytes: list<u8>) -> list<u32>;
 
 **Step 1 — `wit/kernel.wit`:** the guest process-control surface — `spawn(image-path, argv, env, stdio)` → pid, `pipe()` → `(read-fd, write-fd)`, `wait(pid)` → exit-code (parks), `dup2(old, new)`. `stdio` lets the shell set a child's fd0/1/2 to a pipe end, a file, or the terminal.
 
-**Step 2 — Binder:** `binder gen` runs `wit-bindgen` (Rust guest) against `wit/kernel.wit` → `crates/wasmos-sys` (typed stubs importing a flat `wasmos_kernel` module). `binder check` covers drift (FR-36). **Verify the generated import module name matches what the JS shim provides** (validate naming first, like M1's jco-in-worker check; if wit-bindgen's component-style naming doesn't yield a clean core-module import, the Binder emits the thin stub + a conformance validator — the spec-sanctioned path for non-upstream targets, §3.4.1).
+**Step 2 — Binder:** `binder gen` runs `wit-bindgen` (Rust guest) against `wit/kernel.wit` → `crates/wasmos-sys` (typed stubs importing a flat `wasmos_kernel` module). `binder check` covers drift (FR-36). **Verify the generated import module name matches what the JS shim provides** (validate naming first, like WASI process runtime's jco-in-worker check; if wit-bindgen's component-style naming doesn't yield a clean core-module import, the Binder emits the thin stub + a conformance validator — the spec-sanctioned path for non-upstream targets, §3.4.1).
 
 **Step 3 — shim + choreography:** the process-worker shim adds the `wasmos_kernel` imports, marshalling SPAWN/PIPE/WAIT/DUP2 to new ring opcodes. SPAWN: kernel allocates child pid + fd table (per `stdio`) + caps (delegated subset of the shell's), returns pid; the **kworker** reads `image-path` from the VFS, creates the child process worker + ring, and arms servicing — while the shell's `wait` parks. WAIT resumes when the child's `proc_exit` returns the parent in its wakeup list.
 
@@ -192,7 +192,7 @@ deliver-stdin: func(pid: u32, bytes: list<u8>) -> list<u32>;
 
 **Files:** `crates/coreutils/*` (one bin per util, or a multi-call binary); install to VFS `/bin`.
 
-Implement `ls cat echo cp mv rm mkdir pwd grep head tail wc env` as plain `wasm32-wasip1` binaries on the M1 WASI surface + the hierarchical VFS (no `wasmos_kernel` needed). Built spine-first: `ls cat echo grep wc` first (they satisfy the exit criteria), then `cp mv rm mkdir pwd head tail env`. Each gets a focused behavior check.
+Implement `ls cat echo cp mv rm mkdir pwd grep head tail wc env` as plain `wasm32-wasip1` binaries on the WASI process runtime WASI surface + the hierarchical VFS (no `wasmos_kernel` needed). Built spine-first: `ls cat echo grep wc` first (they satisfy the exit criteria), then `cp mv rm mkdir pwd head tail env`. Each gets a focused behavior check.
 
 ### Task 10: Polyglot proof — one coreutil in Zig (FR-14)
 
@@ -202,7 +202,7 @@ Build one FR-18 util with `zig build-exe -target wasm32-wasi`; install it (or a 
 
 ### Task 11: Crash containment in the shell (FR-34)
 
-A crashing binary (reuse/adapt M1 `crash`) run from the shell — standalone and **inside a pipeline** — traps; the shell observes a non-zero/trap child exit, prints an error, and the **prompt returns**; the terminal and kworker survive. Covered by an E2E case.
+A crashing binary (reuse/adapt WASI process runtime `crash`) run from the shell — standalone and **inside a pipeline** — traps; the shell observes a non-zero/trap child exit, prints an error, and the **prompt returns**; the terminal and kworker survive. Covered by an E2E case.
 
 ### Task 12: E2E (real browser) + polyglot CI + M2-STATUS + verify
 
@@ -210,7 +210,7 @@ A crashing binary (reuse/adapt M1 `crash`) run from the shell — standalone and
 
 **Step 1 — `e2e/terminal.spec.ts`** (real Chromium, real workers, real ring, real xterm): boot → terminal; drive keystrokes and assert xterm output for: `ls`, `cat f`, **`cat f | grep x`**, **`echo hi > out`** then `cat out`, exit codes, the Zig util, and the crash-containment case. Reload → VFS persistence intact (migration + hierarchical).
 
-**Step 2 — regression:** the M0/M1 E2E (`boot.spec`, `opfs.spec`, `process.spec`) MUST still pass through the refactored VFS + streaming I/O — port assertions where the model changed (streaming stdout), never weaken them.
+**Step 2 — regression:** the kernel/VFS bootstrap/WASI process runtime E2E (`boot.spec`, `opfs.spec`, `process.spec`) MUST still pass through the refactored VFS + streaming I/O — port assertions where the model changed (streaming stdout), never weaken them.
 
 **Step 3 — CI/status:** add the Zig toolchain to CI + `build:guests`; keep the clippy/typecheck/lint gates; write `docs/M2-STATUS.md` with **real** `npm run verify` numbers + as-built deviations. Run `npm run verify` green.
 
@@ -222,16 +222,16 @@ A crashing binary (reuse/adapt M1 `crash`) run from the shell — standalone and
 npm run verify
 ```
 
-All five M2 exit criteria hold; the M0/M1 regression suite is green; `binder check` (incl. the new `wasmos:kernel` stubs) is in sync; clippy `-D warnings` clean. **STOP here** — M3 (compositor/desktop) is the next plan.
+All five shell and userland exit criteria hold; the kernel/VFS bootstrap/WASI process runtime regression suite is green; `binder check` (incl. the new `wasmos:kernel` stubs) is in sync; clippy `-D warnings` clean. **STOP here** — desktop compositor (compositor/desktop) is the next plan.
 
 ---
 
 ## TODO / deferred (do NOT do in this plan)
 
-- **M3:** windowed compositor/desktop, file manager, input brokering, canvas surfaces.
-- **M4:** IPC channels/shm at scale (≥32 procs), session snapshot/restore, full signals (`SIGTERM`/`SIGKILL` semantics beyond crash-kill), live `ps`/`top` UI (FR-33).
+- **desktop compositor:** windowed compositor/desktop, file manager, input brokering, canvas surfaces.
+- **process control and IPC:** IPC channels/shm at scale (≥32 procs), session snapshot/restore, full signals (`SIGTERM`/`SIGKILL` semantics beyond crash-kill), live `ps`/`top` UI (FR-33).
 - AssemblyScript (FR-11) + hand-authored WAT (FR-12) guests — SHOULD-tier polyglot, beyond the Rust+Zig FR-14 proof.
-- Job control (`&`, `jobs`, fg/bg — FR-19), package mechanism (FR-20). **Consequence (documented M2 limitation):** interactive stdin routes only to the shell, so a bare foreground `cat` (no file arg) reading stdin hangs — routing stdin to the foreground child needs job control.
-- Real capability-gated clock/entropy brokers (still deterministic stubs from M1; §3.6).
+- Job control (`&`, `jobs`, fg/bg — FR-19), package mechanism (FR-20). **Consequence (documented shell and userland limitation):** interactive stdin routes only to the shell, so a bare foreground `cat` (no file arg) reading stdin hangs — routing stdin to the foreground child needs job control.
+- Real capability-gated clock/entropy brokers (still deterministic stubs from WASI process runtime; §3.6).
 - `Atomics.waitAsync` `postMessage`-wakeup fallback (still single-path); Tier B (Asyncify/JSPI).
 - OPFS sync access handles to retire the `CachedStore` bridge.

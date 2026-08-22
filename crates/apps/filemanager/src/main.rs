@@ -1,4 +1,4 @@
-//! File manager (L3 / M3, FR-24) — a real `wasm32-wasip1` process.
+//! File manager (L3 / desktop compositor, FR-24) — a real `wasm32-wasip1` process.
 //!
 //! Draws a canvas surface, lists the current VFS directory (`std::fs::read_dir`),
 //! and navigates on brokered pointer/keyboard input: click or Enter on a folder

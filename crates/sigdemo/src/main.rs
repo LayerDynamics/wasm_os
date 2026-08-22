@@ -1,4 +1,4 @@
-//! sigdemo — M4-T5 cooperative-signal fixture.
+//! sigdemo — signals cooperative-signal fixture.
 //!
 //! Demonstrates catchable SIGTERM handling. The process blocks in `sig_wait`
 //! (zero CPU — it parks until a signal is delivered, no busy-poll), and when it

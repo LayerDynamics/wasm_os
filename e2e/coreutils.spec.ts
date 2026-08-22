@@ -1,6 +1,6 @@
 import { test, expect, type Page } from "@playwright/test";
 
-// M2 coreutils (FR-18): the full set running from the real shell against the
+// shell and userland coreutils (FR-18): the full set running from the real shell against the
 // hierarchical VFS. Input via control.stdin (not locally echoed), so the
 // terminal log contains only command OUTPUT + prompts — assertions are
 // output-based with unique marker strings.

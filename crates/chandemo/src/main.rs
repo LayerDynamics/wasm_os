@@ -1,4 +1,4 @@
-//! chandemo — M4-T3 message-channel fixture.
+//! chandemo — message channels message-channel fixture.
 //!
 //! Two instances rendezvous on the channel named "demo". The first opener (the
 //! creator, endpoint 0) sends a message; the second (endpoint 1) receives it and

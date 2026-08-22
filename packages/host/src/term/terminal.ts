@@ -1,5 +1,5 @@
 /**
- * Terminal (L3-lite) — binds an xterm.js terminal to a shell process (FR-15).
+ * Terminal — binds an xterm.js terminal to a shell process (FR-15).
  *
  * Kernel → terminal: the kworker streams a terminal-bound process's stdout/
  * stderr (`onOutput`); we write it to xterm and accumulate a plain-text log the

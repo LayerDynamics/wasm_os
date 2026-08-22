@@ -5,8 +5,8 @@ version.workspace = true
 license.workspace = true
 
 # WASI coreutils (FR-18) — one wasm32-wasip1 binary per utility, plain WASI on
-# the M1 syscall surface + the hierarchical VFS (no wasmos_kernel needed). The
-# spine (echo/ls/cat/grep/wc) lands first; the rest fan out in M2-T9.
+# the WASI process runtime syscall surface + the hierarchical VFS (no wasmos_kernel needed). The
+# spine (echo/ls/cat/grep/wc) lands first; the rest fan out in core utilities.
 
 [[bin]]
 name = "echo"
@@ -60,20 +60,20 @@ path = "src/bin/tail.rs"
 name = "env"
 path = "src/bin/env.rs"
 
-# kill — send a signal to a process (M4-T5). Unlike the other coreutils it needs
+# kill — send a signal to a process (signals). Unlike the other coreutils it needs
 # the wasmos_kernel `kill` syscall, so it depends on wasmos-sys; the shell
 # delegates its Signal capability when spawning it.
 [[bin]]
 name = "kill"
 path = "src/bin/kill.rs"
 
-# renice — change a process's scheduling priority (M4-T6). Like kill it needs the
+# renice — change a process's scheduling priority (runtime priority). Like kill it needs the
 # wasmos_kernel set_priority syscall + a delegated Signal capability.
 [[bin]]
 name = "renice"
 path = "src/bin/renice.rs"
 
-# ps / top — snapshot the live process table via the proc_list syscall (M4-T7).
+# ps / top — snapshot the live process table via the proc_list syscall (process-table tools).
 # Read-only (no capability needed); ps orders by PID, top by CPU activity.
 [[bin]]
 name = "ps"
@@ -83,7 +83,7 @@ path = "src/bin/ps.rs"
 name = "top"
 path = "src/bin/top.rs"
 
-# fetch — brokered networking via the net_request syscall (M5-T6). Needs a
+# fetch — brokered networking via the net_request syscall (network broker). Needs a
 # delegated Net capability, like kill/renice need Signal.
 [[bin]]
 name = "fetch"

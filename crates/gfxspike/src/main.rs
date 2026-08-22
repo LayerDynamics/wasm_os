@@ -1,4 +1,4 @@
-//! gfxspike — the M3 compositor-surface + input spine fixture (FR-23, FR-25).
+//! gfxspike — the desktop compositor surface + input fixture (FR-23, FR-25).
 //!
 //! Requests a canvas surface (Gpu cap), draws a recognizable pattern, and presents
 //! it. Then, if it holds the Input capability, it loops on brokered input and

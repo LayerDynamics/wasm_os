@@ -22,7 +22,7 @@ export const RESPLEN = 3; // response byte length
 export const HEADER_LANES = 4;
 export const HEADER_BYTES = HEADER_LANES * 4; // Int32 = 4 bytes
 
-/** Region capacities (bytes). 64 KiB each comfortably holds an M1 syscall. */
+/** Region capacities (bytes). 64 KiB each comfortably holds an WASI process runtime syscall. */
 export const REQ_CAP = 64 * 1024;
 export const RESP_CAP = 64 * 1024;
 

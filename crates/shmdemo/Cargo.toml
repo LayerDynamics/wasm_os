@@ -4,7 +4,7 @@ edition.workspace = true
 version.workspace = true
 license.workspace = true
 
-# M4-T4 shared-memory fixture: the writer creates a region, fills it, spawns a
+# Shared-memory fixture: the writer creates a region, fills it, spawns a
 # reader child, grants it access, then releases a channel barrier; the reader maps
 # the region and persists what it read so the test can verify cross-process shared
 # memory (FR-6).

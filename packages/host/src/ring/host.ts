@@ -4,9 +4,9 @@
  * The kernel worker must stay responsive to many process rings + the control
  * proxy, so it **never blocks** — it multiplexes with `Atomics.waitAsync`
  * (Chrome + Firefox evergreen; a `postMessage`-wakeup fallback would slot in
- * here for browsers without `waitAsync`, but M2 is single-path).
+ * here for browsers without `waitAsync`, but shell and userland is single-path).
  *
- * M1 used the `serve()` convenience loop (request → immediate response). M2
+ * WASI process runtime used the `serve()` convenience loop (request → immediate response). shell and userland
  * adds **deferred** completion via `nextRequest()` + `complete()`: a syscall
  * may park (no response written now) and be completed later when an event
  * wakes it (stdin, pipe, `wait`). `serve()` is kept as the immediate-response
@@ -84,7 +84,7 @@ export class RingServer {
   }
 
   /**
-   * Immediate-response convenience loop (M1 semantics): every request is
+   * Immediate-response convenience loop (WASI process runtime semantics): every request is
    * completed synchronously with `onRequest`'s return value. Used by callers
    * and tests that never park.
    */

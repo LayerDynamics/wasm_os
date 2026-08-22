@@ -1,7 +1,7 @@
 import { test, expect, type Page } from "@playwright/test";
 
-// M3-T1 — the compositor: a desktop with a taskbar (launcher + live clock) and
-// real windows (move/resize/focus/min/max/close + z-order, FR-21/FR-22). The M2
+// desktop compositor — the compositor: a desktop with a taskbar (launcher + live clock) and
+// real windows (move/resize/focus/min/max/close + z-order, FR-21/FR-22). The shell and userland
 // terminal runs inside the first window (a DOM surface, FR-23). Every assertion
 // drives the real DOM the compositor builds — no mocks.
 

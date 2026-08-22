@@ -1,6 +1,6 @@
 import { test, expect, type Page } from "@playwright/test";
 
-// M1 exit criteria, exercised through the REAL system in a real browser:
+// WASI process runtime exit criteria, exercised through the REAL system in a real browser:
 // real Web Workers (one kworker + one process worker per process), a real
 // SharedArrayBuffer syscall ring, real Atomics blocking, and stock Rust
 // wasm32-wasip1 guests. No mocks anywhere on the path.

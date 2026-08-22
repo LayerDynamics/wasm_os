@@ -1,6 +1,6 @@
 import { test, expect, type Page } from "@playwright/test";
 
-// M5-T6 — brokered networking (the Net capability, OQ-2). WASM_OS processes are
+// network broker — brokered networking (the Net capability, OQ-2). WASM_OS processes are
 // sandboxed and cannot open sockets; the `fetch` coreutil calls the net_request
 // syscall, which the kernel gates on the Net capability and the host performs as a
 // real fetch (parking the caller until it resolves). The shell delegates Net to

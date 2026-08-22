@@ -1,5 +1,5 @@
 /**
- * Emulator worker (L5 / M5) — hosts the MIT TinyEMU riscv64 emulator in a dedicated
+ * Emulator worker (Linux guest integration) — hosts the MIT TinyEMU riscv64 emulator in a dedicated
  * worker so a real Linux kernel boots in true parallelism, never stalling the main
  * thread or other process workers (FR-28). This is the body of the privileged
  * "emulator" process: it makes no WASI syscalls; it runs TinyEMU's own CPU loop
@@ -95,11 +95,11 @@ let heartbeat: ReturnType<typeof setInterval> | undefined;
 
 const ctx = self as unknown as Worker;
 
-// --- Framebuffer (M5): render the serial console to an RGBA surface ----------
+// --- Framebuffer (Linux guest integration): render the serial console to an RGBA surface ----------
 // The guest console is on ttyS0/hvc0 — a byte stream, not a character grid. We keep
 // a scrollback of decoded lines (ANSI stripped), render the last `ROWS` of them to
 // an OffscreenCanvas, and copy the pixels into a shared RGBA buffer the compositor
-// blits to a window (the same surface/present path the M3 canvas apps use).
+// blits to a window (the same surface/present path the desktop compositor canvas apps use).
 const CELL_W = 8;
 const CELL_H = 16;
 const COLS = 80;
@@ -241,7 +241,7 @@ ctx.onmessage = (e: MessageEvent<InMessage>) => {
       if (shareWatch !== undefined) clearInterval(shareWatch);
       shareWatch = undefined;
       // The emscripten run loop self-schedules; dropping our reference + clearing the
-      // heartbeat stops our involvement. The worker is terminated by the host (M5-T9).
+      // heartbeat stops our involvement. The worker is terminated by the host (Linux session restore).
       emu = undefined;
       break;
   }

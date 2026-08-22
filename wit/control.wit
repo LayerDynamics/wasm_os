@@ -42,7 +42,7 @@ interface control {
   /// matching blockstore import for opfs/idb backends.
   mount: func(path: string, on: backend) -> result<_, fs-error>;
 
-  // --- VFS operations (exercised by the M0 integration + E2E tests) ---
+  // --- VFS operations (exercised by the kernel/VFS bootstrap integration + E2E tests) ---
   fs-write:  func(path: string, bytes: list<u8>) -> result<_, fs-error>;
   fs-read:   func(path: string) -> result<list<u8>, fs-error>;
   fs-list:   func(path: string) -> result<list<string>, fs-error>;
@@ -56,23 +56,23 @@ interface control {
   /// deterministic and has no RNG of its own). Called once at boot.
   seed-entropy: func(seed: list<u8>);
 
-  // --- Process lifecycle (M1, FR-5) ---
+  // --- Process lifecycle (WASI process runtime, FR-5) ---
   record spawn-spec {
     name: string,
     /// Filesystem subtree granted to the child (rights = read+write). Empty
-    /// string grants no FS capability. M1 has no shm/net/signal grants.
+    /// string grants no FS capability. WASI process runtime has no shm/net/signal grants.
     grant-fs-subtree: string,
     grant-spawn: bool,
     /// Grant the Gpu capability — required to request a compositor surface
-    /// (`win_surface`, M3). Default-deny: a process without it cannot draw.
+    /// (`win_surface`, desktop compositor). Default-deny: a process without it cannot draw.
     grant-gpu: bool,
     /// Grant the Input capability — required to receive brokered keyboard/mouse
-    /// for its focused window (M3-T3). Default-deny.
+    /// for its focused window (brokered input). Default-deny.
     grant-input: bool,
     /// Grant the Signal capability — process-control authority (the `kill`
-    /// builtin signals other processes, M4-T5). Default-deny; the shell holds it.
+    /// builtin signals other processes, signals). Default-deny; the shell holds it.
     grant-signal: bool,
-    /// Grant the Net capability — brokered networking (the `fetch` coreutil, M5-T6).
+    /// Grant the Net capability — brokered networking (the `fetch` coreutil, network broker).
     /// Default-deny; the shell holds it and delegates it to `fetch`.
     grant-net: bool,
   }
@@ -82,13 +82,13 @@ interface control {
   /// the guest, then drives syscalls in via service-syscall.
   spawn: func(spec: spawn-spec) -> u32;
 
-  /// Register the privileged emulator process (M5, FR-27/FR-28): a Native process
+  /// Register the privileged emulator process (Linux guest integration, FR-27/FR-28): a Native process
   /// (Gpu+Input+Net+FS caps) that runs its own CPU loop in a dedicated host worker
   /// — never pumped by the ring, but a first-class killable PID in proc-list.
   /// Returns its pid; the host then creates the emulator worker and boots it.
   spawn-emulator: func(name: string) -> u32;
 
-  /// Account a run-to-budget quantum for the emulator (M5-T5, FR-28). Its worker
+  /// Account a run-to-budget quantum for the emulator (emulator CPU accounting, FR-28). Its worker
   /// reports periodic wall-budget heartbeats so its CPU activity shows in `top`
   /// (it makes no syscalls). Ignored for any pid that is not the emulator.
   account-emulator: func(pid: u32, ticks: u64);
@@ -105,7 +105,7 @@ interface control {
     terminal-stdin: bool,
   }
 
-  /// Outcome of routing one syscall (M2 park/resume).
+  /// Outcome of routing one syscall (shell and userland park/resume).
   record syscall-outcome {
     /// `none` => the syscall PARKED: the kworker keeps the request bytes and
     /// does NOT complete the ring; the guest stays blocked until a later wakeup
@@ -119,10 +119,10 @@ interface control {
     term-output: list<u8>,
     /// set when a guest spawned a child — the kworker brings it to life.
     spawn: option<spawn-request>,
-    /// pids the kworker must force-terminate (SIGKILL, M4-T5): the kernel has
+    /// pids the kworker must force-terminate (SIGKILL, signals): the kernel has
     /// already zombified them; the host tears down their worker + ring.
     reap: list<u32>,
-    /// set when the caller parked on `net_request` (M5-T6): the kworker performs
+    /// set when the caller parked on `net_request` (network broker): the kworker performs
     /// the brokered fetch and returns the body via `deliver-net`.
     net: option<net-request>,
     /// set when the caller changed the terminal line-discipline mode via
@@ -132,13 +132,13 @@ interface control {
     term-mode: option<u8>,
   }
 
-  /// A capability-gated network request the kworker must broker (M5-T6, OQ-2).
+  /// A capability-gated network request the kworker must broker (network broker, OQ-2).
   record net-request {
     pid: u32,
     url: string,
   }
 
-  /// Deliver a brokered fetch response to a parked `net_request` caller (M5-T6).
+  /// Deliver a brokered fetch response to a parked `net_request` caller (network broker).
   /// `ok` false signals a fetch failure (the guest sees errno IO). Returns the
   /// pids whose parked requests are now runnable.
   deliver-net: func(pid: u32, ok: bool, body: list<u8>) -> list<u32>;
@@ -154,16 +154,16 @@ interface control {
   deliver-stdin: func(pid: u32, bytes: list<u8>) -> list<u32>;
 
   /// Deliver brokered input events (keyboard/mouse, fixed-size records) to the
-  /// process owning the focused window (M3-T3, FR-25). Returns the pids whose
+  /// process owning the focused window (brokered input, FR-25). Returns the pids whose
   /// parked `win_read_input` calls are now runnable. Default-deny: events for a
   /// process without the Input capability are dropped.
   deliver-input: func(pid: u32, bytes: list<u8>) -> list<u32>;
 
   /// Bind a process's stdout/stderr to the interactive terminal: subsequent
-  /// writes stream out as `syscall-outcome.term-output` (M2).
+  /// writes stream out as `syscall-outcome.term-output` (shell and userland).
   bind-terminal: func(pid: u32);
 
-  /// Record a process's reported guest memory size (M4 `top`), from the worker.
+  /// Record a process's reported guest memory size (process control and IPC `top`), from the worker.
   set-proc-mem: func(pid: u32, bytes: u32);
 
   /// Change a process's scheduling priority at runtime (FR-8).

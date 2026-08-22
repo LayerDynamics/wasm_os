@@ -1,5 +1,5 @@
 /**
- * Process worker (M1) — one per process, the unit of isolation (FR-6).
+ * Process worker (WASI process runtime) — one per process, the unit of isolation (FR-6).
  *
  * Receives a guest `wasm32-wasip1` module + a syscall ring, instantiates the
  * guest with the hand-written WASI shim, and runs `_start`. The guest's linear
@@ -41,7 +41,7 @@ ctx.onmessage = async (ev: MessageEvent) => {
   let instance: WebAssembly.Instance | undefined;
   const getMemory = () => instance!.exports.memory as WebAssembly.Memory;
   const wasi = makeWasiImports(getMemory, ring);
-  // M3 compositor surfaces: this worker owns each surface's framebuffer SAB and
+  // Desktop compositor surfaces: this worker owns each surface's framebuffer SAB and
   // relays surface/present notifications to the kworker (→ compositor). Pixels are
   // copied guest-memory → SAB here; they never enter the kernel ring.
   const surfaces = new Map<number, Uint8Array>(); // surfaceId -> framebuffer SAB view
@@ -68,7 +68,7 @@ ctx.onmessage = async (ev: MessageEvent) => {
     instance = result.instance;
     const mem = instance.exports.memory as WebAssembly.Memory;
     sharedMemory = mem.buffer instanceof SharedArrayBuffer;
-    // Report the instantiated guest memory size for `ps`/`top` (M4).
+    // Report the instantiated guest memory size for `ps`/`top` (process control and IPC).
     ctx.postMessage({ type: "mem", pid, bytes: mem.buffer.byteLength });
 
     const start = instance.exports._start as () => void;

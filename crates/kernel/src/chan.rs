@@ -1,8 +1,8 @@
-//! Message channels (M4) — named, bidirectional message queues between two
+//! Message channels (process control and IPC) — named, bidirectional message queues between two
 //! processes. Unlike a pipe (a byte stream), a channel preserves message
 //! boundaries and both endpoints can send + receive. Rendezvous is by name: the
 //! first `chan_open(name)` creates the channel (endpoint 0); the second connects
-//! (endpoint 1). Blocking `recv` is realized through the M2 park/resume machinery
+//! (endpoint 1). Blocking `recv` is realized through the shell and userland park/resume machinery
 //! (`WaitReason::ChanRecv`); a closed peer with a drained inbox is EOF.
 
 use std::collections::{BTreeMap, VecDeque};

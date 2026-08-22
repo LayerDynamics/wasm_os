@@ -18,7 +18,7 @@ export interface ProcInfo {
   name: string;
   state: string;
   priority: number;
-  /** Scheduler ticks (one per serviced syscall) — kernel-activity metric (M4). */
+  /** Scheduler ticks (one per serviced syscall) — kernel-activity metric (process control and IPC). */
   cpuTicks: bigint;
   memBytes: number;
   /** Parent pid, or 0 for a host-spawned root. */
@@ -29,13 +29,13 @@ export interface SpawnOptions {
   /** FS subtree granted to the child (read+write); empty = no FS grant. */
   grantFsSubtree?: string;
   grantSpawn?: boolean;
-  /** Grant Gpu — required to request a compositor surface (`win_surface`, M3). */
+  /** Grant Gpu — required to request a compositor surface (`win_surface`, desktop compositor). */
   grantGpu?: boolean;
-  /** Grant Input — required to receive brokered keyboard/mouse (M3-T3). */
+  /** Grant Input — required to receive brokered keyboard/mouse (brokered input). */
   grantInput?: boolean;
-  /** Grant Signal — process-control authority for the `kill` builtin (M4-T5). */
+  /** Grant Signal — process-control authority for the `kill` builtin (signals). */
   grantSignal?: boolean;
-  /** Grant Net — brokered networking for the `fetch` coreutil (M5-T6). */
+  /** Grant Net — brokered networking for the `fetch` coreutil (network broker). */
   grantNet?: boolean;
 }
 
@@ -52,7 +52,7 @@ function spawnSpec(opts?: SpawnOptions) {
   };
 }
 
-/** Options for launching the emulator process (M5). The MIT TinyEMU runtime is a
+/** Options for launching the emulator process (Linux guest integration). The MIT TinyEMU runtime is a
  * fixed vendored asset; the caller chooses the VM config (which names the bios,
  * kernel, and rootfs) plus an optional extra cmdline. */
 export interface EmulatorOptions {
@@ -64,7 +64,7 @@ export interface EmulatorOptions {
   memoryMb?: number;
 }
 
-/** A small JSON descriptor naming an image to boot, fetched at runtime (M5-T7). */
+/** A small JSON descriptor naming an image to boot, fetched at runtime (runtime image selection). */
 export interface ImageManifest {
   name?: string;
   configUrl: string;
@@ -74,7 +74,7 @@ export interface ImageManifest {
 // The default riscv64 VM config (names the vendored bios/kernel/rootfs).
 const DEFAULT_CONFIG_URL = "/assets/linux/wasmos-riscv64.cfg";
 
-/** Build the emulator-worker boot message for a given VM config (M5). */
+/** Build the emulator-worker boot message for a given VM config (Linux guest integration). */
 function emulatorBoot(configUrl: string, cmdline?: string, memoryMb = 128) {
   return {
     configUrl: configUrl || DEFAULT_CONFIG_URL,
@@ -83,7 +83,7 @@ function emulatorBoot(configUrl: string, cmdline?: string, memoryMb = 128) {
   };
 }
 
-/** A compositor surface a process created (M3): a shared RGBA framebuffer. */
+/** A compositor surface a process created (desktop compositor): a shared RGBA framebuffer. */
 export interface SurfaceInfo {
   pid: number;
   surfaceId: number;
@@ -121,19 +121,19 @@ export interface AsyncKernelControl {
    * The kworker reads the bytes from the VFS, so the host never retains a copy —
    * the dominant boot-memory saving over keeping every guest's bytes resident. */
   spawnByPath(imagePath: string, opts?: SpawnOptions): Promise<number>;
-  /** Launch the privileged emulator process (M5, FR-27): a Native process whose
+  /** Launch the privileged emulator process (Linux guest integration, FR-27): a Native process whose
    * body is a dedicated TinyEMU worker booting a real Linux. Returns its PID. */
   spawnEmulator(opts: EmulatorOptions): Promise<number>;
   /** Boot the emulator from an image named by a manifest fetched at runtime
-   * (M5-T7) — the system loads + runs an image resolved at launch, not hardcoded. */
+   * (runtime image selection) — the system loads + runs an image resolved at launch, not hardcoded. */
   spawnEmulatorFromManifest(manifestUrl: string): Promise<number>;
-  /** Register a listener for the emulator's serial console (running text, M5). */
+  /** Register a listener for the emulator's serial console (running text, Linux guest integration). */
   onEmulatorSerial(cb: (pid: number, text: string) => void): void;
-  /** Deliver brokered keystrokes to the emulator's guest console (M5-T3). */
+  /** Deliver brokered keystrokes to the emulator's guest console (guest console input). */
   emulatorInput(pid: number, text: string): Promise<void>;
   /** Resolve when the process exits, with its exit code + isolation proof. */
   wait(pid: number): Promise<ProcExit>;
-  /** Deliver input bytes to a process's stdin (terminal keystrokes, M2). */
+  /** Deliver input bytes to a process's stdin (terminal keystrokes, shell and userland). */
   stdin(pid: number, bytes: Uint8Array): Promise<void>;
   /** Deliver keystrokes to the terminal's current foreground job (a running
    *  editor/filter, else the shell). The kworker tracks the foreground stack so
@@ -143,19 +143,19 @@ export interface AsyncKernelControl {
    *  `tty_set_raw` — `raw` true means pass keys through verbatim (no echo, no
    *  line buffering); false restores cooked mode. Reset to cooked if it exits. */
   onTermMode(cb: (raw: boolean) => void): void;
-  /** Deliver brokered input events to the focused window's process (M3-T3). */
+  /** Deliver brokered input events to the focused window's process (brokered input). */
   deliverInput(pid: number, bytes: Uint8Array): Promise<void>;
   /** Bind a process's stdout/stderr to the terminal (writes stream to xterm). */
   bindTerminal(pid: number): Promise<void>;
   /** Register a listener for streamed terminal output (stdout/stderr → xterm). */
   onOutput(cb: (pid: number, bytes: Uint8Array) => void): void;
-  /** A process created a compositor surface (M3) — open its canvas window. */
+  /** A process created a compositor surface (desktop compositor) — open its canvas window. */
   onSurface(cb: (info: SurfaceInfo) => void): void;
-  /** A process published a frame to `surfaceId` (M3) — blit it to the canvas. */
+  /** A process published a frame to `surfaceId` (desktop compositor) — blit it to the canvas. */
   onPresent(cb: (surfaceId: number) => void): void;
-  /** Kill a process (M3): close a window → reap its process. */
+  /** Kill a process (desktop compositor): close a window → reap its process. */
   kill(pid: number): Promise<void>;
-  /** A process exited/trapped (M3) — close its windows (crash containment). */
+  /** A process exited/trapped (desktop compositor) — close its windows (crash containment). */
   onExit(cb: (pid: number) => void): void;
   /** Await durability of all OPFS/IndexedDB writes (used before reload). */
   flush(): Promise<void>;
@@ -211,7 +211,7 @@ export async function boot(): Promise<BootResult> {
       for (const cb of outputListeners) cb(data.pid ?? 0, data.bytes ?? new Uint8Array());
       return;
     }
-    // M3 compositor surfaces.
+    // Desktop compositor surfaces.
     if (data.type === "surface" && data.surfaceId !== undefined && data.sab) {
       const info: SurfaceInfo = {
         pid: data.pid ?? 0,
@@ -231,7 +231,7 @@ export async function boot(): Promise<BootResult> {
       for (const cb of exitListeners) cb(data.pid);
       return;
     }
-    // M5: the emulator process's serial console (running text).
+    // Linux guest integration: the emulator process's serial console (running text).
     if (data.type === "emulatorSerial" && data.pid !== undefined) {
       for (const cb of emulatorSerialListeners) cb(data.pid, data.text ?? "");
       return;
@@ -288,7 +288,7 @@ export async function boot(): Promise<BootResult> {
       }),
     spawnEmulatorFromManifest: async (manifestUrl) => {
       // Fetch a small image descriptor at runtime, then boot the config it names
-      // ("run the image from within it", M5-T7). The descriptor is small enough to
+      // ("run the image from within it", runtime image selection). The descriptor is small enough to
       // travel any path; the bios/kernel/rootfs are loaded by TinyEMU from the cfg.
       const res = await fetch(manifestUrl);
       if (!res.ok) {

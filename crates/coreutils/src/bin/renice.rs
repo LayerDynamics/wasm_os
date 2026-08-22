@@ -1,4 +1,4 @@
-//! renice — change a running process's scheduling priority (M4-T6, FR-8).
+//! renice — change a running process's scheduling priority (runtime priority, FR-8).
 //! `renice <priority> <pid>`. A higher priority number schedules sooner (the
 //! kernel re-buckets the process in the run queue immediately).
 //!

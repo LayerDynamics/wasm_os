@@ -4,7 +4,7 @@ edition.workspace = true
 version.workspace = true
 license.workspace = true
 
-# M4-T5 signal fixture: blocks in sig_wait (zero CPU) until a SIGTERM arrives,
+# Signal fixture: blocks in sig_wait (zero CPU) until a SIGTERM arrives,
 # then shuts down gracefully — writing a marker file so the E2E can prove the
 # process observed and handled the catchable signal (vs an uncatchable SIGKILL).
 [[bin]]

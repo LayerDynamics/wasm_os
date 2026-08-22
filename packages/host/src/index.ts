@@ -20,7 +20,7 @@ export { isCrossOriginIsolated } from "./features.js";
 const BIN = [
   "sh", "echo", "cat", "grep", "ls", "wc", "cp", "mv", "rm", "mkdir", "pwd", "head", "tail", "env",
   "echo.zig", "crash",
-  // M3 graphical apps (canvas surfaces); launchable from the file manager.
+  // desktop compositor graphical apps (canvas surfaces); launchable from the file manager.
   // "mandelbrot" is the Zig polyglot app (FR-14 on the graphics path).
   "gfxspike", "filemanager", "paint", "editor", "mandelbrot", "sysmon", "lisp", "welcome", "spinner", "chandemo", "shmdemo", "sigdemo", "kill", "renice", "ps", "top", "fetch", "mount", "whoami", "touch", "nano",
 ];
@@ -61,7 +61,7 @@ async function loadBin(control: BootResult["control"], name: string): Promise<vo
 }
 
 /** Translate a 12-byte brokered key record (see compositor/input.ts) into the
- * text/escape sequence a serial console expects (M5-T4). Only key-down produces
+ * text/escape sequence a serial console expects (Linux framebuffer). Only key-down produces
  * output; key-up and unmapped keys yield "". */
 function keyEventToConsoleText(bytes: Uint8Array): string {
   // The record is a fixed 12 bytes (kind @0, keycode u32 @6). Guard the length so a
@@ -120,7 +120,7 @@ export async function startDesktop(opts: StartOptions = {}): Promise<ReadyState>
   }
   const result = await boot();
   // Capture full cold-load (navigation start → kernel ready) BEFORE the userland
-  // spins up, so this stays comparable to M0/M1.
+  // spins up, so this stays comparable to kernel/VFS bootstrap/WASI process runtime.
   const coldLoadMillis = Math.round(performance.now());
   const { control } = result;
 
@@ -180,8 +180,8 @@ export async function startDesktop(opts: StartOptions = {}): Promise<ReadyState>
       name: "sh",
       grantSpawn: true,
       grantFsSubtree: "/",
-      grantSignal: true, // the user's process-control authority: enables `kill` (M4-T5)
-      grantNet: true, // brokered networking authority: enables `fetch` (M5-T6)
+      grantSignal: true, // the user's process-control authority: enables `kill` (signals)
+      grantNet: true, // brokered networking authority: enables `fetch` (network broker)
     });
     await control.bindTerminal(pid);
     return pid;
@@ -198,13 +198,13 @@ export async function startDesktop(opts: StartOptions = {}): Promise<ReadyState>
   // Desktop theme + wallpaper, persisted to /home (FR-26); applied on boot.
   new ThemeManager(control, desktop, taskbarEl);
 
-  // The emulator processes (M5) — their windows route keys to the guest console as
+  // The emulator processes (Linux guest integration) — their windows route keys to the guest console as
   // text, not as brokered input-event records (they make no win_read_input syscall).
   const emulatorPids = new Set<number>();
 
-  // Brokered input (M3-T3): the focused canvas window's keyboard/mouse is routed
+  // Brokered input (brokered input): the focused canvas window's keyboard/mouse is routed
   // to its owning process; keys target the active canvas window. For an emulator
-  // window, keystrokes are translated to console text and sent to the guest (M5-T4).
+  // window, keystrokes are translated to console text and sent to the guest (Linux framebuffer).
   const inputRouter = new InputRouter(
     (pid, bytes) => {
       if (emulatorPids.has(pid)) {
@@ -220,7 +220,7 @@ export async function startDesktop(opts: StartOptions = {}): Promise<ReadyState>
     },
   );
 
-  // Session snapshot/restore (M4-T9, FR-35): records open app windows + geometry to
+  // Session snapshot/restore (session restore, FR-35): records open app windows + geometry to
   // /home/.session.json and re-opens them on the next boot. Created BEFORE the
   // SurfaceManager so each process-owned window can be titled by its launching app.
   const session = new SessionManager(control, compositor);
@@ -243,7 +243,7 @@ export async function startDesktop(opts: StartOptions = {}): Promise<ReadyState>
   const APP_LABELS: Record<string, string> = { linux: "Linux" };
   for (const app of APPS) APP_LABELS[app.name] = app.label;
 
-  // Process-owned canvas surfaces (M3): a process calls win_surface → a canvas window
+  // Process-owned canvas surfaces (desktop compositor): a process calls win_surface → a canvas window
   // opens here (titled by the launching app) and its framebuffer is blitted on present.
   const surfaces = new SurfaceManager(
     compositor,
@@ -265,7 +265,7 @@ export async function startDesktop(opts: StartOptions = {}): Promise<ReadyState>
   for (const app of APPS) {
     session.register(app.name, () => control.spawnByPath(`/usr/bin/${app.name}`, { name: app.name, ...app.opts }));
   }
-  // The privileged emulator process (M5): boots real Linux into a window. Registered
+  // The privileged emulator process (Linux guest integration): boots real Linux into a window. Registered
   // with the SessionManager so it is part of the session (re-opens on reload, FR-35);
   // its window is tagged "linux" and its keystrokes route to the guest console.
   session.register("linux", async () => {
@@ -321,7 +321,7 @@ export async function startDesktop(opts: StartOptions = {}): Promise<ReadyState>
     }
   }, 1500);
 
-  // Closing a process window reaps the owning process (M3-T9); a process that exits
+  // Closing a process window reaps the owning process (launcher and window lifecycle); a process that exits
   // or traps has its windows closed (crash containment, FR-34). Closing the TERMINAL
   // window instead stops the shell watcher and kills the current shell explicitly
   // (the window has no ownerPid, so the generic path below won't).

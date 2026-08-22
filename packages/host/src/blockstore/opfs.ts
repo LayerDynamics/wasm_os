@@ -1,6 +1,6 @@
 import type { Blockstore } from "./types.js";
 
-/** Encodes a vfs path into a single OPFS filename (paths are flat keys at M0). */
+/** Encodes a vfs path into a single OPFS filename (paths are flat keys at kernel/VFS bootstrap). */
 function enc(key: string): string {
   return encodeURIComponent(key);
 }

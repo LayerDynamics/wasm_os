@@ -1,8 +1,8 @@
 import { test, expect, type Page, type Locator } from "@playwright/test";
 
-// M5-T4 — the emulator framebuffer window (FR-23/FR-27). Launching "Linux" from the
+// Linux framebuffer — the emulator framebuffer window (FR-23/FR-27). Launching "Linux" from the
 // taskbar opens a canvas window; the emulator worker renders the guest's serial
-// console into a shared RGBA framebuffer (the same surface/present path the M3
+// console into a shared RGBA framebuffer (the same surface/present path the desktop compositor
 // canvas apps use), which the compositor blits. We assert the window appears and
 // becomes non-blank as the console renders — presence/update, NOT pixel-exact.
 

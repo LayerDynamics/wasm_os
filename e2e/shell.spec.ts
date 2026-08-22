@@ -1,6 +1,6 @@
 import { test, expect, type Page } from "@playwright/test";
 
-// M2 shell: pipelines (FR-17), redirection (FR-17), and exit codes (FR-16),
+// shell and userland shell: pipelines (FR-17), redirection (FR-17), and exit codes (FR-16),
 // exercised through the real shell process + real coreutils + real kernel pipes.
 // Input is delivered via control.stdin (the xterm keystroke path is covered by
 // terminal.spec.ts); the terminal log then contains only command output+prompts.

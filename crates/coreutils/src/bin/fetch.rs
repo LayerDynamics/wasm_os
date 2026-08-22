@@ -1,4 +1,4 @@
-//! fetch — fetch a URL through the host network broker (M5-T6, OQ-2). `fetch <url>`.
+//! fetch — fetch a URL through the host network broker (network broker, OQ-2). `fetch <url>`.
 //!
 //! WASM_OS processes are sandboxed and cannot open sockets; networking is a
 //! brokered host capability (Assumption 9 / FR-NG-1). `fetch` calls the

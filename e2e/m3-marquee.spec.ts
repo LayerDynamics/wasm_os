@@ -1,6 +1,6 @@
 import { test, expect, type Page, type Locator } from "@playwright/test";
 
-// M3 marquee (the exit-criteria scenario, end to end): boot → desktop → launch
+// desktop compositor marquee (the exit-criteria scenario, end to end): boot → desktop → launch
 // the file manager + a graphical app so the terminal and two canvas apps run
 // concurrently → move/resize/focus windows (FR-22) → set a wallpaper → reload and
 // confirm the desktop rebuilds with the wallpaper restored. The per-task specs
@@ -78,5 +78,5 @@ test("boot → desktop → 3 windows concurrent → move/resize/focus → reload
   await page.reload();
   await ready(page);
   expect(await page.evaluate(() => document.getElementById("desktop")!.dataset.wallpaper)).toBe("Forest");
-  await expect(page.locator(".wasmos-window")).toHaveCount(1); // terminal back (apps are not session-restored in M3)
+  await expect(page.locator(".wasmos-window")).toHaveCount(1); // terminal back (apps are not session-restored in desktop compositor)
 });

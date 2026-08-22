@@ -1,18 +1,18 @@
 # Contributing to WASM_OS
 
-Thanks for your interest. **WASM_OS is an experimental project** (see the
-[README](README.md#status--intent)) — a proof of concept, not production software —
-so contributions are welcome in the spirit of exploration, learning, and tightening
-the existing design rather than shipping features for end users.
+Thanks for your interest. WASM_OS is an experimental browser-hosted operating
+system (see the [README](README.md)). Contributions are most useful when they
+make one of the existing runtime paths clearer, better tested, or easier to run.
 
 ## Ground rules
 
-- **The gate is `npm run verify`.** Every change must pass it before it lands —
+- **The gate is `npm run verify`.** Every change should pass it before it lands —
   build, guest build, ABI drift checks, lint, typecheck, Rust tests, host tests, and
   the real-browser E2E. No mocked layers, no skipped gates.
-- **The ABI lives in `wit/`.** It is the single source of truth. If you change the
-  kernel↔host or kernel↔guest contract, regenerate bindings and update the
-  conformance gates — see [`docs/stack/wit.md`](docs/stack/wit.md).
+- **The ABI lives in `wit/`.** It is the single source of truth for the component
+  boundary and the guest syscall extension. If you change either contract, run
+  `npm run binder:check` and update the generated or conformance output — see
+  [`docs/stack/wit.md`](docs/stack/wit.md).
 - **No placeholders.** No stubs, `TODO`/`unimplemented!`, simulated output, or
   dead code. If something is called, it is implemented.
 - **Match the surrounding code.** Comment density, naming, and idiom should look
@@ -81,8 +81,8 @@ Linux x86_64 on every push.
 
 - Use clear, conventional-style messages (`feat(scope):`, `fix(scope):`,
   `docs:`, `test:`, `chore:`).
-- Keep a PR focused; explain what changed and why, and note any as-built deviation
-  from a spec or plan.
+- Keep a PR focused; explain what changed and why, and note any difference from a
+  spec or plan.
 - A PR is ready when `npm run verify` is green with zero regressions.
 
 ## License

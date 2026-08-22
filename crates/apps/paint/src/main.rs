@@ -1,4 +1,4 @@
-//! Paint (L3 / M3) — a real `wasm32-wasip1` canvas app.
+//! Paint (L3 / desktop compositor) — a real `wasm32-wasip1` canvas app.
 //!
 //! Draws brush strokes into a wasmgfx framebuffer from brokered pointer input,
 //! with a colour palette, a clear button, and save/load to the VFS

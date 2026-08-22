@@ -1,6 +1,6 @@
 import { test, expect, type Page } from "@playwright/test";
 
-// M3-T9 — launcher, multi-window concurrency, and crash containment (FR-21/22/34).
+// launcher and window lifecycle — launcher, multi-window concurrency, and crash containment (FR-21/22/34).
 // Apps launch from the taskbar menu into their own windows and run concurrently;
 // closing one leaves the rest; a graphical app that traps has its window closed
 // while the desktop, the terminal, and the shell keep running.

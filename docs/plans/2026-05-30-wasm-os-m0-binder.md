@@ -1,9 +1,9 @@
-# WASM_OS — M0 (Kernel & VFS Skeleton) + Centralized Binder — Implementation Plan
+# WASM_OS — kernel/VFS bootstrap (Kernel & VFS Skeleton) + Centralized Binder — Implementation Plan
 
 > **For Claude:** REQUIRED SUB-SKILL: Use lore:execute to implement this plan task-by-task.
-> **Scope guard:** Do ONLY what is listed here. This plan delivers SPEC-1 milestone **M0** plus the **Binder** prerequisite. It STOPS at M0's exit criteria. Do NOT start M1 (first WASI process), the shell, the compositor, or the emulator. If you discover adjacent issues, note them as a TODO and continue. Do NOT fix them.
+> **Scope guard:** Do ONLY what is listed here. This plan delivers SPEC-1 milestone **kernel/VFS bootstrap** plus the **Binder** prerequisite. It STOPS at kernel/VFS bootstrap's exit criteria. Do NOT start WASI process runtime (first WASI process), the shell, the compositor, or the emulator. If you discover adjacent issues, note them as a TODO and continue. Do NOT fix them.
 
-**Goal:** Stand up the WASM_OS monorepo, the centralized WIT→bindings Binder, and a Rust→WASM microkernel that boots to `ready` in <1.5 s with a tri-backend virtual filesystem (tmpfs + OPFS + IndexedDB) that persists across reload — SPEC-1 milestone M0.
+**Goal:** Stand up the WASM_OS monorepo, the centralized WIT→bindings Binder, and a Rust→WASM microkernel that boots to `ready` in <1.5 s with a tri-backend virtual filesystem (tmpfs + OPFS + IndexedDB) that persists across reload — SPEC-1 milestone kernel/VFS bootstrap.
 
 **Architecture:** The kernel is a Rust WebAssembly **Component** that *exports* the `wasmos:control` world (host↔kernel API) and *imports* the `wasmos:blockstore` world (host-implemented persistence over OPFS/IndexedDB). The TypeScript host transpiles the component with `jco`, supplies the blockstore implementation, performs execution-tier detection, and drives boot. `wit/` is the single source of truth; `tools/binder` generates all Rust + TS bindings and gates drift in CI.
 
@@ -13,9 +13,9 @@
 
 **Required skills:** none (`@` references not requested; this is not a plugin/MCP/agent/hook/SDK project).
 
-**Out of scope (note as TODO if encountered, do NOT build):** Web Workers, SharedArrayBuffer syscall ring, the `wasmos:kernel` guest syscall surface, process spawning, the shell/coreutils, the compositor, the emulator, networking. Tier detection only *reports* SAB/JSPI availability at M0; it does not yet use them.
+**Out of scope (note as TODO if encountered, do NOT build):** Web Workers, SharedArrayBuffer syscall ring, the `wasmos:kernel` guest syscall surface, process spawning, the shell/coreutils, the compositor, the emulator, networking. Tier detection only *reports* SAB/JSPI availability at kernel/VFS bootstrap; it does not yet use them.
 
-**M0 exit criteria (the definition of done for this whole plan):**
+**kernel/VFS bootstrap exit criteria (the definition of done for this whole plan):**
 
 1. Loading the page boots the kernel to a `ready` state in < 1500 ms (cold, reference machine), surfaced as a `ready` event with a feature/tier report.
 2. A host caller can create, read, and list files across all three VFS backends (tmpfs `/`, OPFS `/home`, IndexedDB `/mnt`).
@@ -92,7 +92,7 @@ git add .gitignore .gitattributes rust-toolchain.toml && git commit -m "chore: i
 
 ---
 
-## Task 2: Bootstrap the toolchain (install + verify everything M0/Binder needs)
+## Task 2: Bootstrap the toolchain (install + verify everything kernel/VFS bootstrap/Binder needs)
 
 **Files:**
 
@@ -349,12 +349,12 @@ interface control {
   /// matching blockstore import for opfs/idb backends.
   mount: func(path: string, on: backend) -> result<_, fs-error>;
 
-  // --- VFS operations (exercised by the M0 integration + E2E tests) ---
+  // --- VFS operations (exercised by the kernel/VFS bootstrap integration + E2E tests) ---
   fs-write: func(path: string, bytes: list<u8>) -> result<_, fs-error>;
   fs-read:  func(path: string) -> result<list<u8>, fs-error>;
   fs-list:  func(path: string) -> result<list<string>, fs-error>;
 
-  /// Process table view (empty at M0; proves the table exists).
+  /// Process table view (empty at kernel/VFS bootstrap; proves the table exists).
   list-procs: func() -> list<proc-info>;
 }
 ```
@@ -364,7 +364,7 @@ interface control {
 ```wit
 package wasmos:abi@0.1.0;
 
-/// The M0 kernel: exports control, imports the two host-backed stores.
+/// The kernel/VFS bootstrap kernel: exports control, imports the two host-backed stores.
 world kernel {
   import home-store;
   import mnt-store;
@@ -408,7 +408,7 @@ git add wit/ && git commit -m "feat(wit): wasmos:abi control + blockstore + kern
 
 **Step 2: `tools/binder/binder.mjs` — full implementation (gen + check)**
 
-The Binder has two jobs at M0: (a) **gen** — transpile the built kernel component into TS host bindings under `packages/abi/generated/`; (b) **check** — regenerate into a temp dir and diff against the committed output, exiting non-zero on drift. The Rust *guest* bindings are produced in-crate by `cargo-component` from `wit/` (Task 6), so the Binder owns the host (TS) side and the drift gate.
+The Binder has two jobs at kernel/VFS bootstrap: (a) **gen** — transpile the built kernel component into TS host bindings under `packages/abi/generated/`; (b) **check** — regenerate into a temp dir and diff against the committed output, exiting non-zero on drift. The Rust *guest* bindings are produced in-crate by `cargo-component` from `wit/` (Task 6), so the Binder owns the host (TS) side and the drift gate.
 
 ```javascript
 #!/usr/bin/env node
@@ -540,8 +540,8 @@ world = "kernel"
 **Step 2: `crates/kernel/src/types.rs` — the in-memory kernel model (typed-first)**
 
 ```rust
-//! Core kernel data model for M0. No processes run yet; the table exists so
-//! the structure is in place for M1.
+//! Core kernel data model for kernel/VFS bootstrap. No processes run yet; the table exists so
+//! the structure is in place for WASI process runtime.
 
 /// A backend a path subtree is mounted on.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -558,7 +558,7 @@ pub struct ProcInfo {
     pub state: String,
 }
 
-/// The process table. Empty at M0 but real — M1 adds spawn().
+/// The process table. Empty at kernel/VFS bootstrap but real — WASI process runtime adds spawn().
 #[derive(Default)]
 pub struct ProcTable {
     procs: Vec<ProcInfo>,
@@ -783,7 +783,7 @@ git add crates/kernel/ && git commit -m "test(kernel): vfs core + types with fai
 **Step 1: `crates/kernel/src/lib.rs` — implement the `control` export against the generated guest bindings**
 
 ```rust
-//! M0 kernel component. Exports `wasmos:abi/control`; imports two blockstores
+//! kernel/VFS bootstrap kernel component. Exports `wasmos:abi/control`; imports two blockstores
 //! (`home`->OPFS, `mnt`->IndexedDB) provided by the host.
 
 mod types;
@@ -877,7 +877,7 @@ impl Guest for Component {
         STATE.with(|s| {
             let mut st = s.borrow_mut();
             if !st.booted {
-                // Standard M0 mount layout.
+                // Standard kernel/VFS bootstrap mount layout.
                 let _ = st.vfs.mount("/home", Backend::Opfs);
                 let _ = st.vfs.mount("/mnt", Backend::Idb);
                 st.booted = true;
@@ -1055,7 +1055,7 @@ export class IdbBlockstore implements Blockstore {
 ```typescript
 import type { Blockstore } from "./types.js";
 
-/** Encodes a vfs path into a single OPFS filename (paths are flat keys at M0). */
+/** Encodes a vfs path into a single OPFS filename (paths are flat keys at kernel/VFS bootstrap). */
 function enc(key: string): string {
   return encodeURIComponent(key);
 }
@@ -1445,7 +1445,7 @@ export default defineConfig({
 });
 ```
 
-**Step 3: `e2e/boot.spec.ts` — the M0 exit-criteria E2E (real browser, real OPFS/IndexedDB, no mocks)**
+**Step 3: `e2e/boot.spec.ts` — the kernel/VFS bootstrap exit-criteria E2E (real browser, real OPFS/IndexedDB, no mocks)**
 
 ```typescript
 import { test, expect } from "@playwright/test";
@@ -1559,7 +1559,7 @@ jobs:
 **Step 2: `docs/M0-STATUS.md` — record exit-criteria verification (filled with real results)**
 
 ```markdown
-# M0 Status
+# kernel/VFS bootstrap Status
 
 | Exit criterion | Verified by | Result |
 |----------------|-------------|--------|
@@ -1580,7 +1580,7 @@ npm run verify 2>&1 | tee /tmp/m0-verify.log | tail -30
 **Step 4: Commit**
 
 ```bash
-git add .github/workflows/ci.yml docs/M0-STATUS.md && git commit -m "ci: verify pipeline (binder check + rust + host + e2e) and M0 status"
+git add .github/workflows/ci.yml docs/M0-STATUS.md && git commit -m "ci: verify pipeline (binder check + rust + host + e2e) and kernel/VFS bootstrap status"
 ```
 
 ---
@@ -1593,20 +1593,20 @@ Run and read the output of:
 npm run verify
 ```
 
-All four M0 exit criteria (top of plan) must hold:
+All four kernel/VFS bootstrap exit criteria (top of plan) must hold:
 
 1. ✅ Boot `ready` < 1500 ms (E2E test 1).
 2. ✅ Tri-backend read/write/list (Rust `vfs::tests` + E2E test 2).
 3. ✅ OPFS + IndexedDB persist across reload; tmpfs correctly volatile (E2E test 2).
 4. ✅ `binder check` in sync + all test suites green.
 
-**STOP here.** M1 (first WASI process, the SAB syscall ring, the `wasmos:kernel` guest world) is the next plan, not this one.
+**STOP here.** WASI process runtime (first WASI process, the SAB syscall ring, the `wasmos:kernel` guest world) is the next plan, not this one.
 
 ---
 
 ## TODO / deferred (discovered-adjacent — do NOT do in this plan)
 
-- M1: `wasmos:kernel` guest syscall world + `wit-bindgen` Rust/C guest stubs + Asyncify/JSPI tier-B path.
+- WASI process runtime: `wasmos:kernel` guest syscall world + `wit-bindgen` Rust/C guest stubs + Asyncify/JSPI tier-B path.
 - Worker-per-process execution + SharedArrayBuffer ring transport.
-- Longest-prefix VFS resolution will need real hierarchical dirs (M0 uses flat keys); revisit when `fd_readdir` lands in M2.
+- Longest-prefix VFS resolution will need real hierarchical dirs (kernel/VFS bootstrap uses flat keys); revisit when `fd_readdir` lands in shell and userland.
 - OPFS unit testing in node (currently only browser-tested) — evaluate `@webcontainer`/wasi OPFS shims later.

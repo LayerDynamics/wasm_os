@@ -1,6 +1,6 @@
 import { test, expect, type Page } from "@playwright/test";
 
-// M4-T7 — ps / top (FR-33). The CLI process-table tools run from the real shell
+// process-table tools — ps / top (FR-33). The CLI process-table tools run from the real shell
 // and read the live table via the proc_list syscall. `ps` lists every process by
 // PID; `top` adds a summary header and orders by CPU activity. Assertions are on
 // the terminal output (the tools print to stdout, streamed to xterm).

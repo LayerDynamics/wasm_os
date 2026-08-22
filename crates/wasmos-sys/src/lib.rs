@@ -1,9 +1,9 @@
-//! Guest-side bindings for the **wasmos_kernel** process-control extension (M2).
+//! Guest-side bindings for the **wasmos_kernel** process-control extension (shell and userland).
 //!
 //! A guest (the shell) imports a single `wasmos_kernel.syscall` function and
 //! marshals typed calls (`spawn`/`pipe`/`wait`) over it using the same binary
 //! wire format the kernel router decodes (opcodes `0x20..`). The logical ABI is
-//! documented in `wit/kernel.wit`; the Binder's `kernel-check` verifies this
+//! documented in `wit/kernel/kernel.wit`; the Binder's `kernel-check` verifies this
 //! crate exposes the matching function set (FR-36 drift gate).
 //!
 //! On non-wasm targets the import is replaced with a stub so the crate still
@@ -46,7 +46,7 @@ const KILL: u8 = 0x3A;
 const SIG_WAIT: u8 = 0x3B;
 const NET_REQUEST: u8 = 0x40;
 
-/// Signal numbers (M4-T5) — match POSIX. SIGTERM is catchable (cooperative
+/// Signal numbers (signals) — match POSIX. SIGTERM is catchable (cooperative
 /// shutdown via [`sig_wait`]); SIGKILL is uncatchable + forceful.
 pub const SIGTERM: u8 = 15;
 pub const SIGKILL: u8 = 9;
@@ -155,8 +155,8 @@ pub fn spawn(
         w.stdio(s);
     }
     w.bytes(cwd.as_bytes());
-    // Capability delegation: ask the kernel to also grant the child Gpu/Input (M3)
-    // and Signal (M4-T5) — each only honoured if THIS process holds it. Ordinary
+    // Capability delegation: ask the kernel to also grant the child Gpu/Input (desktop compositor)
+    // and Signal (signals) — each only honoured if THIS process holds it. Ordinary
     // coreutils pass false/false/false; the shell delegates Signal to `kill`.
     w.u8(grant_gpu as u8);
     w.u8(grant_input as u8);
@@ -204,7 +204,7 @@ pub fn wait(pid: u32) -> Result<i32, u16> {
     Ok(rd_u32(&resp, 2) as i32)
 }
 
-/// `win_surface(width, height)` — request a compositor canvas surface (M3, FR-23).
+/// `win_surface(width, height)` — request a compositor canvas surface (desktop compositor, FR-23).
 /// Requires the `Gpu` capability. Returns the kernel-allocated `surface_id`; the
 /// host allocates a `width*height*4` RGBA framebuffer shared with the compositor.
 /// Present pixels with [`win_present`].
@@ -238,7 +238,7 @@ pub fn win_present(surface_id: u32, framebuffer: &[u8]) {
 /// encoder and `crates/kernel` `INPUT_EVENT_SIZE`).
 pub const INPUT_EVENT_SIZE: usize = 12;
 
-/// Brokered input event kinds (M3-T3, FR-25).
+/// Brokered input event kinds (brokered input, FR-25).
 pub const EV_POINTER_MOVE: u8 = 1;
 pub const EV_POINTER_DOWN: u8 = 2;
 pub const EV_POINTER_UP: u8 = 3;
@@ -289,7 +289,7 @@ impl InputEvent {
 }
 
 /// `win_read_input()` — drain queued keyboard/mouse events for the focused window
-/// (M3-T3, FR-25). **Blocks** (parks) until at least one event is available.
+/// (brokered input, FR-25). **Blocks** (parks) until at least one event is available.
 /// Returns `Err(errno)` if the process lacks the Input capability — callers
 /// without input should not poll this in a loop.
 pub fn win_read_input() -> Result<Vec<InputEvent>, u16> {
@@ -341,7 +341,7 @@ pub fn tty_set_raw(raw: bool) -> u16 {
     rd_u16(&resp, 0)
 }
 
-// --- M4: process introspection + control (ps/top, FR-33; renice, FR-8) ---
+// --- process control and IPC: process introspection + control (ps/top, FR-33; renice, FR-8) ---
 
 /// Process state as reported by `proc_list`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -368,7 +368,7 @@ impl ProcState {
     }
 }
 
-/// A live process-table entry (M4 `ps`/`top`).
+/// A live process-table entry (process control and IPC `ps`/`top`).
 #[derive(Clone, Debug)]
 pub struct ProcInfo {
     pub pid: u32,
@@ -437,9 +437,9 @@ pub fn set_priority(pid: u32, priority: u8) -> u16 {
     rd_u16(&call(&w.0), 0)
 }
 
-// --- M4-T3: message channels (named bidirectional message queues) ---
+// --- message channels: message channels (named bidirectional message queues) ---
 
-/// `chan_open(name)` — open or connect a named message channel (M4). The first
+/// `chan_open(name)` — open or connect a named message channel (process control and IPC). The first
 /// opener creates it (endpoint 0); the second connects (endpoint 1). Returns the
 /// opaque `(chan_id, end)` handle, or the kernel errno.
 pub fn chan_open(name: &str) -> Result<(u32, u8), u16> {
@@ -465,7 +465,7 @@ pub fn chan_send(chan_id: u32, msg: &[u8]) -> u16 {
     rd_u16(&call(&req), 0)
 }
 
-/// `chan_recv(chan_id)` — receive one message (M4). **Blocks** until a message
+/// `chan_recv(chan_id)` — receive one message (process control and IPC). **Blocks** until a message
 /// arrives; an empty `Ok(vec)` means EOF (the peer closed and the inbox drained).
 pub fn chan_recv(chan_id: u32) -> Result<Vec<u8>, u16> {
     let mut req = vec![CHAN_RECV];
@@ -485,9 +485,9 @@ pub fn chan_recv(chan_id: u32) -> Result<Vec<u8>, u16> {
     Ok(resp.get(6..6 + len).map(|s| s.to_vec()).unwrap_or_default())
 }
 
-// --- M4-T4: shared memory (capability-gated, kernel-arbitrated region, FR-6) ---
+// --- shared memory: shared memory (capability-gated, kernel-arbitrated region, FR-6) ---
 
-/// `shm_create(size)` — create a shared-memory region of `size` bytes (M4). The
+/// `shm_create(size)` — create a shared-memory region of `size` bytes (process control and IPC). The
 /// caller owns it and is granted access; it may [`shm_grant`] other processes.
 /// Returns the `shm_id`, or the kernel errno.
 pub fn shm_create(size: u32) -> Result<u32, u16> {
@@ -509,7 +509,7 @@ pub fn shm_map(shm_id: u32) -> u16 {
     rd_u16(&call(&req), 0)
 }
 
-/// `shm_read(shm_id, off, len)` — copy up to `len` bytes from the region (M4).
+/// `shm_read(shm_id, off, len)` — copy up to `len` bytes from the region (process control and IPC).
 /// Returns the bytes (clipped to the region), or the kernel errno (NOTCAPABLE if
 /// access was not granted).
 pub fn shm_read(shm_id: u32, off: u32, len: u32) -> Result<Vec<u8>, u16> {
@@ -551,9 +551,9 @@ pub fn shm_grant(shm_id: u32, target_pid: u32) -> u16 {
     rd_u16(&call(&req), 0)
 }
 
-// --- M4-T5: signals (SIGTERM cooperative + SIGKILL forceful, Signal cap) ---
+// --- signals: signals (SIGTERM cooperative + SIGKILL forceful, Signal cap) ---
 
-/// `kill(target_pid, sig)` — send a signal to a process (M4-T5). Signalling
+/// `kill(target_pid, sig)` — send a signal to a process (signals). Signalling
 /// another process requires the Signal capability (self always allowed). Use
 /// [`SIGTERM`] for a cooperative graceful stop (the target must `sig_wait`) or
 /// [`SIGKILL`] for an uncatchable forceful kill. Returns the kernel errno
@@ -566,7 +566,7 @@ pub fn kill(target_pid: u32, sig: u8) -> u16 {
 }
 
 /// `sig_wait()` — block until at least one signal is pending for this process,
-/// then drain + return them (M4-T5). Zero-CPU: the process parks until a signal
+/// then drain + return them (signals). Zero-CPU: the process parks until a signal
 /// is delivered. A cooperative guest loops on this and exits when it sees
 /// [`SIGTERM`].
 pub fn sig_wait() -> Vec<u8> {
@@ -578,9 +578,9 @@ pub fn sig_wait() -> Vec<u8> {
     resp.get(6..6 + count).map(|s| s.to_vec()).unwrap_or_default()
 }
 
-// --- M5-T6: brokered networking (the Net capability, OQ-2) ---
+// --- network broker: brokered networking (the Net capability, OQ-2) ---
 
-/// `net_request(url)` — fetch `url` through the host network broker (M5). Requires
+/// `net_request(url)` — fetch `url` through the host network broker (Linux guest integration). Requires
 /// the Net capability (default-deny → NOTCAPABLE). Blocks until the fetch completes;
 /// returns the response body, or the kernel errno (IO on a fetch failure). The
 /// kernel cannot fetch — it parks the caller and the host performs the fetch.

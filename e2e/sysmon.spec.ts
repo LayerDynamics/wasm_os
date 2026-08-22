@@ -1,6 +1,6 @@
 import { test, expect, type Page, type Locator } from "@playwright/test";
 
-// M4-T8 — graphical System Monitor (FR-33 + FR-8). A real Rust canvas app: it
+// system monitor — graphical System Monitor (FR-33 + FR-8). A real Rust canvas app: it
 // draws the live process table from proc_list and acts on the selected process
 // via brokered keyboard input, using a launcher-delegated Signal capability.
 // End to end: launch from the taskbar → its canvas window renders → click a

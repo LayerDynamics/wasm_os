@@ -1,6 +1,6 @@
 import { test, expect, type Page } from "@playwright/test";
 
-// M2 spine checkpoint (FR-15/16): a real xterm terminal, bound to a real Rust
+// shell and userland spine checkpoint (FR-15/16): a real xterm terminal, bound to a real Rust
 // shell process, runs a real WASI coreutil end-to-end. Every layer runs: real
 // keystrokes → xterm → control.stdin → shell stdin (park/resume) → wasmos_kernel
 // spawn → child runs → stdout streams back to xterm. No mocks.

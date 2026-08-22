@@ -90,7 +90,7 @@ describe("SAB syscall ring", () => {
     ]);
   });
 
-  // The M2 spine: a syscall can PARK — received now, completed later — while the
+  // The shell and userland spine: a syscall can PARK — received now, completed later — while the
   // guest stays genuinely blocked in Atomics.wait. This is the deferred-response
   // capability stdin/pipes/wait all depend on.
   it("completes a PARKED request later (deferred fulfilment) across the real ring", async () => {

@@ -1,6 +1,6 @@
 import { test, expect, type Page } from "@playwright/test";
 
-// M4-T3 — message channels (the IPC marquee). Two processes rendezvous on a named
+// message channels — message channels (the IPC marquee). Two processes rendezvous on a named
 // channel; one sends a message, the other receives it. The receiver persists the
 // payload to the VFS, so the test verifies real cross-process delivery end to end:
 // guest chan_send → kernel channel → guest chan_recv (park/resume) → file.

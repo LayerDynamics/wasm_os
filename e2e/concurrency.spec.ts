@@ -1,6 +1,6 @@
 import { test, expect, type Page } from "@playwright/test";
 
-// M4-T2 — ≥32 concurrent processes within the main-thread budget (FR-3). Spawn 32
+// concurrency test — ≥32 concurrent processes within the main-thread budget (FR-3). Spawn 32
 // spinner processes (each does a little work then parks); the process table holds
 // them all AND the desktop/shell stays responsive — a command still runs end to
 // end while 32 peers are alive.

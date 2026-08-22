@@ -1,6 +1,6 @@
 import { test, expect, type Page } from "@playwright/test";
 
-// M4-T4 — shared memory (FR-6). The writer process creates a kernel-arbitrated
+// shared memory — shared memory (FR-6). The writer process creates a kernel-arbitrated
 // region, fills it, spawns a reader child, grants it access, and releases a
 // channel barrier; the reader maps the region and reads bytes the writer wrote in
 // a different address space, then persists them. Verifying the file proves real

@@ -1,6 +1,6 @@
 import { test, expect, type Page } from "@playwright/test";
 
-// M5-T8 — virtio-9p shared folder (FR-29). The host /home/shared subtree is bridged
+// 9p shared folder — virtio-9p shared folder (FR-29). The host /home/shared subtree is bridged
 // into the guest's 9p mount (the emulator worker auto-mounts the host9p tag on
 // /mnt). Files cross BOTH ways: a file written in host /home/shared is seeded into
 // the 9p fs and read inside the guest; a file the guest writes under /mnt is

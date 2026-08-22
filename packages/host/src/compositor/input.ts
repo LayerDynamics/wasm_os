@@ -1,5 +1,5 @@
 /**
- * Input broker (L3 / M3, FR-25). Captures keyboard/mouse for the FOCUSED canvas
+ * Input broker (L3 / desktop compositor, FR-25). Captures keyboard/mouse for the FOCUSED canvas
  * window and delivers fixed-size event records to that window's owning process
  * (capability-checked kernel-side: events for a process without `Input` are
  * dropped). Pointer coordinates are mapped to the surface's backing-store pixels.

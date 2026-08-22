@@ -1,6 +1,6 @@
 import { test, expect, type Page, type Locator } from "@playwright/test";
 
-// M3-T6 — Paint (FR-23 + FR-25 + VFS persistence). A real Rust canvas app: drag
+// Paint app — Paint (FR-23 + FR-25 + VFS persistence). A real Rust canvas app: drag
 // the mouse to draw into a shared framebuffer, pick a palette colour, and save the
 // drawing to the VFS. Every layer is real — pointer → deliver_input → guest draws
 // → present → blit; save → std::fs::write → kernel VFS.

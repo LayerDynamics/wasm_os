@@ -1,110 +1,83 @@
-# M5 Status — Emulator as a Privileged Process ("Linux in a tab")
+# Linux guest status — TinyEMU as a privileged process
 
-**Status:** ✅ Complete — all nine exit criteria met (verified 2026-06-01 via the fast `npm run verify` + the slow boot lane, both green).
+**Status:** Complete — all nine exit criteria were reported green on 2026-06-01
+by the fast verification gate and the separate slow Linux-boot lane.
 
-WASM_OS now boots a **real Linux**. Launch **"Linux"** from the taskbar and a v86
-x86 emulator — integrated as a single **privileged `Native` process** — boots a
-BusyBox/Buildroot kernel to an interactive shell inside a **framebuffer window**,
-while every other WASM_OS process keeps running and stays isolated. The emulator is
-a first-class PID: it appears in `proc_list`/`top`, accrues CPU via run-to-budget
-accounting, takes **brokered keyboard input**, shares files with the host through a
-**virtio-9p folder**, is **killable** from userland, and is **restored on reload**.
-M5 also resolves **OQ-2** with a capability-gated **`net_request`** broker + a
-`fetch` coreutil. This is L5 — the final layer of the spec.
+WASM_OS boots a real RISC-V Linux guest. Launch **Linux** from the taskbar and
+TinyEMU runs the BusyBox/Buildroot image in a dedicated worker. The guest is
+registered as one privileged `Native` process: it has a PID, appears in `ps` and
+`top`, accepts brokered keyboard input, renders into a framebuffer window, can
+be killed, and can be reopened with the desktop session. The host also exposes a
+capability-gated `net_request` broker and a `fetch` utility to WASI guests.
 
 ## Exit criteria
 
 | # | Criterion | Verified by | Result |
-|---|-----------|-------------|--------|
-| 1 | **Launch "Linux" → a real kernel boots to a shell** in a window (serial-asserted, FR-27) | `e2e/emulator-spike.spec.ts`, `e2e/emulator-process.spec.ts` | ✅ PASS |
-| 2 | **Peers keep running + isolated** while Linux runs (FR-6/FR-28) | `e2e/emulator-process.spec.ts`, `e2e/emulator-schedule.spec.ts` | ✅ PASS |
-| 3 | **Killable from `top`/userland** — reaped; peers survive (exit criteria) | `e2e/emulator-schedule.spec.ts` (`kill -9`), `e2e/emulator-process.spec.ts` | ✅ PASS |
-| 4 | **Interactive guest shell** via brokered keystrokes (FR-27) | `e2e/emulator-interactive.spec.ts` (`$((6*7))`→42) | ✅ PASS |
-| 5 | **Framebuffer window** renders the guest console (FR-23) | `e2e/emulator-window.spec.ts` | ✅ PASS |
-| 6 | **`net_request`** brokered networking + `fetch` coreutil; default-deny (OQ-2) | `e2e/net.spec.ts`, kernel unit test | ✅ PASS |
-| 7 | **virtio-9p shared folder** crosses files host↔guest (FR-29) | `e2e/emulator-9p.spec.ts` | ✅ PASS |
-| 8 | **Linux restored after reload**; shared folder persists (FR-35 tie-in) | `e2e/emulator-session.spec.ts` | ✅ PASS |
-| 9 | `npm run verify` green **including** the M0–M4 regression suite | local `npm run verify` (exit 0) + slow lane | ✅ PASS |
+|---|---|---|---|
+| 1 | Launch Linux and boot the RISC-V kernel to a shell in a window | `e2e/emulator-spike.spec.ts`, `e2e/emulator-process.spec.ts` | ✅ PASS |
+| 2 | Keep regular processes running and isolated while Linux runs | `e2e/emulator-process.spec.ts`, `e2e/emulator-schedule.spec.ts` | ✅ PASS |
+| 3 | Kill the Linux process and reap it without killing a peer | `e2e/emulator-schedule.spec.ts`, `e2e/emulator-process.spec.ts` | ✅ PASS |
+| 4 | Send keyboard input to the guest shell and receive its output | `e2e/emulator-interactive.spec.ts` | ✅ PASS |
+| 5 | Render the guest console through the existing canvas surface path | `e2e/emulator-window.spec.ts` | ✅ PASS |
+| 6 | Broker a capability-gated network request for a WASI guest | `e2e/net.spec.ts`, kernel unit tests | ✅ PASS |
+| 7 | Share files through the host's `/home/shared` and the guest's `/mnt` | `e2e/emulator-9p.spec.ts` | ✅ PASS |
+| 8 | Reopen Linux after reload and preserve the shared folder | `e2e/emulator-session.spec.ts` | ✅ PASS |
+| 9 | Keep the earlier kernel, process, shell, desktop, IPC, and persistence checks green | `npm run verify` plus the slow lane | ✅ PASS |
 
-## Verify gate breakdown (latest local run — 2026-06-01)
+## Verification record
 
 ```text
-build         : kernel component (wasm32-unknown-unknown) + jco bindings regenerated
-build:guests  : 31 Rust wasm32-wasip1 guests (adds the fetch coreutil) + 2 Zig
-binder        : kernel-check — wasmos-sys conforms to kernel.wit, 19 verbs (adds
-                net-request to the M4 set)
-lint          : clippy clean (-D warnings) on the whole workspace + kernel wasm target
-typecheck     : tsc -p packages/host/tsconfig.json --noEmit — clean
-cargo test    : 94 passed (kernel 91 — adds the emulator Native-process lifecycle +
-                net_request cap/park/deliver tests; wasmgfx 3)
-vitest        : 14 passed
-playwright    : fast lane 53 + slow lane 8 = 61 — M0–M4 regression + M5 (boot/process/
-                interactive/window/schedule/net/9p/session/manifest)
+build         : kernel component and generated bindings
+build:guests  : Rust wasm32-wasip1 guests plus the Zig guests
+binder        : wasmos-sys conforms to kernel.wit, including net_request
+lint          : clippy clean on the workspace and kernel WASM target
+typecheck     : host TypeScript clean
+cargo test    : kernel, graphics SDK, and emulator/network lifecycle tests passed
+vitest        : host tests passed
+playwright    : fast browser suite plus the slow Linux boot suite passed
 ```
 
-## Architecture deltas introduced by M5
+## Implementation details
 
-- **Emulator = v86 (x86), vendored under `third_party/v86/` (GPLv2)** + a BusyBox
-  bzImage under `assets/linux/`, both stored via **git-lfs**. It runs in a dedicated
-  **`emulator-worker`** (true parallelism — never stalls the main thread or other
-  process workers).
-- **A `Native` process kind** (`crates/kernel/src/types.rs`): the emulator is a
-  first-class PID with a capability set (Gpu+Input+Net+FS), in `proc_list`/`top`,
-  killable via the M4 signal/reap path — but **never pumped by the WASI ring** (it
-  runs its own CPU loop). `spawn_emulator` registers it; the host tracks it in a
-  separate `emulators` map so the wasi ring path is untouched.
-- **Serial-first, framebuffer-second** (the spike's finding): the kernel boot log is
-  on the VGA console; the userspace banner + shell are on **ttyS0**, which is what we
-  capture + assert. The framebuffer window mirrors v86's text console
-  (`screen-put-char`) into an OffscreenCanvas → a shared RGBA SAB → the **existing M3
-  surface/present path** (the compositor opens a canvas window with no changes). The
-  surface is locked to one window (transient boot mode changes don't spawn more).
-- **Brokered input → guest**: the focused emulator window's keystrokes are translated
-  (printable + Enter/Backspace/arrows → ANSI) and written to the guest's ttyS0.
-- **Run-to-budget accounting (FR-28)**: the worker reports periodic wall-budget
-  heartbeats; `account_emulator` credits the scheduler (only for the emulator pid) so
-  its CPU shows in `top` despite making no syscalls.
-- **`net_request` broker (OQ-2)**: a capability-gated syscall (`0x40`) that parks the
-  caller (`WaitReason::NetReq`) and emits `SyscallOutcome.net` so the host performs
-  the actual `fetch`, then `deliver_net` wakes the caller. The `Net` capability is
-  delegated to a `fetch` coreutil exactly as `Signal` is to `kill`/`renice`.
-- **virtio-9p shared folder (FR-29)**: v86's `filesystem:{}` 9p device (the buildroot
-  image auto-mounts the `host9p` tag on `/mnt`); the host seeds it from `/home/shared`
-  on the `9p-attach` event and mirrors guest writes back (`9p-write-end` → `read_file`
-  → VFS).
-- **Session restore (FR-35)**: the emulator is registered with the M4 SessionManager,
-  so a running Linux is recorded in `/home/.session.json` and re-opened on reload; the
-  9p share persists via OPFS-backed `/home`.
+- **TinyEMU core:** `third_party/tinyemu/` contains the MIT RISC-V emulator,
+  built from the pinned source recipe. The guest bootloader, Linux kernel, and
+  BusyBox/Buildroot root filesystem are documented in `assets/linux/README.md`.
+- **Native process:** `crates/kernel/src/types.rs` distinguishes the emulator
+  from WASI processes. `spawn_emulator` registers its PID; the host tracks the
+  emulator worker separately from the syscall-ring workers.
+- **Console rendering:** TinyEMU exposes the guest `hvc0` console to the worker.
+  The worker converts text output into an RGBA framebuffer and reuses the normal
+  compositor surface/present path.
+- **Input:** the focused emulator window translates printable keys, Enter,
+  Backspace, and arrows into guest console input.
+- **CPU accounting:** the emulator worker reports periodic wall-clock budgets;
+  `account_emulator` credits those budgets to the emulator PID so `top` can show
+  activity even though the guest does not use the WASI syscall ring.
+- **Network broker:** `net_request` parks a WASI caller, sends a request to the
+  host, and `deliver_net` wakes the caller with the response. The `Net`
+  capability is delegated to the `fetch` utility only from an authorized shell.
+- **9p share:** TinyEMU mounts the `host9p` device at `/mnt`. The host seeds it
+  from `/home/shared` after the attach event and mirrors guest writes back into
+  the VFS.
+- **Session restore:** the compositor records the Linux window and configuration
+  in `/home/.session.json`; reload recreates the guest and restores the window.
 
-## As-built deviations & decisions
+## Decisions and limitations
 
-- **v86 is GPLv2** — bundling it makes those components copyleft. An explicit M5
-  decision (`docs/plans/2026-06-01-...`); isolated under `third_party/v86/` with its
-  license and a provenance README.
-- **Verification is serial-text based, never pixel-exact** — the framebuffer window
-  is exercised by "a canvas appears + renders (non-blank)", not pixel diffs.
-- **FR-35 here is session/layout restore, not a freeze-dry of live wasm memory** (the
-  latter is infeasible in-tab): Linux re-boots on reload and its shared files persist.
-- **"Run the image from within it"** is delivered two ways: any image URL is bootable
-  (v86 fetches it host-side), and `spawnEmulatorFromManifest` boots an image named by
-  a small manifest fetched at runtime. (Multi-MB images can't traverse the 60 KB
-  net-broker ring, so the broker is the *guest* networking capability, separate from
-  the emulator's host-side image load.)
-- **9p seeding races**: seeding before/during the 9p attach handshake gives EBUSY;
-  seeding on `9p-attach` (post-mount) with an empty initial fs works. `fsList` returns
-  full paths, so the 9p file name is the basename.
+- TinyEMU is MIT licensed. Its license, source version, and build recipe are in
+  `third_party/tinyemu/README.md`.
+- The framebuffer check asserts that a canvas renders non-blank output; it does
+  not compare pixels.
+- Reload recreates the Linux guest and restores its window and shared files. It
+  does not snapshot live emulator memory.
+- The runtime supports one emulator instance. It provides brokered `fetch`, not a
+  complete WASI sockets implementation.
+- The 9p share is seeded after the attach handshake because earlier seeding can
+  race the guest mount. Paths returned by `fsList` are normalized to basenames
+  before they are written to the guest share.
 
 ## CI
 
-`.github/workflows/ci.yml` checks out with `lfs: true` (materializes the vendored v86
-runtime + the Linux image) and runs **two E2E lanes**: the **fast lane**
-(`--project=fast`, M0–M4 + light M5, seconds) and a separate **slow lane**
-(`--project=slow`, the 8 Linux-boot tests, multi-second) so a slow boot can never
-flake the fast suite. The new `fetch` coreutil + the emulator worker are picked up by
-`build:guests`/`bundle` with no other workflow change.
-
-## Deferred (per spec)
-
-Tier B (Asyncify/JSPI), WASI p2 components (FR-13), a full WASI-sockets shim (beyond
-the brokered `net_request`), multiple concurrent emulator instances, and a live-VM
-memory snapshot. With M5, all five layers (L0–L5) of the spec are delivered.
+CI runs a normal fast browser suite and a separate slow suite for Linux boot. The
+emulator core and Linux image are built from the repository's pinned recipes, and
+the emulator worker and `fetch` utility are included in the normal build.

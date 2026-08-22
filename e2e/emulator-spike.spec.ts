@@ -1,6 +1,6 @@
 import { test, expect, type Page } from "@playwright/test";
 
-// M5-T1 — emulator boot SPIKE. Boots a real riscv64 Linux (BusyBox/Buildroot) in a
+// Linux guest boot — emulator boot SPIKE. Boots a real riscv64 Linux (BusyBox/Buildroot) in a
 // dedicated worker via the MIT TinyEMU core, captures the guest's hvc0 serial
 // console, and asserts on the serial TEXT (not framebuffer pixels) — proving worker
 // loading, the TinyEMU vm_start/console API shape, boot time, and the serial markers

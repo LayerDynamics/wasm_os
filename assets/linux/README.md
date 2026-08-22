@@ -1,4 +1,4 @@
-# Guest Linux images (M5 emulator)
+# Guest Linux images
 
 The privileged "emulator" process boots a real Linux guest (FR-27/FR-28). These are
 **guest payloads** the emulator executes — not linked into WASM_OS — so their licenses

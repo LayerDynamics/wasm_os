@@ -4,9 +4,9 @@ edition.workspace = true
 version.workspace = true
 license.workspace = true
 
-# M3 compositor-surface spine fixture (FR-23): requests a canvas surface via the
+# Desktop compositor surface fixture (FR-23): requests a canvas surface via the
 # Gpu capability, draws a recognizable pattern, and presents it. Exercised by
-# e2e/surface.spec.ts (and, with input, e2e/input.spec.ts in M3-T3).
+# e2e/surface.spec.ts (and, with input, e2e/input.spec.ts in brokered input).
 [[bin]]
 name = "gfxspike"
 path = "src/main.rs"

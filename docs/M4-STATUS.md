@@ -1,4 +1,4 @@
-# M4 Status — Multi-process, IPC & Persistence
+# process control and IPC Status — Multi-process, IPC & Persistence
 
 **Status:** ✅ Complete — all eight exit criteria met (verified 2026-06-01 via `npm run verify`, exit 0).
 
@@ -25,7 +25,7 @@ manifest, on top of the already-persistent VFS (FR-35).
 | 5 | **Live `ps`/`top`** — graphical **System Monitor** + CLI show the live table; click/command **kill** works (FR-33) | `e2e/sysmon.spec.ts`, `e2e/ps.spec.ts` | ✅ PASS |
 | 6 | **Runtime priority** set live and reflected in the scheduler + `proc_list` (FR-8) | `e2e/renice.spec.ts`, kernel `proc_list`/`set_priority` units | ✅ PASS |
 | 7 | **Session survives reload** — open apps re-open at saved geometry; `/home` persists (FR-35) | `e2e/session.spec.ts` | ✅ PASS |
-| 8 | `npm run verify` green **including** the M0–M3 regression suite under the new kernel | local `npm run verify` (exit 0) | ✅ PASS |
+| 8 | `npm run verify` green **including** the kernel/VFS bootstrap–desktop compositor regression suite under the new kernel | local `npm run verify` (exit 0) | ✅ PASS |
 
 ## Verify gate breakdown (latest local run — 2026-06-01)
 
@@ -43,11 +43,11 @@ cargo test    : 92 passed; 0 failed  (kernel 89 — incl. proc_list metrics + pr
                 cap-gating + SIGTERM sig_wait wake + SIGKILL reap, chan.rs 4 + shm.rs 4;
                 wasmgfx 3)
 vitest        : 14 passed (4 files) — features, polyglot-echo, IdbBlockstore, ring
-playwright    : 52 passed — M0–M3 regression + M4: concurrency(32), channel, shm, signals(3),
+playwright    : 52 passed — kernel/VFS bootstrap–desktop compositor regression + process control and IPC: concurrency(32), channel, shm, signals(3),
                 renice, ps/top, sysmon, session restore
 ```
 
-## Architecture deltas introduced by M4
+## Architecture deltas introduced by process control and IPC
 
 - **Process metrics + `proc_list` syscall** (`0x30`): `ProcInfo` gains `priority`,
   `cpu_ticks`, `mem_bytes`, `parent`. The kernel accounts **one scheduler tick per
@@ -113,7 +113,7 @@ are workspace members picked up by clippy and `build:guests`, and their wasms ar
 copied into `packages/host/guests/` for the e2e server. `test:rust` runs the expanded
 kernel suite (channels, shm, signals).
 
-## Deferred to M5+ (per spec)
+## Deferred to Linux guest integration and later work (per spec)
 
 Networking broker (OQ-2 / `net_request`), Tier B (cooperative/Asyncify/JSPI), full
-running-process-memory snapshot, WASI p2 components (FR-13), and the L4 emulator (M5).
+running-process-memory snapshot, WASI p2 components (FR-13), and the Linux guest integration.

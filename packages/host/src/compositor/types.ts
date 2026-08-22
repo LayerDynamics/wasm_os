@@ -1,9 +1,9 @@
 /**
- * Compositor shared types (L3 / M3).
+ * Compositor shared types (L3 / desktop compositor).
  *
- * A `Window` frames a content surface. In M3-T1 the only surface is a DOM node
+ * A `Window` frames a content surface. In desktop compositor the only surface is a DOM node
  * (the terminal); the canvas/WebGL framebuffer surface for process-owned windows
- * arrives in M3-T2 (`win_surface`). The kind is modeled now so the window chrome,
+ * arrives in canvas surfaces (`win_surface`). The kind is modeled now so the window chrome,
  * z-order, focus, and taskbar code is surface-agnostic from the start.
  */
 

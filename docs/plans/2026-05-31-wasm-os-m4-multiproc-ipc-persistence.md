@@ -1,13 +1,13 @@
-# M4 — Multi-process, IPC, Persistence ("it's really an OS")
+# process control and IPC — Multi-process, IPC, Persistence ("it's really an OS")
 
 **Plan date:** 2026-05-31
-**Source of truth:** `docs/specs/SPEC-1-wasm-os.md` (Phase 4 / Milestone M4)
-**Predecessors:** M0 (kernel+VFS), M1 (first process), M2 (userland+terminal), **M3 (compositor & desktop — merged, CI-green on `main`)**
-**Branch / delivery:** `feat/m4-multiproc-ipc` · per-task commits → PR → CI green → merge (same flow as M1–M3)
+**Source of truth:** `docs/specs/SPEC-1-wasm-os.md` (Phase 4 / Milestone process control and IPC)
+**Predecessors:** kernel/VFS bootstrap (kernel+VFS), WASI process runtime (first process), shell and userland (userland+terminal), **desktop compositor (compositor & desktop — merged, CI-green on `main`)**
+**Branch / delivery:** `feat/m4-multiproc-ipc` · per-task commits → PR → CI green → merge (same flow as WASI process runtime–desktop compositor)
 
 ---
 
-## What M4 is
+## What process control and IPC is
 
 The milestone that makes WASM_OS *feel like an operating system*: **many processes
 scheduled concurrently, talking to each other through real IPC, observable live,
@@ -33,11 +33,11 @@ the only cross-process memory path) and **FR-36** (all new ABI through the Binde
 3. **Both `ps`/`top` forms.** A graphical **System Monitor** canvas app **and**
    `ps`/`top` coreutils for the shell.
 4. **FR-35 session snapshot/restore** and **FR-8 runtime priority** are both in.
-5. **Tier A only** (SAB), consistent with M1–M3.
+5. **Tier A only** (SAB), consistent with WASI process runtime–desktop compositor.
 
 ---
 
-## Architecture deltas introduced by M4
+## Architecture deltas introduced by process control and IPC
 
 - **Process metrics + `proc_list` syscall.** `ProcInfo` gains `priority`,
   `cpu_ticks` (scheduler time accounting), `mem_bytes`, and `parent`. The kernel
@@ -50,7 +50,7 @@ the only cross-process memory path) and **FR-36** (all new ABI through the Binde
 - **Message channels** (`crates/kernel/src/chan.rs`): a named, **bidirectional**
   message queue pair. `chan_open(name)` rendezvous: the first opener creates the
   channel; the second connects. `chan_send(fd, bytes)` frames a message into the
-  peer's inbox; `chan_recv(fd)` dequeues one message, **parking** (reusing M2
+  peer's inbox; `chan_recv(fd)` dequeues one message, **parking** (reusing shell and userland
   park/resume, `WaitReason::ChanRecv(id)`) when empty. Built on the pipe pattern
   but message-framed + bidirectional + name-brokered.
 - **Shared memory** (`crates/kernel/src/shm.rs` + host SAB store): an explicit
@@ -65,10 +65,10 @@ the only cross-process memory path) and **FR-36** (all new ABI through the Binde
   isolation while delivering real shared memory; documented as an as-built point.)*
 - **Signals** (`WaitReason`-free, queue-based): `kill(pid, sig)` requires the
   `Signal` capability. **SIGKILL** → the kernel zombifies + the kworker terminates
-  the worker (M3 `kill` path) + releases pipes/surfaces/channels/shm. **SIGTERM** →
+  the worker (desktop compositor `kill` path) + releases pipes/surfaces/channels/shm. **SIGTERM** →
   enqueues a pending signal; the target polls `sig_pending()` and exits cleanly
   (the shell/apps check it in their loop). The kernel + kworker close all the
-  dying process's IPC + surface resources on exit (extends the M2/M3 cleanup).
+  dying process's IPC + surface resources on exit (extends the shell and userland/desktop compositor cleanup).
 - **Runtime priority** (FR-8): `set_priority(pid, prio)` (control + guest, the
   latter for self or with a capability) re-buckets the process in the scheduler;
   spawn already carries an initial priority.
@@ -78,11 +78,11 @@ the only cross-process memory path) and **FR-36** (all new ABI through the Binde
 
 **Message topology (unchanged hub):** guest ⇄ process-worker (ring) ⇄ kworker ⇄
 main/compositor. Channels + signals + `proc_list` flow over the ring; shm SABs and
-memory-size reports flow process-worker ⇄ kworker like the M3 framebuffer SABs.
+memory-size reports flow process-worker ⇄ kworker like the desktop compositor framebuffer SABs.
 
 ---
 
-## M4 exit criteria (definition of done — from spec §4.1 / §5)
+## process control and IPC exit criteria (definition of done — from spec §4.1 / §5)
 
 1. **≥32 concurrent processes** sustained within the main-thread budget (NFR: main
    thread < 50% busy at 32) — a spawn-32 harness; all reach `running`; the desktop
@@ -100,19 +100,19 @@ memory-size reports flow process-worker ⇄ kworker like the M3 framebuffer SABs
    live, reflected in the scheduler + the monitor.
 7. **Session survives reload** (FR-35): with apps open, reload re-opens them
    (session manifest) and `/home` content persists.
-8. `npm run verify` is **green**, including the **M0–M3 regression suite** under
+8. `npm run verify` is **green**, including the **kernel/VFS bootstrap–desktop compositor regression suite** under
    the new kernel.
 
 ---
 
-## Out of scope for M4 (deferred)
+## Out of scope for process control and IPC (deferred)
 
 - **Tier B** (cooperative/Asyncify/JSPI) — Tier A only (R-1).
-- **Networking broker** (OQ-2 / `net_request`) — no M4 deliverable needs it; M5/later.
+- **Networking broker** (OQ-2 / `net_request`) — no process control and IPC deliverable needs it; Linux guest integration/later.
 - **Full running-process-memory snapshot** — FR-35 is a *session/layout* restore
   (re-spawn apps + restore window geometry + the persisted VFS), not a freeze-dry
   of live wasm linear memory (infeasible in-tab); documented.
-- **The L4 emulator** (M5).
+- **The L4 emulator** (Linux guest integration).
 - **WASI p2 components** (FR-13) — the `wasmos_kernel` p1 surface remains the path.
 
 ---
@@ -187,7 +187,7 @@ the payload to a verifiable sink (file or terminal).
 (`Op::ShmCreate 0x35`, `ShmMap 0x36`, `ShmRead 0x37`, `ShmWrite 0x38`; cap checks);
 `k_spawn` shm-cap delegation; host: `kernel-worker.ts` allocates the shared SAB +
 routes it to mapping process workers; `process-worker.ts`/`wasi-shim.ts`
-(`shm_read`/`shm_write` copy guest-mem ⇄ shared SAB, like the M3 framebuffer);
+(`shm_read`/`shm_write` copy guest-mem ⇄ shared SAB, like the desktop compositor framebuffer);
 `crates/wasmos-sys`; `wit/kernel.wit` + kernel-check.
 
 **Steps:** `shm_create(size)` → `shm_id`; the kworker allocates a `SharedArrayBuffer`
@@ -288,7 +288,7 @@ wallpaper persists.
 
 ## Phase F — Close-out
 
-### Task 10 — Full M4 E2E + kernel/Binder tests; CI + `M4-STATUS` + verify + PR
+### Task 10 — Full process control and IPC E2E + kernel/Binder tests; CI + `M4-STATUS` + verify + PR
 
 **Files:** `e2e/m4-marquee.spec.ts`; `crates/kernel` tests; `.github/workflows/ci.yml`
 (build new guests: spinner/ps/top/sysmon — all Rust, covered by `build:guests`);
@@ -297,7 +297,7 @@ wallpaper persists.
 **Steps:** the headline E2E — boot → spawn many processes → two exchange via a
 channel → two share an `shm` region → open the System Monitor showing them live →
 SIGTERM/SIGKILL from the monitor → reload restores the session. Kernel unit coverage
-for channels/shm/signals/priority/metrics. M0–M3 specs stay green. Extend
+for channels/shm/signals/priority/metrics. kernel/VFS bootstrap–desktop compositor specs stay green. Extend
 `build:guests`; `binder:kernel-check` covers the new world; write `M4-STATUS.md`
 with **real** `npm run verify` numbers + as-built deviations; run `verify` green;
 open the PR and drive CI green.
@@ -307,7 +307,7 @@ lint · typecheck · test:rust · test:host · test:e2e); CI green on the PR.
 
 ---
 
-## Risks specific to M4
+## Risks specific to process control and IPC
 
 - **Shared memory vs the wasm linear-memory model.** A guest can't map an external
   SAB into its own address space. *Resolved by design:* syscall-mediated
@@ -322,8 +322,8 @@ lint · typecheck · test:rust · test:host · test:e2e); CI green on the PR.
   multiplex 32 rings via `Atomics.waitAsync` without starving. *Mitigation:* the
   existing non-blocking serve loop scales; the concurrency E2E asserts main-thread
   responsiveness, not just spawn success.
-- **Resource cleanup on exit grows.** A dying process now releases pipes (M2),
-  surfaces (M3), **channels, shm mappings, and pending signals** (M4). *Mitigation:*
+- **Resource cleanup on exit grows.** A dying process now releases pipes (shell and userland),
+  surfaces (desktop compositor), **channels, shm mappings, and pending signals** (process control and IPC). *Mitigation:*
   one `proc_exit` cleanup path, each subsystem unit-tested for release-on-exit.
 - **Scope.** Largest milestone yet (IPC ×2 + signals + 2 monitors + session).
   *Mitigation:* spine-first (metrics → channels → shm), each subsystem independently
@@ -331,7 +331,7 @@ lint · typecheck · test:rust · test:host · test:e2e); CI green on the PR.
 
 ---
 
-## Open question touching M4
+## Open question touching process control and IPC
 
-- **OQ-2 (networking).** Still not required by any M4 deliverable; recommend keeping
-  the brokered `net_request` deferred to M5/later. Flag for the owner at approval.
+- **OQ-2 (networking).** Still not required by any process control and IPC deliverable; recommend keeping
+  the brokered `net_request` deferred to Linux guest integration/later. Flag for the owner at approval.

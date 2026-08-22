@@ -1,19 +1,19 @@
-# WASM_OS — M1 (First WASI Process) — Implementation Plan
+# WASM_OS — WASI process runtime (First WASI Process) — Implementation Plan
 
 > **For Claude:** REQUIRED SUB-SKILL: use `lore:execute` to implement this plan task-by-task.
-> **Scope guard:** Do ONLY what is listed here. This plan delivers SPEC-1 milestone **M1**. It STOPS at M1's exit criteria. Do NOT start M2 (the shell, coreutils, pipelines/redirection), the compositor, IPC channels/shm, signals, or the emulator. Do NOT add C/Zig/AssemblyScript/WAT guest toolchains (M1 is Rust-only by decision). If you discover adjacent issues, note them under **TODO / deferred** and continue — do NOT fix them.
+> **Scope guard:** Do ONLY what is listed here. This plan delivers SPEC-1 milestone **WASI process runtime**. It STOPS at WASI process runtime's exit criteria. Do NOT start shell and userland (the shell, coreutils, pipelines/redirection), the compositor, IPC channels/shm, signals, or the emulator. Do NOT add C/Zig/AssemblyScript/WAT guest toolchains (WASI process runtime is Rust-only by decision). If you discover adjacent issues, note them under **TODO / deferred** and continue — do NOT fix them.
 
-**Goal:** Run one real Rust `wasm32-wasip1` binary as a scheduled process. The guest executes in its own Web Worker, makes **blocking WASI Preview 1 syscalls over a SharedArrayBuffer ring** that are routed to kernel handlers, writes to a captured stdout, and exits 0. A second concurrent process proves isolation, and a deliberately-trapping guest proves crash containment (FR-34, pulled forward) — SPEC-1 milestone **M1** (Phase 1, §4.1).
+**Goal:** Run one real Rust `wasm32-wasip1` binary as a scheduled process. The guest executes in its own Web Worker, makes **blocking WASI Preview 1 syscalls over a SharedArrayBuffer ring** that are routed to kernel handlers, writes to a captured stdout, and exits 0. A second concurrent process proves isolation, and a deliberately-trapping guest proves crash containment (FR-34, pulled forward) — SPEC-1 milestone **WASI process runtime** (Phase 1, §4.1).
 
 **Traces:** FR-4 (route WASI p1 syscalls to kernel handlers), FR-5 (`spawn`/`wait`), FR-9 (run unmodified Rust `wasm32-wasi` modules), FR-6 (process memory isolation), FR-34 (crash containment, brought forward), Tier-A SAB transport (§3.1, §3.4).
 
-> **As-built note (2026-05-31):** M1 is implemented and verified — see `docs/M1-STATUS.md`. Two plan instructions are obsolete and were NOT followed: generated bindings under `packages/abi/generated` are **gitignored build output** (commit `5d735e3`), so they are never committed, and there is **no `npm run drift`** script — the real gate is `npm run build` (regenerate) + `npm run lint` (clippy `-D warnings`) + `npm run typecheck` + tests. Ignore the "commit `packages/abi/generated`" and "`npm run drift`" steps in Tasks 1/4/12 below.
+> **As-built note (2026-05-31):** WASI process runtime is implemented and verified — see `docs/M1-STATUS.md`. Two plan instructions are obsolete and were NOT followed: generated bindings under `packages/abi/generated` are **gitignored build output** (commit `5d735e3`), so they are never committed, and there is **no `npm run drift`** script — the real gate is `npm run build` (regenerate) + `npm run lint` (clippy `-D warnings`) + `npm run typecheck` + tests. Ignore the "commit `packages/abi/generated`" and "`npm run drift`" steps in Tasks 1/4/12 below.
 
 ---
 
 ## Architecture (decided 2026-05-31 — see `docs/specs` §3.1 and the plan questions)
 
-The M0 kernel runs synchronously on the main thread. M1 **moves the kernel into a dedicated kernel worker (kworker)** and introduces worker-per-process guests talking to it over a SAB syscall ring.
+The kernel/VFS bootstrap kernel runs synchronously on the main thread. WASI process runtime **moves the kernel into a dedicated kernel worker (kworker)** and introduces worker-per-process guests talking to it over a SAB syscall ring.
 
 ```text
  main thread (host)                       async control proxy (postMessage)
@@ -39,24 +39,24 @@ The M0 kernel runs synchronously on the main thread. M1 **moves the kernel into 
 
 **Load-bearing separations (do not violate):**
 
-1. **The guest uses stock WASI.** `hello.wasm` is a plain Rust `wasm32-wasip1` binary importing `wasi_snapshot_preview1` from std. It needs **zero** generated `wasmos:kernel` stubs. The Binder / `wasmos:abi` generated bindings are used only for the **kworker ↔ kernel-component** boundary (which already exists), never on the guest path. Do NOT build a guest-stub generator in M1 (that is the `wasmos:kernel` world, deferred).
+1. **The guest uses stock WASI.** `hello.wasm` is a plain Rust `wasm32-wasip1` binary importing `wasi_snapshot_preview1` from std. It needs **zero** generated `wasmos:kernel` stubs. The Binder / `wasmos:abi` generated bindings are used only for the **kworker ↔ kernel-component** boundary (which already exists), never on the guest path. Do NOT build a guest-stub generator in WASI process runtime (that is the `wasmos:kernel` world, deferred).
 2. **Memory marshalling happens in the JS shim, not in Rust.** The process worker's WASI shim reads/writes the *guest's* linear memory (gather iovecs for `fd_write`, scatter bytes for `fd_read`). The ring carries already-resolved values. The Rust kernel router only ever sees `(fd, bytes, len, …)` — **never** a guest pointer. This is what makes the kernel host-testable and keeps isolation clean.
-3. **The kworker never blocks.** Process workers WANT to block (`Atomics.wait` on the response slot — that is Tier-A synchronous syscall semantics). The kworker must stay responsive to N rings + the control proxy, so it multiplexes with **`Atomics.waitAsync`** (Chrome + Firefox evergreen). A `postMessage`-wakeup fallback is documented but NOT implemented in M1 (single code path).
+3. **The kworker never blocks.** Process workers WANT to block (`Atomics.wait` on the response slot — that is Tier-A synchronous syscall semantics). The kworker must stay responsive to N rings + the control proxy, so it multiplexes with **`Atomics.waitAsync`** (Chrome + Firefox evergreen). A `postMessage`-wakeup fallback is documented but NOT implemented in WASI process runtime (single code path).
 4. **Host-orchestrated spawn, owned by the kworker.** The Rust kernel cannot create Workers. The kworker (which both hosts kernel state AND can spawn nested workers) orchestrates spawn end-to-end: `control.spawn(...)` allocates the PID + fd table + capset in the kernel and returns it; the kworker then creates the process worker and hands it the guest bytes + a fresh ring SAB.
 
-**Tech stack (additions to M0):** Rust guest crates (`wasm32-wasip1`, plain `cargo build`); Web Workers (module workers); `SharedArrayBuffer` + `Atomics` (incl. `Atomics.waitAsync`); Node `worker_threads` + `SharedArrayBuffer` for ring unit tests under Vitest. No new third-party deps.
+**Tech stack (additions to kernel/VFS bootstrap):** Rust guest crates (`wasm32-wasip1`, plain `cargo build`); Web Workers (module workers); `SharedArrayBuffer` + `Atomics` (incl. `Atomics.waitAsync`); Node `worker_threads` + `SharedArrayBuffer` for ring unit tests under Vitest. No new third-party deps.
 
-**M0 reuse:** `KernelCore`, `ProcTable`, `CapabilitySet`, `Scheduler`, `Vfs`, `OpfsBlockstore`, `IdbBlockstore`, `CachedStore` are reused as-is or extended. The VFS stays **flat-key** (M0 quirk); `fd_readdir` is synthesized from `Vfs::list` and explicitly marked provisional pending M2 hierarchical dirs.
+**kernel/VFS bootstrap reuse:** `KernelCore`, `ProcTable`, `CapabilitySet`, `Scheduler`, `Vfs`, `OpfsBlockstore`, `IdbBlockstore`, `CachedStore` are reused as-is or extended. The VFS stays **flat-key** (kernel/VFS bootstrap quirk); `fd_readdir` is synthesized from `Vfs::list` and explicitly marked provisional pending shell and userland hierarchical dirs.
 
 ---
 
-## M1 exit criteria (definition of done for this whole plan)
+## WASI process runtime exit criteria (definition of done for this whole plan)
 
 1. A Rust `hello.wasm` (`wasm32-wasip1`, unmodified, built by plain `cargo build`) is `spawn`ed, runs in its own worker, writes `hello from wasm_os …` to **captured stdout via `fd_write` routed through the SAB ring to the kernel**, and **exits with code 0** (observed via `wait(pid)`).
 2. **Isolation (FR-6):** two `hello` processes run concurrently, each in its own worker with its own non-shared `WebAssembly.Memory`; each produces independent correct output; the kernel shows two distinct PIDs with separate fd tables; **no `Shm` capability is granted to either** (no inter-process memory path exists).
 3. **Crash containment (FR-34, brought forward):** a deliberately-trapping `crash.wasm` is spawned concurrently with a `hello` process; the trap is contained — `crash` becomes a `zombie` with a non-zero/trap exit, while the kernel **and** the peer `hello` process keep running and complete normally; the kworker survives.
 4. **FS syscalls reach the VFS:** a guest opens a path written by the host (`path_open`), `fd_read`s its bytes back correctly, `fd_seek`s, and `fd_close`s — proving the syscall router speaks FS, not just stdout.
-5. `npm run verify` (binder drift gate + `cargo test` + Vitest + Playwright) is green, including the **regression guard** that M0's tri-backend persistence-across-reload still passes through the new async control proxy.
+5. `npm run verify` (binder drift gate + `cargo test` + Vitest + Playwright) is green, including the **regression guard** that kernel/VFS bootstrap's tri-backend persistence-across-reload still passes through the new async control proxy.
 
 ---
 
@@ -67,11 +67,11 @@ The M0 kernel runs synchronously on the main thread. M1 **moves the kernel into 
 **Step 1 — add to `interface control` in `wit/control.wit`** (keep existing verbs):
 
 ```wit
-  // --- Process lifecycle (M1, FR-5) ---
+  // --- Process lifecycle (WASI process runtime, FR-5) ---
   record spawn-spec {
     name: string,
     /// Capability grants for the child, encoded as a flat list the host builds.
-    /// M1 grants: fs-root-rw + the cwd subtree. (No shm/net/signal at M1.)
+    /// WASI process runtime grants: fs-root-rw + the cwd subtree. (No shm/net/signal at WASI process runtime.)
     grant-fs-subtree: string,    // e.g. "/home" ; "" => none
     grant-spawn: bool,
   }
@@ -91,7 +91,7 @@ The M0 kernel runs synchronously on the main thread. M1 **moves the kernel into 
   exit-code: func(pid: u32) -> option<s32>;
 ```
 
-> Keep `service-syscall` as opaque `list<u8>` on purpose: it avoids pulling the `wasmos:kernel` guest-stub world into M1 and lets the wire format evolve in Rust without WIT churn.
+> Keep `service-syscall` as opaque `list<u8>` on purpose: it avoids pulling the `wasmos:kernel` guest-stub world into WASI process runtime and lets the wire format evolve in Rust without WIT churn.
 
 **Step 2 — regenerate + verify drift gate.**
 
@@ -104,7 +104,7 @@ npm run build && npm run binder gen && npm run drift
 **Step 3 — commit.**
 
 ```bash
-git add wit/control.wit packages/abi/generated && git commit -m "feat(wit): control spawn/wait/service-syscall for M1 (contract-first)"
+git add wit/control.wit packages/abi/generated && git commit -m "feat(wit): control spawn/wait/service-syscall for WASI process runtime (contract-first)"
 ```
 
 ---
@@ -151,7 +151,7 @@ git add crates/kernel/src/types.rs && git commit -m "feat(kernel): per-process f
 
 ---
 
-## Task 3: Kernel — WASI Preview 1 syscall router (TDD, the core of M1)
+## Task 3: Kernel — WASI Preview 1 syscall router (TDD, the core of WASI process runtime)
 
 **Files:** Create `crates/kernel/src/syscall.rs`; declare `pub mod syscall;` in `lib.rs`.
 
@@ -165,7 +165,7 @@ git add crates/kernel/src/types.rs && git commit -m "feat(kernel): per-process f
 | `FD_CLOSE` | `fd:u32` | `errno:u16` |
 | `PATH_OPEN` | `dirfd:u32, path:string, oflags:u16, fs_rights:u64` | `errno:u16, fd:u32` |
 | `FD_READDIR` | `fd:u32, cookie:u64, buf_len:u32` | `errno:u16, entries:bytes` (WASI dirent layout) |
-| `FD_PRESTAT_GET` | `fd:u32` | `errno:u16` (M1: `SUCCESS` for fd 3 = the `/` preopen; `BADF` for fd ≥ 4 to end the libc preopen scan — see note) |
+| `FD_PRESTAT_GET` | `fd:u32` | `errno:u16` (WASI process runtime: `SUCCESS` for fd 3 = the `/` preopen; `BADF` for fd ≥ 4 to end the libc preopen scan — see note) |
 | `FD_PRESTAT_DIR_NAME` | `fd:u32, len:u32` | `errno:u16, name:bytes` |
 | `FD_FDSTAT_GET` | `fd:u32` | `errno:u16, filetype:u8, flags:u16, rights:u64` |
 | `ENVIRON_SIZES_GET` / `ARGS_SIZES_GET` | — | `errno:u16, count:u32, buf_size:u32` |
@@ -174,7 +174,7 @@ git add crates/kernel/src/types.rs && git commit -m "feat(kernel): per-process f
 | `CLOCK_TIME_GET` | `clock_id:u32, precision:u64` | `errno:u16, time_ns:u64` |
 | `PROC_EXIT` | `code:u32` | `errno:u16` (0; side effect: proc → zombie, exit set) |
 
-> **Preopen note:** WASI libc scans `fd_prestat_get(3), (4)…` until `BADF` to discover preopened dirs. M1 preopens **one** directory at fd 3 mapped to `/` (so `path_open` resolves absolute-ish paths) and returns `BADF` for fd ≥ 4. `fd_prestat_dir_name(3)` returns `"/"`. This is the minimum that lets `path_open` work; document it.
+> **Preopen note:** WASI libc scans `fd_prestat_get(3), (4)…` until `BADF` to discover preopened dirs. WASI process runtime preopens **one** directory at fd 3 mapped to `/` (so `path_open` resolves absolute-ish paths) and returns `BADF` for fd ≥ 4. `fd_prestat_dir_name(3)` returns `"/"`. This is the minimum that lets `path_open` work; document it.
 
 **Step 2 — implement `pub fn service(core: &mut KernelCore, pid: u32, req: &[u8]) -> Vec<u8>`** (or a `SyscallRouter` method on `KernelCore`). It decodes, dispatches, enforces the process's capability set on FS ops (a `path_open` outside the granted subtree → `NOENT`/`EACCES`, audited), reads/writes the VFS for File fds, appends to capture buffers for stdout/stderr, and records exit on `PROC_EXIT`.
 
@@ -186,9 +186,9 @@ git add crates/kernel/src/types.rs && git commit -m "feat(kernel): per-process f
 - `fd_seek_moves_cursor_and_partial_reads_work`.
 - `fd_close_then_use_is_badf`.
 - `path_open_outside_capability_subtree_is_denied` (default-deny FS — ties FR-31 to the syscall surface).
-- `args_environ_sizes_then_get_roundtrip` (empty argv/env at M1 → count 0, success).
+- `args_environ_sizes_then_get_roundtrip` (empty argv/env at WASI process runtime → count 0, success).
 - `fd_prestat_scan_terminates` (fd 3 ok, fd 4 BADF).
-- `random_get_fills_len_bytes`; `clock_time_get_is_monotonic_nonzero` (kernel uses a host-provided/now stub — at M1 return a fixed deterministic value to keep tests reproducible; note as provisional).
+- `random_get_fills_len_bytes`; `clock_time_get_is_monotonic_nonzero` (kernel uses a host-provided/now stub — at WASI process runtime return a fixed deterministic value to keep tests reproducible; note as provisional).
 - `fd_readdir_synthesizes_entries_from_flat_list` (provisional, flat-key).
 
 **Step 4 — run, commit.**
@@ -212,7 +212,7 @@ pub fn service_syscall(&mut self, pid: u32, req: &[u8]) -> Vec<u8>;   // delegat
 pub fn exit_code(&self, pid: u32) -> Option<i32>;
 ```
 
-`spawn` builds the `CapabilitySet` from the grants (default-deny otherwise — **never** grant `Shm`), registers the process `New → Ready`, enqueues it on the scheduler, and returns the pid. (The init process from M0 boot stays.)
+`spawn` builds the `CapabilitySet` from the grants (default-deny otherwise — **never** grant `Shm`), registers the process `New → Ready`, enqueues it on the scheduler, and returns the pid. (The init process from kernel/VFS bootstrap boot stays.)
 
 **Step 2 — failing `kcore` tests FIRST:**
 
@@ -270,7 +270,7 @@ loop:
   Atomics.add(RESP_SEQ, 1); Atomics.notify(RESP_SEQ)
 ```
 
-No reset step, no shared-word ambiguity, race-free. Provide a `postMessage`-wakeup fallback **as a comment only** (for targets lacking `waitAsync`; not wired in M1).
+No reset step, no shared-word ambiguity, race-free. Provide a `postMessage`-wakeup fallback **as a comment only** (for targets lacking `waitAsync`; not wired in WASI process runtime).
 
 **Step 4 — failing test FIRST `ring.test.ts`** using Node `worker_threads` (real SAB, real Atomics): a small worker thread runs a `RingClient.call` loop; the main test thread runs a `RingServer` that echoes/transforms; assert a request round-trips correct bytes and that the client genuinely blocked until served. (This is a true cross-thread ring test, not a mock.)
 
@@ -383,22 +383,22 @@ git add crates/hello crates/crash Cargo.toml package.json .gitignore && git comm
 
 ---
 
-## Task 10: Update M0 E2E to the async control proxy (regression guard)
+## Task 10: Update kernel/VFS bootstrap E2E to the async control proxy (regression guard)
 
 **Files:** Modify `e2e/boot.spec.ts`, `e2e/opfs.spec.ts` as needed.
 
 **Step 1 — convert the synchronous `control.fsWrite(...)` / `fsRead(...)` calls in the persistence test to `await`** the async proxy. Keep the assertions identical: `/home` (OPFS) + `/mnt` (IDB) survive reload, `/scratch` (tmpfs) is volatile, `homeList` contains the persisted path. Keep boot-time + tier-A assertions.
 
-**Step 2 — run and confirm M0 behavior is preserved through the new architecture.**
+**Step 2 — run and confirm kernel/VFS bootstrap behavior is preserved through the new architecture.**
 
 ```bash
 npm run test:e2e 2>&1 | tail -30
-git add e2e/boot.spec.ts e2e/opfs.spec.ts && git commit -m "test(e2e): port M0 persistence E2E to async control proxy (regression guard)"
+git add e2e/boot.spec.ts e2e/opfs.spec.ts && git commit -m "test(e2e): port kernel/VFS bootstrap persistence E2E to async control proxy (regression guard)"
 ```
 
 ---
 
-## Task 11: M1 E2E — spawn, stdout, exit, isolation, crash containment, FS syscall
+## Task 11: WASI process runtime E2E — spawn, stdout, exit, isolation, crash containment, FS syscall
 
 **Files:** Create `e2e/process.spec.ts`; ensure the Playwright `webServer` builds guests + kernel + bundle.
 
@@ -418,13 +418,13 @@ git add e2e/boot.spec.ts e2e/opfs.spec.ts && git commit -m "test(e2e): port M0 p
 - **Test A — hello runs and exits 0:** `await __wasmos.spawn('/guests/hello.wasm')` → pid; `const {exitCode} = await __wasmos.wait(pid)`; assert `exitCode === 0`; read captured stdout (via a `control.readStdout(pid)` proxy method or surfaced in the exit message) and assert it contains `hello from wasm_os`.
 - **Test B — isolation (FR-6):** spawn two hellos concurrently; both exit 0 with independent correct output; `await control.listProcs()` shows two distinct PIDs; assert (via an audit/cap-introspection proxy or by construction documented in the test) **neither holds `Shm`**; assert each process worker used a non-shared `WebAssembly.Memory` (the worker asserts this internally and reports it; the E2E checks the report).
 - **Test C — crash containment (FR-34):** spawn `crash.wasm` concurrently with a `hello`; `await wait(crashPid)` reports a trap/non-zero exit and `listProcs` shows it `zombie`; the `hello` peer still exits 0; a follow-up `await control.fsWrite('/scratch.txt', …)` + `fsRead` succeeds → **the kernel/kworker survived**.
-- **Test D — FS syscall reaches VFS:** host `await control.fsWrite('/mnt/in.txt', 'payload')`; spawn a guest variant (or reuse hello compiled to read `/mnt/in.txt` and echo it) — *or* assert at the router level if a read-guest is out of M1 scope. **Decision:** keep D as a guest that `path_open`+`fd_read`s `/mnt/in.txt` and writes the bytes to stdout; assert captured stdout == `payload`. (Add `crates/catfile` if needed — a 3rd tiny Rust guest that reads `argv[0]`-less fixed path `/mnt/in.txt`.)
+- **Test D — FS syscall reaches VFS:** host `await control.fsWrite('/mnt/in.txt', 'payload')`; spawn a guest variant (or reuse hello compiled to read `/mnt/in.txt` and echo it) — *or* assert at the router level if a read-guest is out of WASI process runtime scope. **Decision:** keep D as a guest that `path_open`+`fd_read`s `/mnt/in.txt` and writes the bytes to stdout; assert captured stdout == `payload`. (Add `crates/catfile` if needed — a 3rd tiny Rust guest that reads `argv[0]`-less fixed path `/mnt/in.txt`.)
 
 **Step 3 — run, commit.**
 
 ```bash
 npm run test:e2e 2>&1 | tail -40
-git add e2e/process.spec.ts playwright.config.ts crates/catfile 2>/dev/null; git commit -m "test(e2e): M1 — spawn/stdout/exit, isolation, crash containment, FS syscall (real browser)"
+git add e2e/process.spec.ts playwright.config.ts crates/catfile 2>/dev/null; git commit -m "test(e2e): WASI process runtime — spawn/stdout/exit, isolation, crash containment, FS syscall (real browser)"
 ```
 
 ---
@@ -435,13 +435,13 @@ git add e2e/process.spec.ts playwright.config.ts crates/catfile 2>/dev/null; git
 
 **Step 1 — CI:** add `rustup target add wasm32-wasip1` (already pinned) and a `cargo build -p hello -p crash --target wasm32-wasip1 --release` step before E2E. Confirm the existing Linux-determinism + drift jobs still pass with the new generated bindings.
 
-**Step 2 — `docs/M1-STATUS.md`:** record each M1 exit criterion, the test that proves it, and the actual result from a real `npm run verify` run (fill from the log — no placeholders). Note the as-built deviations (e.g. `Atomics.waitAsync` chosen; `fd_readdir` synthesized from flat list; preopen at fd 3 = `/`; clock_time_get deterministic stub).
+**Step 2 — `docs/M1-STATUS.md`:** record each WASI process runtime exit criterion, the test that proves it, and the actual result from a real `npm run verify` run (fill from the log — no placeholders). Note the as-built deviations (e.g. `Atomics.waitAsync` chosen; `fd_readdir` synthesized from flat list; preopen at fd 3 = `/`; clock_time_get deterministic stub).
 
 **Step 3 — full verify + commit.**
 
 ```bash
 npm run verify 2>&1 | tee /tmp/m1-verify.log | tail -40
-git add .github/workflows/ci.yml docs/M1-STATUS.md && git commit -m "ci: build guests + M1 status (all exit criteria verified)"
+git add .github/workflows/ci.yml docs/M1-STATUS.md && git commit -m "ci: build guests + WASI process runtime status (all exit criteria verified)"
 ```
 
 ---
@@ -452,24 +452,24 @@ git add .github/workflows/ci.yml docs/M1-STATUS.md && git commit -m "ci: build g
 npm run verify
 ```
 
-All five M1 exit criteria (top of plan) must hold:
+All five WASI process runtime exit criteria (top of plan) must hold:
 
 1. ✅ Rust `hello.wasm` spawns in its own worker, `fd_write`→captured stdout via the SAB ring, **exits 0** (`e2e/process.spec.ts` Test A).
 2. ✅ Two concurrent processes isolated — distinct PIDs, separate fd tables, non-shared memory, **no `Shm` cap** (Test B + `kcore`/`types` unit tests).
 3. ✅ Trapping guest contained to a zombie; kernel + peer survive (Test C + FR-34).
 4. ✅ `path_open`/`fd_read`/`fd_seek`/`fd_close` reach the VFS (Test D + `syscall` unit tests).
-5. ✅ Binder drift gate green; M0 tri-backend persistence still passes through the async proxy.
+5. ✅ Binder drift gate green; kernel/VFS bootstrap tri-backend persistence still passes through the async proxy.
 
-**STOP here.** M2 (shell, coreutils, pipelines `a|b`, redirection `>`/`<`, polyglot C/Zig coreutils, FR-14) is the next plan, not this one.
+**STOP here.** shell and userland (shell, coreutils, pipelines `a|b`, redirection `>`/`<`, polyglot C/Zig coreutils, FR-14) is the next plan, not this one.
 
 ---
 
 ## TODO / deferred (discovered-adjacent — do NOT do in this plan)
 
-- **M2:** shell + xterm.js binding, `$PATH` resolution, pipelines/redirection (kernel pipes), coreutils from Rust **and C/Zig** (FR-14 polyglot proof), the `wasmos:kernel` guest syscall world + `wit-bindgen` Rust/C guest stubs.
-- **Hierarchical VFS dirs** + real `fd_readdir` (M1 synthesizes entries from the flat-key store; the M0 flat-key TODO persists).
-- **OPFS sync access handles** for `/home` to retire the `CachedStore` bridge in the kworker (M1 reuses `CachedStore`; sync handles are a worker-only optimization).
-- **`Atomics.waitAsync` fallback:** the documented `postMessage`-wakeup path for any target browser lacking `waitAsync` (not implemented in M1).
-- **Real clock/entropy brokers:** M1 uses a deterministic `clock_time_get` stub + `random_get`; the capability-gated clock/entropy device brokers (§3.6) land later.
-- **Tier B (Asyncify/JSPI):** M1 is Tier-A only; the cooperative no-SAB path is a separate effort (R-1).
-- **Control `kill`/signals** (FR-7) and live `ps`/`top` UI (FR-33) — M4.
+- **shell and userland:** shell + xterm.js binding, `$PATH` resolution, pipelines/redirection (kernel pipes), coreutils from Rust **and C/Zig** (FR-14 polyglot proof), the `wasmos:kernel` guest syscall world + `wit-bindgen` Rust/C guest stubs.
+- **Hierarchical VFS dirs** + real `fd_readdir` (WASI process runtime synthesizes entries from the flat-key store; the kernel/VFS bootstrap flat-key TODO persists).
+- **OPFS sync access handles** for `/home` to retire the `CachedStore` bridge in the kworker (WASI process runtime reuses `CachedStore`; sync handles are a worker-only optimization).
+- **`Atomics.waitAsync` fallback:** the documented `postMessage`-wakeup path for any target browser lacking `waitAsync` (not implemented in WASI process runtime).
+- **Real clock/entropy brokers:** WASI process runtime uses a deterministic `clock_time_get` stub + `random_get`; the capability-gated clock/entropy device brokers (§3.6) land later.
+- **Tier B (Asyncify/JSPI):** WASI process runtime is Tier-A only; the cooperative no-SAB path is a separate effort (R-1).
+- **Control `kill`/signals** (FR-7) and live `ps`/`top` UI (FR-33) — process control and IPC.

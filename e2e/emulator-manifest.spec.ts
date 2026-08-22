@@ -1,6 +1,6 @@
 import { test, expect, type Page } from "@playwright/test";
 
-// M5-T7 — boot an image resolved at runtime. Rather than a hardcoded launcher URL,
+// runtime image selection — boot an image resolved at runtime. Rather than a hardcoded launcher URL,
 // the system fetches a small image manifest at launch and boots the kernel it
 // names ("run the image from within it"). The bios/kernel/rootfs are loaded by TinyEMU
 // from its URL (it is far larger than a syscall-ring payload); the manifest is the

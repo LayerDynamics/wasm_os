@@ -1,6 +1,7 @@
 # Toolchain (verified 2026-05-30)
 
-Versions installed and confirmed during M0 Task 2 (rust/system) and Task 3 (`jco` via `npm install`).
+Versions installed and confirmed during the initial toolchain setup (Rust/system
+tools and `jco` via `npm install`).
 
 ```text
 rustc 1.95.0 (59807616e 2026-04-14)

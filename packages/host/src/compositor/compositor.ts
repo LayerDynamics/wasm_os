@@ -1,10 +1,10 @@
 /**
- * Compositor (L3 / M3) — the window manager (FR-21, FR-22).
+ * Compositor (L3 / desktop compositor) — the window manager (FR-21, FR-22).
  *
  * Single authority for window lifecycle, z-order, and focus. Windows ask it to
  * focus/close via the WindowDelegate; it keeps a z-ordered stack (raise on
  * focus), tracks the active window, and drives the taskbar. The terminal mounts
- * as the first window (a DOM surface); process-owned canvas windows (M3-T2) plug
+ * as the first window (a DOM surface); process-owned canvas windows (canvas surfaces) plug
  * in through the same API.
  */
 import "./compositor.css";
@@ -26,9 +26,9 @@ export class Compositor {
 
   /** Notified when a window closes (so owners can reap a backing process). */
   onWindowClosed: (id: number, ownerPid?: number) => void = () => {};
-  /** Notified when a window opens (M4-T9 session: associate it with an app). */
+  /** Notified when a window opens (session restore session: associate it with an app). */
   onWindowOpened: (win: Win) => void = () => {};
-  /** Notified on any window lifecycle/geometry change (M4-T9 session save). */
+  /** Notified on any window lifecycle/geometry change (session restore session save). */
   onWindowsChanged: () => void = () => {};
 
   constructor(desktopEl: HTMLElement, taskbarEl: HTMLElement) {
@@ -173,7 +173,7 @@ export class Compositor {
     for (const id of ids) this.close(id);
   }
 
-  /** Wire the taskbar launcher menu to a fixed app list (M3-T9). */
+  /** Wire the taskbar launcher menu to a fixed app list (launcher and window lifecycle). */
   setLauncherApps(apps: Array<{ label: string; launch: () => void }>): void {
     this.taskbar.setApps(apps);
   }

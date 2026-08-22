@@ -1,4 +1,4 @@
-//! ps — snapshot the process table (M4-T7, FR-33). Reads the live table via the
+//! ps — snapshot the process table (process-table tools, FR-33). Reads the live table via the
 //! `wasmos_kernel` proc_list syscall (no capability required — it is a read-only
 //! view) and prints one row per process, ordered by PID.
 

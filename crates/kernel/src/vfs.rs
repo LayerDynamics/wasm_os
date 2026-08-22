@@ -1,4 +1,4 @@
-//! Virtual filesystem: one POSIX-like tree over multiple backends (M2 —
+//! Virtual filesystem: one POSIX-like tree over multiple backends (shell and userland —
 //! hierarchical directories).
 //!
 //! ## Storage model
@@ -6,7 +6,7 @@
 //! directory tree is layered on top:
 //!
 //! - A **file** at `/a/b.txt` is stored under the key `/a/b.txt` — **identical
-//!   to M1**, so existing OPFS/IndexedDB data needs no transformation (the M1
+//!   to WASI process runtime**, so existing OPFS/IndexedDB data needs no transformation (the WASI process runtime
 //!   persistence E2E keeps passing). Ancestor directories are *implied* by any
 //!   key beneath them.
 //! - An **empty / explicitly-created directory** is recorded with a reserved
@@ -14,7 +14,7 @@
 //!   never does, so files and markers never collide and markers are invisible
 //!   to file listings).
 //! - A per-backend version stamp `\x01vfs_version` records the on-disk layout
-//!   version (Appendix C). Absent stamp + existing keys = M1 data → stamped to
+//!   version (Appendix C). Absent stamp + existing keys = WASI process runtime data → stamped to
 //!   v2 in place (files already valid; nothing to rewrite).
 
 use crate::types::Backend;
@@ -123,8 +123,8 @@ impl Vfs {
         self.mounts.retain(|(p, _)| p != path);
         self.mounts.push((path.to_string(), Mount { backend: on }));
         // Stamp the on-disk version for persistent backends (Appendix C). The
-        // v2 layout is a strict superset of M1's flat file keys, so an unstamped
-        // store full of M1 file keys is simply stamped — no data is rewritten.
+        // v2 layout is a strict superset of WASI process runtime's flat file keys, so an unstamped
+        // store full of WASI process runtime file keys is simply stamped — no data is rewritten.
         if matches!(on, Backend::Opfs | Backend::Idb | Backend::Sys) && self.kv_get(on, VERSION_KEY).is_none() {
             self.kv_put(on, VERSION_KEY, VFS_VERSION.to_vec());
         }
@@ -539,7 +539,7 @@ mod tests {
         assert_eq!(v.delete("relative"), Err(FsError::BadPath("relative".into())));
     }
 
-    // --- M2: hierarchical directories ---
+    // --- shell and userland: hierarchical directories ---
 
     #[test]
     fn mkdir_readdir_nested_and_files() {
@@ -636,12 +636,12 @@ mod tests {
 
     #[test]
     fn m1_flat_keys_migrate_in_place_and_are_readable_as_a_tree() {
-        // Simulate an existing M1 OPFS store: flat file keys, NO version stamp.
+        // Simulate an existing WASI process runtime OPFS store: flat file keys, NO version stamp.
         let mut home = MemStore::default();
         home.0.insert("/home/user/notes.txt".into(), b"hello".to_vec());
         home.0.insert("/home/user/sub/deep.txt".into(), b"deep".to_vec());
         let mut v = Vfs::new(Box::new(home), Box::new(MemStore::default()), Box::new(MemStore::default()));
-        // Mounting stamps the version without touching the M1 file data.
+        // Mounting stamps the version without touching the WASI process runtime file data.
         v.mount("/home", Backend::Opfs).unwrap();
         // Files read back unchanged; directories are derived from the keys.
         assert_eq!(v.read("/home/user/notes.txt").unwrap(), b"hello");

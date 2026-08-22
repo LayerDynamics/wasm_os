@@ -1,4 +1,4 @@
-//! WASM_OS shell (L2) — FR-15/16/17. A real `wasm32-wasip1` process bound to
+//! WASM_OS shell — FR-15/16/17. A real `wasm32-wasip1` process bound to
 //! the terminal. It reads a command line, parses a pipeline of stages with I/O
 //! redirection, resolves each program via `$PATH` (`/bin`) in the VFS, wires the
 //! stages together with kernel pipes, runs them via the `wasmos_kernel`
@@ -128,7 +128,7 @@ fn try_builtin(s: &str, cwd: &mut String) -> Option<i32> {
             std::env::set_var("PWD", &*cwd);
             Some(0)
         }
-        // `kill [-SIG] <pid>` (M4-T5) — a builtin because it runs in the shell's
+        // `kill [-SIG] <pid>` (signals) — a builtin because it runs in the shell's
         // own process, using the shell's Signal capability directly. `-9`/`-KILL`
         // force; default (or `-15`/`-TERM`) requests a cooperative SIGTERM.
         "kill" => Some(builtin_kill(&toks[1..])),
@@ -220,9 +220,9 @@ fn run_pipeline(stages: &[Stage], cwd: &str) -> i32 {
 
         // Coreutils don't draw: no Gpu/Input delegation. The `kill` coreutil is
         // the exception — the shell delegates its Signal capability so `/bin/kill`
-        // (used in pipelines / by full path) can signal other processes (M4-T5).
+        // (used in pipelines / by full path) can signal other processes (signals).
         let want_signal = matches!(prog, "kill" | "renice") || path.ends_with("/kill") || path.ends_with("/renice");
-        // `fetch` is the brokered-networking exception — delegate Net to it (M5-T6).
+        // `fetch` is the brokered-networking exception — delegate Net to it (network broker).
         let want_net = prog == "fetch" || path.ends_with("/fetch");
         match spawn(&path, &stage.argv, &[stdin, stdout, Stdio::Terminal], cwd, false, false, want_signal, want_net) {
             Ok(pid) => pids.push(Some(pid)),

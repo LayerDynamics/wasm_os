@@ -1,4 +1,4 @@
-//! shmdemo — M4-T4 shared-memory fixture.
+//! shmdemo — shared-memory fixture.
 //!
 //! One binary, two roles. The **writer** (no `reader` arg) creates a shm region,
 //! fills it, spawns a **reader** child (passing the shm-id via argv), grants the

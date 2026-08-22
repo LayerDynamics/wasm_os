@@ -4,7 +4,7 @@ edition.workspace = true
 version.workspace = true
 license.workspace = true
 
-# M4 concurrency stress fixture (FR-3): does a little real work (accruing
+# process control and IPC concurrency stress fixture (FR-3): does a little real work (accruing
 # scheduler ticks via syscalls for ps/top), then parks on stdin so many can
 # coexist without burning CPU. A plain wasm32-wasip1 binary.
 [[bin]]

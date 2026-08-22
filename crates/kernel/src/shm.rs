@@ -1,4 +1,4 @@
-//! Shared memory (M4) — an explicit, capability-gated region shared between
+//! Shared memory (process control and IPC) — an explicit, capability-gated region shared between
 //! processes (the only inter-process memory path, FR-6).
 //!
 //! A wasm guest cannot map an external buffer into its own linear memory, so a

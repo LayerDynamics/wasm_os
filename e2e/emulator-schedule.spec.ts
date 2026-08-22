@@ -1,6 +1,6 @@
 import { test, expect, type Page } from "@playwright/test";
 
-// M5-T5 — run-to-budget scheduling + killable-from-top (FR-28 + the M5 exit
+// emulator CPU accounting — run-to-budget scheduling + killable-from-top (FR-28 + the Linux guest integration exit
 // criteria, closing Phase A). The emulator runs in its own worker (true
 // parallelism); the kernel accounts its activity as CPU in proc_list/top via
 // wall-budget heartbeats. While Linux runs, a concurrent wasm32-wasi process keeps

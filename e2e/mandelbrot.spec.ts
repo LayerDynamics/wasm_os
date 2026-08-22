@@ -1,6 +1,6 @@
 import { test, expect, type Page, type Locator } from "@playwright/test";
 
-// M3-T8 — Mandelbrot explorer (Zig), the polyglot graphical app (FR-14 on the M3
+// Mandelbrot app — Mandelbrot explorer (Zig), the polyglot graphical app (FR-14 on the desktop compositor
 // graphics path). It speaks the same wasmos_kernel surface+input ABI as the Rust
 // apps. The test proves it renders a structured fractal and that real keyboard
 // zoom recomputes it — a different, interactive frame.

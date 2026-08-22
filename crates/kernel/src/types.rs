@@ -1,7 +1,7 @@
 //! Core kernel data model: capabilities, process states, the process table,
-//! and (M1) the per-process file-descriptor table. The table, capability
+//! and (WASI process runtime) the per-process file-descriptor table. The table, capability
 //! system, and state machine are real and fully functional — the kernel
-//! registers its own `init` process through them at boot, and M1 attaches real
+//! registers its own `init` process through them at boot, and WASI process runtime attaches real
 //! WASM instances that drive the fd table through the WASI syscall router.
 
 use std::collections::{BTreeMap, VecDeque};
@@ -123,9 +123,9 @@ pub enum DescKind {
     Stderr,                 // captured into Process::stderr
     Dir { path: String },   // a directory (the preopen "/" or an opened dir)
     File { path: String },  // a regular file backed by the VFS
-    PipeRead { id: u32 },   // the read end of a kernel pipe (M2)
-    PipeWrite { id: u32 },  // the write end of a kernel pipe (M2)
-    Terminal,               // a write end bound to the interactive terminal (M2)
+    PipeRead { id: u32 },   // the read end of a kernel pipe (shell and userland)
+    PipeWrite { id: u32 },  // the write end of a kernel pipe (shell and userland)
+    Terminal,               // a write end bound to the interactive terminal (shell and userland)
 }
 
 /// An open file descriptor: what it points at, the read/write cursor, and the
@@ -165,7 +165,7 @@ impl ProcState {
     }
 }
 
-/// Why a process is parked on a blocking syscall (M2 park/resume). A parked
+/// Why a process is parked on a blocking syscall (shell and userland park/resume). A parked
 /// process stays blocked in `Atomics.wait` while the kworker services others;
 /// the matching event returns it in a wakeup list so its syscall is re-driven.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -178,21 +178,21 @@ pub enum WaitReason {
     PipeWrite(u32),
     /// Blocked in `wait()` on a child process (pid) that has not yet exited.
     Wait(u32),
-    /// Blocked reading brokered input (keyboard/mouse) with none queued (M3-T3).
+    /// Blocked reading brokered input (keyboard/mouse) with none queued (brokered input).
     Input,
     /// Blocked receiving on a message channel `(chan_id, end)` with an empty inbox
-    /// whose peer is still open (M4-T3).
+    /// whose peer is still open (message channels).
     ChanRecv(u32, u8),
     /// Blocked in `sig_wait()` with no pending signal; woken when one is delivered
-    /// (M4-T5 — zero-CPU signal delivery, no busy-poll).
+    /// (signals — zero-CPU signal delivery, no busy-poll).
     SigWait,
     /// Blocked in `net_request()` awaiting the host's brokered fetch response
-    /// (M5-T6 — woken by `deliver_net`).
+    /// (network broker — woken by `deliver_net`).
     NetReq,
 }
 
-/// What drives a process (M5). Most processes are `Wasi` guests pumped by the SAB
-/// syscall ring. The emulator (L5) is a `Native` privileged process: it runs its
+/// What drives a process (Linux guest integration). Most processes are `Wasi` guests pumped by the SAB
+/// syscall ring. The emulator is a `Native` privileged process: it runs its
 /// own CPU loop in a dedicated worker, makes no WASI syscalls, and is scheduled
 /// run-to-budget (FR-28) — but is still a first-class PID in the table: it appears
 /// in `proc_list`/`top`, holds a capability set, and is killable.
@@ -218,27 +218,27 @@ pub struct Process {
     pub stdout: Vec<u8>,
     pub stderr: Vec<u8>,
     pub exit_code: Option<i32>,
-    /// Buffered stdin bytes not yet consumed by a `fd_read` (M2).
+    /// Buffered stdin bytes not yet consumed by a `fd_read` (shell and userland).
     pub stdin: VecDeque<u8>,
     /// True once stdin is closed (reads then return EOF instead of parking).
     pub stdin_eof: bool,
     /// Buffered brokered input events (fixed-size records) not yet consumed by a
-    /// `win_read_input` (M3-T3). Fed by the compositor for the focused window.
+    /// `win_read_input` (brokered input). Fed by the compositor for the focused window.
     pub input: VecDeque<u8>,
-    /// Set while the process is parked on a blocking syscall (M2 park/resume).
+    /// Set while the process is parked on a blocking syscall (shell and userland park/resume).
     pub blocked_on: Option<WaitReason>,
-    /// Command-line arguments (argv) surfaced via `args_get` (M2). argv[0] is
+    /// Command-line arguments (argv) surfaced via `args_get` (shell and userland). argv[0] is
     /// the program name.
     pub argv: Vec<String>,
-    /// Spawning process (M4 `ps`/`top`); `None` for host-spawned roots.
+    /// Spawning process (process control and IPC `ps`/`top`); `None` for host-spawned roots.
     pub parent: Option<u32>,
-    /// Reported guest `WebAssembly.Memory` size in bytes (M4 `top`); 0 until the
+    /// Reported guest `WebAssembly.Memory` size in bytes (process control and IPC `top`); 0 until the
     /// process worker reports it after instantiation.
     pub mem_bytes: u32,
-    /// Pending signals delivered but not yet consumed via `sig_pending` (M4-T5).
+    /// Pending signals delivered but not yet consumed via `sig_pending` (signals).
     pub pending_signals: VecDeque<u8>,
     /// Open message channels this process holds: `chan_id -> owned endpoint`
-    /// (M4-T3). Opaque handles, not WASI fds.
+    /// (message channels). Opaque handles, not WASI fds.
     pub channels: BTreeMap<u32, u8>,
     /// Environment variables surfaced via `environ_get` (FR-18) as `KEY=VALUE`
     /// strings. Seeded with a sane baseline at creation and inherited by spawned
@@ -275,7 +275,7 @@ fn std_fds() -> BTreeMap<u32, Descriptor> {
 }
 
 /// WIT-facing projection of a process (matches wit/control.wit `proc-info`).
-/// `cpu_ticks` is filled by the kernel core from the scheduler (M4 `ps`/`top`).
+/// `cpu_ticks` is filled by the kernel core from the scheduler (process control and IPC `ps`/`top`).
 #[derive(Clone, Debug)]
 pub struct ProcInfo {
     pub pid: u32,
@@ -292,12 +292,12 @@ pub struct ProcInfo {
 // Process table (FR-2)
 // ---------------------------------------------------------------------------
 
-/// The process table. Functional at M0: it allocates PIDs, holds capability
-/// sets, and drives the state machine. M1 attaches real WASM instances.
+/// The process table. Functional at kernel/VFS bootstrap: it allocates PIDs, holds capability
+/// sets, and drives the state machine. WASI process runtime attaches real WASM instances.
 pub struct ProcTable {
     procs: Vec<Process>,
     next_pid: u32,
-    /// Compositor surfaces (M3). `surface_id -> owning pid`. The kernel is the
+    /// Compositor surfaces (desktop compositor). `surface_id -> owning pid`. The kernel is the
     /// surface-id authority (allocated under the Gpu capability in `win_surface`);
     /// the host blits pixels from a per-surface SAB it shares with the owner.
     surface_owners: BTreeMap<u32, u32>,
@@ -316,7 +316,7 @@ impl ProcTable {
         Self { procs: Vec::new(), next_pid: 1, surface_owners: BTreeMap::new(), next_surface_id: 1 }
     }
 
-    // --- Compositor surfaces (M3) ---
+    // --- Compositor surfaces (desktop compositor) ---
 
     /// Allocate a new surface id owned by `pid` (called from `win_surface` after
     /// the Gpu capability check). Surface ids are unique across the session.
@@ -333,7 +333,7 @@ impl ProcTable {
         self.surface_owners.values().filter(|&&p| p == pid).count()
     }
 
-    /// Release every surface owned by `pid` (called on process exit, M3-T9), and
+    /// Release every surface owned by `pid` (called on process exit, launcher and window lifecycle), and
     /// return the freed surface ids so the host can tear down their windows.
     pub fn free_surfaces_of(&mut self, pid: u32) -> Vec<u32> {
         let freed: Vec<u32> =
@@ -377,7 +377,7 @@ impl ProcTable {
         pid
     }
 
-    /// Record that `pid` holds `end` of channel `id` (M4-T3).
+    /// Record that `pid` holds `end` of channel `id` (message channels).
     pub fn add_channel(&mut self, pid: u32, id: u32, end: u8) {
         if let Some(p) = self.get_mut(pid) {
             p.channels.insert(id, end);
@@ -398,7 +398,7 @@ impl ProcTable {
         self.procs.iter().find(|p| p.pid == pid)
     }
 
-    /// Mark a process's execution kind (M5 — the emulator is `Native`).
+    /// Mark a process's execution kind (Linux guest integration — the emulator is `Native`).
     pub fn set_kind(&mut self, pid: u32, kind: ProcKind) {
         if let Some(p) = self.get_mut(pid) {
             p.kind = kind;
@@ -511,7 +511,7 @@ impl ProcTable {
         self.get(pid).and_then(|p| p.exit_code)
     }
 
-    // --- Stdin buffer + park/resume state (M2) ---
+    // --- Stdin buffer + park/resume state (shell and userland) ---
 
     /// Append input bytes to a process's stdin buffer (terminal keystrokes).
     pub fn push_stdin(&mut self, pid: u32, bytes: &[u8]) -> bool {
@@ -542,7 +542,7 @@ impl ProcTable {
         self.get(pid).map(|p| p.stdin_eof).unwrap_or(true)
     }
 
-    // --- Brokered input events (M3-T3) ---
+    // --- Brokered input events (brokered input) ---
 
     /// Append brokered input event bytes for a process (compositor → focused win).
     pub fn push_input(&mut self, pid: u32, bytes: &[u8]) -> bool {
@@ -593,7 +593,7 @@ impl ProcTable {
     }
 
     /// Find every process parked on `reason`, clear their parked state, and
-    /// return their pids (the wakeup list for an event, M2 park/resume).
+    /// return their pids (the wakeup list for an event, shell and userland park/resume).
     pub fn take_blocked_on(&mut self, reason: &WaitReason) -> Vec<u32> {
         let mut woken = Vec::new();
         for p in self.procs.iter_mut() {
@@ -634,7 +634,7 @@ impl ProcTable {
         self.get(pid).is_some_and(|p| p.caps.allows(requested))
     }
 
-    /// Grant a capability to an already-spawned process (M4-T5 — the host confers
+    /// Grant a capability to an already-spawned process (signals — the host confers
     /// Signal on the shell, the user's process-control authority, after spawn).
     pub fn grant_cap(&mut self, pid: u32, cap: Capability) -> bool {
         self.get_mut(pid).map(|p| p.caps.grant(cap)).is_some()
@@ -659,12 +659,12 @@ impl ProcTable {
             .collect()
     }
 
-    /// Record a process's reported memory size (M4 `top`).
+    /// Record a process's reported memory size (process control and IPC `top`).
     pub fn set_mem(&mut self, pid: u32, bytes: u32) -> bool {
         self.get_mut(pid).map(|p| p.mem_bytes = bytes).is_some()
     }
 
-    /// Record a process's parent (M4 `ps` tree). Set by guest spawn (k_spawn).
+    /// Record a process's parent (process control and IPC `ps` tree). Set by guest spawn (k_spawn).
     pub fn set_parent(&mut self, pid: u32, parent: u32) -> bool {
         self.get_mut(pid).map(|p| p.parent = Some(parent)).is_some()
     }
@@ -782,7 +782,7 @@ mod tests {
         assert!(!t.has_cap(424242, &Capability::Spawn)); // unknown pid => deny
     }
 
-    // --- M1: per-process fd table (FR-4) ---
+    // --- WASI process runtime: per-process fd table (FR-4) ---
 
     #[test]
     fn spawn_preopens_std_fds() {

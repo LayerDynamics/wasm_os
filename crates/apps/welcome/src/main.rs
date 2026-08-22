@@ -1,4 +1,4 @@
-//! Welcome — a guided intro to WASM_OS (L3). A real `wasm32-wasip1` canvas process
+//! Welcome — a guided intro to WASM_OS. A real `wasm32-wasip1` canvas process
 //! that walks a new user through a few slides: what WASM_OS is, how it works, and how
 //! to actually do things. Keyboard is brokered by the compositor (Input capability);
 //! pixels go through a canvas surface (Gpu) — i.e. this help screen is itself a normal

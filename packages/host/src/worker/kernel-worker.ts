@@ -1,5 +1,5 @@
 /**
- * Kernel worker (kworker) — M1.
+ * Kernel worker (kworker) — WASI process runtime.
  *
  * Hosts the jco-transpiled kernel component + the OPFS/IndexedDB blockstores
  * (moved here from the main thread). It owns every process's SAB syscall ring,
@@ -63,17 +63,17 @@ interface KernelControl {
   takeCapture(pid: number): [Uint8Array, Uint8Array];
 }
 
-/** M2 park/resume outcome (jco maps `option<list<u8>>` → `Uint8Array | undefined`). */
+/** shell and userland park/resume outcome (jco maps `option<list<u8>>` → `Uint8Array | undefined`). */
 interface SyscallOutcome {
   reply: Uint8Array | undefined;
   wakeups: Uint32Array;
   termOutput: Uint8Array;
-  /** Set when a guest spawned a child the kworker must instantiate (M2-T5).
+  /** Set when a guest spawned a child the kworker must instantiate (guest spawning).
    *  `terminalStdin` marks a foreground job whose fd 0 is the terminal. */
   spawn?: { pid: number; imagePath: string; terminalStdin: boolean };
-  /** pids the kworker must force-terminate (SIGKILL, M4-T5). */
+  /** pids the kworker must force-terminate (SIGKILL, signals). */
   reap: Uint32Array;
-  /** Set when a guest parked on net_request (M5-T6) — the kworker fetches the URL. */
+  /** Set when a guest parked on net_request (network broker) — the kworker fetches the URL. */
   net?: { pid: number; url: string };
   /** Set when a guest toggled the terminal line discipline via `tty_set_raw`:
    *  `1` => raw, `0` => cooked, `undefined` => no change (jco maps `option<u8>`). */
@@ -120,10 +120,10 @@ interface EmulatorBoot {
   shareSeed?: Array<{ name: string; data: Uint8Array }>;
 }
 
-/** The host /home subtree bridged into the guest's 9p share (M5-T8, FR-29). */
+/** The host /home subtree bridged into the guest's 9p share (9p shared folder, FR-29). */
 const SHARE_DIR = "/home/shared";
 
-/** Read the files under the share dir to seed the guest's 9p mount (M5-T8). */
+/** Read the files under the share dir to seed the guest's 9p mount (9p shared folder). */
 function readShareSeed(): Array<{ name: string; data: Uint8Array }> {
   const seed: Array<{ name: string; data: Uint8Array }> = [];
   try {
@@ -141,7 +141,7 @@ function readShareSeed(): Array<{ name: string; data: Uint8Array }> {
   }
   return seed;
 }
-/** The privileged emulator process (M5): a Native process whose body is a dedicated
+/** The privileged emulator process (Linux guest integration): a Native process whose body is a dedicated
  * TinyEMU worker, tracked separately from the ring-driven `procs` so the wasi path is
  * untouched. Killing it (window close or SIGKILL/reap) terminates this worker. */
 interface EmulatorRuntime {
@@ -156,12 +156,12 @@ const emulators = new Map<number, EmulatorRuntime>();
 let nextEmulatorSurfaceId = 0x7000_0000;
 
 /**
- * Parked syscalls (M2): a pid → the request bytes it parked on. While parked,
+ * Parked syscalls (shell and userland): a pid → the request bytes it parked on. While parked,
  * the guest stays blocked in `Atomics.wait`; a wakeup re-drives the request.
  */
 const parked = new Map<number, Uint8Array>();
 
-/** M3 compositor surfaces: `surface_id -> owning pid` (present authorization). */
+/** Desktop compositor surfaces: `surface_id -> owning pid` (present authorization). */
 const surfaceOwners = new Map<number, number>();
 
 /**
@@ -218,7 +218,7 @@ function driveSyscall(pid: number, request: Uint8Array): void {
   // a self-kill's reply must land before its worker is torn down.
   if (outcome.spawn) handleSpawnRequest(outcome.spawn);
   if (outcome.net) handleNetRequest(outcome.net);
-  for (const r of outcome.reap) killProcess(r); // SIGKILL reap (M4-T5)
+  for (const r of outcome.reap) killProcess(r); // SIGKILL reap (signals)
   processWakeups(outcome.wakeups);
 }
 
@@ -251,7 +251,7 @@ function processWakeups(wakeups: Uint32Array | number[]): void {
     // the re-driven caller.
     if (outcome.spawn) handleSpawnRequest(outcome.spawn);
     if (outcome.net) handleNetRequest(outcome.net);
-    for (const r of outcome.reap) killProcess(r); // SIGKILL reap (M4-T5)
+    for (const r of outcome.reap) killProcess(r); // SIGKILL reap (signals)
     for (const nw of outcome.wakeups) if (!queue.includes(nw)) queue.push(nw);
   }
 }
@@ -328,7 +328,7 @@ function onProcExit(pid: number, msg: ExitMessage): void {
   // If the kernel does not already know this process exited, record it now. A
   // guest that returns from `_start` (or traps) never sends a ring `proc_exit`,
   // so without this the kernel never zombifies it and a parent parked in
-  // `wait()` would hang (M2-T5) — and a trap would not be contained (FR-34).
+  // `wait()` would hang (guest spawning) — and a trap would not be contained (FR-34).
   if (requireControl().exitCode(pid) === undefined) {
     const outcome = requireControl().serviceSyscall(pid, encodeProcExit(msg.exit.code));
     processWakeups(outcome.wakeups);
@@ -369,11 +369,11 @@ function onProcExit(pid: number, msg: ExitMessage): void {
   procs.delete(pid);
 }
 
-/** Host-initiated kill (M3): close a window → reap its process. Records the exit
+/** Host-initiated kill (desktop compositor): close a window → reap its process. Records the exit
  * (zombifies + releases pipes/surfaces + wakes waiters) then tears the worker
  * down via onProcExit. A no-op if the process already exited. */
 function killProcess(pid: number): void {
-  // The emulator (M5) is a Native process with no ring — reap its worker directly.
+  // The emulator (Linux guest integration) is a Native process with no ring — reap its worker directly.
   const emu = emulators.get(pid);
   if (emu) {
     reapEmulator(pid, emu);
@@ -384,7 +384,7 @@ function killProcess(pid: number): void {
   onProcExit(pid, { pid, exit: { kind: "exit", code: 137 }, sharedMemory: rt.sharedMemory });
 }
 
-/** Register + boot the privileged emulator process (M5, FR-27/FR-28): the kernel
+/** Register + boot the privileged emulator process (Linux guest integration, FR-27/FR-28): the kernel
  * allocates a Native PID, then a dedicated TinyEMU worker runs it. Serial output is
  * relayed to the main thread; killing the PID terminates this worker. */
 function spawnEmulator(name: string, boot: EmulatorBoot): number {
@@ -409,7 +409,7 @@ function spawnEmulator(name: string, boot: EmulatorBoot): number {
       ctx.postMessage({ type: "emulatorStarted", pid });
     } else if (d.type === "surface" && d.sab) {
       // The emulator's framebuffer — relay it as a compositor surface (reusing the
-      // M3 surface/present path), with a high surface id owned by this process.
+      // desktop compositor surface/present path), with a high surface id owned by this process.
       const sid = nextEmulatorSurfaceId++;
       emu.surfaceId = sid;
       surfaceOwners.set(sid, pid);
@@ -417,27 +417,27 @@ function spawnEmulator(name: string, boot: EmulatorBoot): number {
     } else if (d.type === "present" && emu.surfaceId !== undefined) {
       ctx.postMessage({ type: "present", surfaceId: emu.surfaceId });
     } else if (d.type === "tick") {
-      // Run-to-budget accounting (M5-T5): the emulator is alive and consuming a
+      // Run-to-budget accounting (emulator CPU accounting): the emulator is alive and consuming a
       // scheduling budget — surface it as CPU activity in proc_list/top.
       requireControl().accountEmulator(pid, 1n);
     } else if (d.type === "9pWrite" && d.name && d.data) {
-      // A guest write under the 9p share — mirror it back to the host VFS (M5-T8).
+      // A guest write under the 9p share — mirror it back to the host VFS (9p shared folder).
       requireControl().fsWrite(`${SHARE_DIR}/${d.name}`, d.data);
     }
   };
-  // Seed the guest's 9p share with the current host /home/shared contents (M5-T8).
+  // Seed the guest's 9p share with the current host /home/shared contents (9p shared folder).
   worker.postMessage({ type: "boot", ...boot, shareSeed: readShareSeed() });
   return pid;
 }
 
-/** Deliver brokered keystrokes to the emulator's guest console (M5-T3). The text
+/** Deliver brokered keystrokes to the emulator's guest console (guest console input). The text
  * is written to the guest's hvc0 console (the shell's stdin) by the emulator worker. */
 function emulatorInput(pid: number, text: string): void {
   const emu = emulators.get(pid);
   if (emu && !emu.exited) emu.worker.postMessage({ type: "input", text });
 }
 
-/** Tear down the emulator worker + zombify its PID in the kernel (M5 kill/reap). */
+/** Tear down the emulator worker + zombify its PID in the kernel (Linux guest integration kill/reap). */
 function reapEmulator(pid: number, emu: EmulatorRuntime): void {
   if (emu.exited) return;
   emu.exited = true;
@@ -492,12 +492,12 @@ function instantiateProcess(pid: number, wasmBytes: ArrayBuffer | Uint8Array): v
       sab?: SharedArrayBuffer;
       bytes?: number;
     };
-    // M4 ps/top: the worker reported its guest memory size.
+    // process control and IPC ps/top: the worker reported its guest memory size.
     if (d.type === "mem" && d.bytes !== undefined) {
       requireControl().setProcMem(pid, d.bytes);
       return;
     }
-    // M3 compositor surfaces: a process worker created a surface or published a
+    // Desktop compositor surfaces: a process worker created a surface or published a
     // frame. Track ownership (surface_id -> pid) and relay to the main thread,
     // which drives the canvas window + blits the shared framebuffer.
     if (d.type === "surface" && d.surfaceId !== undefined) {
@@ -518,7 +518,7 @@ function instantiateProcess(pid: number, wasmBytes: ArrayBuffer | Uint8Array): v
   procs.get(pid)!.worker = worker;
 }
 
-/** Host-initiated spawn (the M1 path): allocate the PID, then instantiate. */
+/** Host-initiated spawn (the WASI process runtime path): allocate the PID, then instantiate. */
 function spawn(spec: SpawnSpec, wasmBytes: ArrayBuffer): number {
   const pid = requireControl().spawn(spec);
   instantiateProcess(pid, wasmBytes);
@@ -536,7 +536,7 @@ function spawnByPath(spec: SpawnSpec, imagePath: string): number {
 }
 
 /**
- * Guest-initiated spawn (KSPAWN, M2): the kernel already allocated the child's
+ * Guest-initiated spawn (KSPAWN, shell and userland): the kernel already allocated the child's
  * PID/fds/caps and returned a `spawn` request. Read its image from the VFS and
  * bring it to life.
  */
@@ -565,7 +565,7 @@ function handleSpawnRequest(req: { pid: number; imagePath: string; terminalStdin
  * memory in one shot (the body is copied into the kernel by deliverNet). */
 const MAX_NET_BYTES = 8 * 1024 * 1024;
 
-/** Perform a guest's brokered network request (M5-T6): the kernel parked the
+/** Perform a guest's brokered network request (network broker): the kernel parked the
  * caller after checking its Net capability; we fetch the URL and deliver the
  * body back (waking the caller). A failure delivers ok=false (guest sees IO). */
 function handleNetRequest(req: { pid: number; url: string }): void {
@@ -681,7 +681,7 @@ ctx.onmessage = async (ev: MessageEvent) => {
         break;
       }
       case "deliverInput": {
-        // Deliver brokered keyboard/mouse to the focused window's process (M3-T3);
+        // Deliver brokered keyboard/mouse to the focused window's process (brokered input);
         // wake any parked win_read_input.
         const wakeups = requireControl().deliverInput(args.pid as number, args.bytes as Uint8Array);
         processWakeups(wakeups);

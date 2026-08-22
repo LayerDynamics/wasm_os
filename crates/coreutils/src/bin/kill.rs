@@ -1,4 +1,4 @@
-//! kill — send a signal to a process (M4-T5, FR-8/FR-34). `kill [-SIG] <pid>`.
+//! kill — send a signal to a process (signals, FR-8/FR-34). `kill [-SIG] <pid>`.
 //!
 //! Mirrors the shell's `kill` builtin but as a standalone `/bin/kill` for use by
 //! full path or in pipelines. It calls the `wasmos_kernel` `kill` syscall, which

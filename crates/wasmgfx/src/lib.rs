@@ -1,4 +1,4 @@
-//! wasmgfx — a tiny software-rendering SDK for WASM_OS canvas apps (M3).
+//! wasmgfx — a tiny software-rendering SDK for WASM_OS canvas apps (desktop compositor).
 //!
 //! A [`Framebuffer`] is `width*height` RGBA pixels (the byte order the host blits
 //! straight into a `<canvas>` `ImageData`). It offers clipped primitives

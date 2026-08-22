@@ -1,4 +1,4 @@
-//! nano — a real in-terminal text editor for WASM_OS (L3).
+//! nano — a real in-terminal text editor for WASM_OS.
 //!
 //! A `wasm32-wasip1` process that edits a text file inside the terminal, the way
 //! GNU nano does. On launch it switches the terminal to RAW line discipline via

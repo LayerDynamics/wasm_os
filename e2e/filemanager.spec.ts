@@ -1,6 +1,6 @@
 import { test, expect, type Page, type Locator } from "@playwright/test";
 
-// M3-T5 — the file manager (FR-24): a real Rust WASI process that draws a canvas
+// file manager — the file manager (FR-24): a real Rust WASI process that draws a canvas
 // surface, browses the VFS, and LAUNCHES a file as a process (delegating
 // Gpu+Input so a graphical app gets its own window). This drives the real thing:
 // spawn the FM → descend into /bin → click a file → a second canvas window opens.

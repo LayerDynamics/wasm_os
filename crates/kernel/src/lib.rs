@@ -1,11 +1,11 @@
-//! M0 kernel component. Exports `wasmos:abi/control`; imports two blockstores
+//! kernel/VFS bootstrap kernel component. Exports `wasmos:abi/control`; imports two blockstores
 //! (`home`->OPFS, `mnt`->IndexedDB) provided by the host.
 
 // These modules are the kernel's public library API (the crate is built as an
 // rlib as well as the wasm cdylib component). Exposing them publicly is correct
 // design — the process table, scheduler, capability system, and VFS are the
 // kernel's surface — and it means items reached only by the wasm-gated
-// `component` or by M1 callers are not miscounted as dead on the host build.
+// `component` or by WASI process runtime callers are not miscounted as dead on the host build.
 pub mod chan;
 pub mod devfs;
 pub mod kcore;
@@ -99,7 +99,7 @@ mod component {
             FsError::NotFound => WFsError::NotFound,
             FsError::IoFailure(s) => WFsError::IoFailure(s),
             FsError::BadPath(s) => WFsError::BadPath(s),
-            // The control fs-error variant is coarse (M0/M1); map the M2
+            // The control fs-error variant is coarse (kernel/VFS bootstrap/WASI process runtime); map the shell and userland
             // directory errors onto io-failure with a descriptive message.
             FsError::IsDir => WFsError::IoFailure("is a directory".into()),
             FsError::NotEmpty => WFsError::IoFailure("directory not empty".into()),
@@ -161,7 +161,7 @@ mod component {
             })
         }
 
-        // --- Process lifecycle (M1, FR-5) ---
+        // --- Process lifecycle (WASI process runtime, FR-5) ---
 
         fn spawn(spec: SpawnSpec) -> u32 {
             // An empty subtree means "no FS grant"; otherwise grant read+write.
@@ -175,7 +175,7 @@ mod component {
                 let pid =
                     k.spawn(&spec.name, grant_fs, spec.grant_spawn, spec.grant_gpu, spec.grant_input);
                 // Signal (process-control) authority — the shell holds it so its
-                // `kill` builtin can signal other processes (M4-T5).
+                // `kill` builtin can signal other processes (signals).
                 if spec.grant_signal {
                     k.grant_signal(pid);
                 }

@@ -1,6 +1,6 @@
 import { test, expect, type Page, type Locator } from "@playwright/test";
 
-// M4-T9 — desktop session snapshot/restore (FR-35). Launch an app, move its
+// session restore — desktop session snapshot/restore (FR-35). Launch an app, move its
 // window, and the layout is written to /home/.session.json. After a reload the
 // SessionManager re-spawns the app and restores its window geometry — the desktop
 // comes back. The VFS already persists file contents (FR-30); this restores the

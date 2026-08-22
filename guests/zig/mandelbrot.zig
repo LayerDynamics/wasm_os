@@ -1,4 +1,4 @@
-//! Mandelbrot explorer (Zig) — the M3 polyglot graphical app (FR-14 on the
+//! Mandelbrot explorer (Zig) — the desktop compositor polyglot graphical app (FR-14 on the
 //! compositor path). It speaks the SAME `wasmos_kernel` syscall ABI as the Rust
 //! canvas apps (win_surface/win_present/win_read_input over the single `syscall`
 //! import), computes the Mandelbrot set into a framebuffer, and pans (drag) +

@@ -12,10 +12,10 @@ use crate::types::{
 };
 use crate::vfs::{Blockstore, FsError, Vfs};
 
-/// Default scheduling priority for user processes spawned at M1 (init is 10).
+/// Default scheduling priority for user processes spawned at WASI process runtime (init is 10).
 const USER_PRIORITY: u8 = 5;
 
-/// Signals (M4-T5). SIGTERM is catchable (cooperative graceful shutdown); SIGKILL
+/// Signals (signals). SIGTERM is catchable (cooperative graceful shutdown); SIGKILL
 /// is uncatchable + forceful (the kernel reaps the process). Values match POSIX.
 const SIGKILL: u8 = 9;
 const SIGTERM: u8 = 15;
@@ -27,10 +27,10 @@ pub struct KernelCore {
     pipes: PipeTable,
     chans: crate::chan::ChannelTable,
     shm: crate::shm::ShmTable,
-    /// The privileged emulator process (M5), if one is running — special-cased by
+    /// The privileged emulator process (Linux guest integration), if one is running — special-cased by
     /// the scheduler (run-to-budget, FR-28).
     emulator_pid: Option<u32>,
-    /// Brokered `net_request` responses awaiting their parked caller (M5-T6):
+    /// Brokered `net_request` responses awaiting their parked caller (network broker):
     /// `pid -> (ok, body)`. Filled by `deliver_net`, drained on the re-driven call.
     net_responses: std::collections::BTreeMap<u32, (bool, Vec<u8>)>,
     booted: bool,
@@ -80,7 +80,7 @@ impl KernelCore {
         }
 
         // init holds full FS rights and the right to spawn (it launches the
-        // userland in M1). Registering it drives the full M0 process path.
+        // userland in WASI process runtime). Registering it drives the full kernel/VFS bootstrap process path.
         let mut caps = CapabilitySet::default();
         caps.grant(Capability::FsPath { subtree: "/".into(), rights: Rights::RWX });
         caps.grant(Capability::Spawn);
@@ -143,7 +143,7 @@ impl KernelCore {
 
     // --- Process/scheduler/capability surface ---
     pub fn list_procs(&self) -> Vec<ProcInfo> {
-        // Enrich the process table projection with scheduler CPU accounting (M4).
+        // Enrich the process table projection with scheduler CPU accounting (process control and IPC).
         let mut infos = self.procs.list();
         for i in infos.iter_mut() {
             i.cpu_ticks = self.sched.time_of(i.pid);
@@ -151,7 +151,7 @@ impl KernelCore {
         infos
     }
 
-    /// Record a process's reported guest memory size (M4 `top`).
+    /// Record a process's reported guest memory size (process control and IPC `top`).
     pub fn set_proc_mem(&mut self, pid: u32, bytes: u32) {
         self.procs.set_mem(pid, bytes);
     }
@@ -168,14 +168,14 @@ impl KernelCore {
     }
 
     /// Confer the Signal (process-control) capability on a process after spawn
-    /// (M4-T5). The host grants it to the shell so its `kill` builtin can signal
+    /// (signals). The host grants it to the shell so its `kill` builtin can signal
     /// other processes, and the shell may delegate it to a spawned `kill`.
     pub fn grant_signal(&mut self, pid: u32) {
         self.procs.grant_cap(pid, Capability::Signal);
     }
 
     /// Confer the Net (brokered-networking) capability on a process after spawn
-    /// (M5-T6). The host grants it to the shell, which delegates it to `fetch`.
+    /// (network broker). The host grants it to the shell, which delegates it to `fetch`.
     pub fn grant_net(&mut self, pid: u32) {
         self.procs.grant_cap(pid, Capability::Net);
     }
@@ -187,12 +187,12 @@ impl KernelCore {
         self.procs.has_cap(pid, cap)
     }
 
-    // --- Process lifecycle (M1, FR-5) ---
+    // --- Process lifecycle (WASI process runtime, FR-5) ---
 
     /// Allocate a process with a minimal capability set and make it `Ready`
     /// (enqueued on the scheduler). `grant_fs` is an optional `(subtree, rights)`
     /// FS grant; `grant_spawn` confers the right to spawn children. The kernel
-    /// **never** grants `Shm` here — there is no inter-process memory path at M1
+    /// **never** grants `Shm` here — there is no inter-process memory path at WASI process runtime
     /// (the structural half of the isolation guarantee, FR-6).
     pub fn spawn(
         &mut self,
@@ -209,7 +209,7 @@ impl KernelCore {
         if grant_spawn {
             caps.grant(Capability::Spawn);
         }
-        // Gpu gates win_surface (M3); Input gates brokered keyboard/mouse (M3-T3).
+        // Gpu gates win_surface (desktop compositor); Input gates brokered keyboard/mouse (brokered input).
         if grant_gpu {
             caps.grant(Capability::Gpu);
         }
@@ -222,7 +222,7 @@ impl KernelCore {
         pid
     }
 
-    /// Register the **privileged emulator process** (M5, FR-27/FR-28): a `Native`
+    /// Register the **privileged emulator process** (Linux guest integration, FR-27/FR-28): a `Native`
     /// process that runs its own CPU loop in a dedicated host worker rather than
     /// making WASI syscalls over the ring. It is a first-class PID — it appears in
     /// `proc_list`/`top`, holds a capability set (Gpu+Input+Net+FS for the
@@ -244,17 +244,17 @@ impl KernelCore {
         pid
     }
 
-    /// The running emulator process's pid, if any (M5 scheduling/lifecycle).
+    /// The running emulator process's pid, if any (Linux guest integration scheduling/lifecycle).
     pub fn emulator_pid(&self) -> Option<u32> {
         self.emulator_pid
     }
 
-    /// The execution kind of a process (M5 — `Native` for the emulator).
+    /// The execution kind of a process (Linux guest integration — `Native` for the emulator).
     pub fn proc_kind(&self, pid: u32) -> ProcKind {
         self.procs.kind_of(pid)
     }
 
-    /// Account a run-to-budget quantum for the emulator (M5-T5, FR-28). The emulator
+    /// Account a run-to-budget quantum for the emulator (emulator CPU accounting, FR-28). The emulator
     /// makes no syscalls, so its CPU activity surfaced in `top`/`proc_list` comes
     /// from periodic wall-budget heartbeats its worker reports. Ignored for any pid
     /// that is not the registered emulator (it cannot inflate another process).
@@ -265,7 +265,7 @@ impl KernelCore {
     }
 
     /// Route one syscall for `pid` (FR-4). Returns a [`syscall::SyscallOutcome`]
-    /// — a ready reply, or a park (M2) the kworker defers until a wakeup.
+    /// — a ready reply, or a park (shell and userland) the kworker defers until a wakeup.
     pub fn service_syscall(&mut self, pid: u32, req: &[u8]) -> syscall::SyscallOutcome {
         // Account one scheduler tick per serviced syscall — a deterministic
         // kernel-activity metric powering `ps`/`top` (FR-3 time accounting, FR-33).
@@ -304,7 +304,7 @@ impl KernelCore {
         }
     }
 
-    /// `proc_list()` (M4 `ps`/`top`, FR-33). Reply: `[errno u16][count u32]` then,
+    /// `proc_list()` (process control and IPC `ps`/`top`, FR-33). Reply: `[errno u16][count u32]` then,
     /// per process: `pid u32, name(len-prefixed), state u8, priority u8,
     /// cpu_ticks u64, mem_bytes u32, parent u32`.
     fn encode_proc_list(&self) -> Vec<u8> {
@@ -351,7 +351,7 @@ impl KernelCore {
         err(syscall::errno::SUCCESS)
     }
 
-    // --- M4-T3: message channels (opaque handles, not WASI fds) ---
+    // --- message channels: message channels (opaque handles, not WASI fds) ---
 
     /// `chan_open(name)` — rendezvous by name. Reply: `[errno u16][chan_id u32][end u8]`.
     fn chan_open_syscall(&mut self, pid: u32, req: &[u8]) -> syscall::SyscallOutcome {
@@ -433,7 +433,7 @@ impl KernelCore {
         wakeups
     }
 
-    // --- M4-T4: shared memory (kernel-arbitrated, capability-gated region, FR-6) ---
+    // --- shared memory: shared memory (kernel-arbitrated, capability-gated region, FR-6) ---
 
     /// `shm_create(size)` — `[0x35][size u32]`. Reply: `[errno u16][shm_id u32]`.
     /// Any process may create a region (it owns + may grant it); size is capped.
@@ -522,7 +522,7 @@ impl KernelCore {
         }
     }
 
-    // --- M4-T5: signals (SIGTERM cooperative + SIGKILL forceful, Signal cap) ---
+    // --- signals: signals (SIGTERM cooperative + SIGKILL forceful, Signal cap) ---
 
     /// `kill(target, sig)` — `[0x3A][target u32][sig u8]`. Reply: `[errno u16]`.
     /// Signalling another process requires the Signal capability (self always
@@ -604,7 +604,7 @@ impl KernelCore {
         syscall::SyscallOutcome::ready(b)
     }
 
-    // --- M5-T6: brokered networking (the Net capability, OQ-2) ---
+    // --- network broker: brokered networking (the Net capability, OQ-2) ---
 
     /// `net_request(url)` — `[0x40][url bytes]`. Capability-gated (default-deny):
     /// without `Net`, returns NOTCAPABLE immediately. Otherwise it parks on the
@@ -630,7 +630,7 @@ impl KernelCore {
         out
     }
 
-    /// The host delivers a brokered fetch response (M5-T6); buffer it and wake the
+    /// The host delivers a brokered fetch response (network broker); buffer it and wake the
     /// parked caller so its re-driven `net_request` returns the bytes.
     pub fn deliver_net(&mut self, pid: u32, ok: bool, body: Vec<u8>) -> Vec<u32> {
         if self.procs.blocked_on(pid) == Some(WaitReason::NetReq) {
@@ -643,7 +643,7 @@ impl KernelCore {
     }
 
     /// Bind a process's stdout + stderr (fd 1/2) to the interactive terminal so
-    /// its writes stream to xterm (M2). fd 0 stays stdin, fed by `deliver_stdin`.
+    /// its writes stream to xterm (shell and userland). fd 0 stays stdin, fed by `deliver_stdin`.
     pub fn bind_terminal(&mut self, pid: u32) {
         if let Some(d) = self.procs.fd_mut(pid, 1) {
             d.kind = DescKind::Terminal;
@@ -653,7 +653,7 @@ impl KernelCore {
         }
     }
 
-    /// Deliver input bytes to a process's stdin (terminal keystrokes, M2).
+    /// Deliver input bytes to a process's stdin (terminal keystrokes, shell and userland).
     /// Returns the pids whose parked stdin reads are now runnable.
     pub fn deliver_stdin(&mut self, pid: u32, bytes: &[u8]) -> Vec<u32> {
         self.procs.push_stdin(pid, bytes);
@@ -665,7 +665,7 @@ impl KernelCore {
         }
     }
 
-    /// Deliver brokered input events to a process's focused window (M3-T3, FR-25).
+    /// Deliver brokered input events to a process's focused window (brokered input, FR-25).
     /// Default-deny: only a process holding the Input capability receives events.
     /// Returns the pids whose parked `win_read_input` calls are now runnable.
     pub fn deliver_input(&mut self, pid: u32, bytes: &[u8]) -> Vec<u32> {
@@ -755,7 +755,7 @@ mod tests {
         assert_eq!(k.read("/mnt/b").unwrap(), b"m");
     }
 
-    // --- M1: process lifecycle (FR-5) ---
+    // --- WASI process runtime: process lifecycle (FR-5) ---
 
     /// Encode a syscall request the way the host JS shim does (op byte + LE fields).
     fn fd_write_req(fd: u32, data: &[u8]) -> Vec<u8> {
@@ -892,7 +892,7 @@ mod tests {
         assert_eq!(k.deliver_input(with, &[0u8; 12]), vec![with]);
     }
 
-    // --- M4: process metrics + proc_list + runtime priority ---
+    // --- process control and IPC: process metrics + proc_list + runtime priority ---
 
     #[test]
     fn proc_list_carries_metrics_and_priority_is_capability_gated() {
@@ -929,7 +929,7 @@ mod tests {
         assert_eq!(read_u16(&k.service_syscall(pid, &other_req).reply.unwrap()), 76); // NOTCAPABLE
     }
 
-    // --- M4-T3: message channels through the kernel core ---
+    // --- message channels: message channels through the kernel core ---
 
     fn chan_open_req(name: &str) -> Vec<u8> {
         let mut v = vec![0x32u8];
@@ -987,7 +987,7 @@ mod tests {
         assert_eq!(read_u16(&k.service_syscall(c, &chan_recv_req(id)).reply.unwrap()), 8); // BADF
     }
 
-    // --- M4-T4: shared memory through the kernel core ---
+    // --- shared memory: shared memory through the kernel core ---
 
     fn shm_create_req(size: u32) -> Vec<u8> {
         let mut v = vec![0x35u8];
@@ -1050,7 +1050,7 @@ mod tests {
         assert_eq!(read_u16(&k.service_syscall(peer, &shm_read_req(id, 8, 10)).reply.unwrap()), 76);
     }
 
-    // --- M4-T5: signals (SIGTERM cooperative + SIGKILL forceful) ---
+    // --- signals: signals (SIGTERM cooperative + SIGKILL forceful) ---
 
     fn kill_req(target: u32, sig: u8) -> Vec<u8> {
         let mut v = vec![0x3Au8];
@@ -1121,7 +1121,7 @@ mod tests {
         assert_eq!(k.list_procs().iter().find(|i| i.pid == victim).unwrap().state.as_str(), "zombie");
     }
 
-    // --- M5-T2: the emulator as a privileged (Native, non-ring) process ---
+    // --- privileged Linux process: the emulator as a privileged (Native, non-ring) process ---
 
     #[test]
     fn emulator_is_a_killable_native_process_in_proc_list_and_isolated() {
@@ -1153,7 +1153,7 @@ mod tests {
         assert_ne!(infos.iter().find(|i| i.pid == peer).unwrap().state.as_str(), "zombie");
     }
 
-    // --- M5-T6: brokered networking (net_request) ---
+    // --- network broker: brokered networking (net_request) ---
 
     #[test]
     fn net_request_is_capability_gated_and_parks_until_delivered() {

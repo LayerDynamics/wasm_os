@@ -22,7 +22,7 @@
     "test:rust": "cargo test -p kernel -p wasmgfx -p wasmobj -p filemanager",
     "test:host": "vitest run",
     "test:e2e": "playwright test --project=fast",
-    "verify": "npm run build && npm run build:guests && npm run binder:kernel-check && npm run lint && npm run typecheck && npm run test:rust && npm run test:host && npm run test:e2e",
+    "verify": "npm run build && npm run binder:check && npm run build:guests && npm run lint && npm run typecheck && npm run test:rust && npm run test:host && npm run test:e2e",
     "test:e2e:slow": "playwright test --project=slow",
     "dev:web": "npm run build && npm run build:guests && npm run bundle && npm -w @wasmos/web run dev",
     "build:web": "npm -w @wasmos/web run build",

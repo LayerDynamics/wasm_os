@@ -21,10 +21,10 @@ use crate::types::{
 };
 use crate::vfs::Vfs;
 
-/// Scheduling priority for processes spawned by a guest shell (M2).
+/// Scheduling priority for processes spawned by a guest shell (shell and userland).
 const SPAWN_PRIORITY: u8 = 5;
 
-/// Outcome of routing one syscall (M2 park/resume). Most syscalls complete
+/// Outcome of routing one syscall (shell and userland park/resume). Most syscalls complete
 /// immediately (`reply = Some`); a blocking read with no data yet **parks**
 /// (`reply = None`) and is re-driven later when an event wakes it.
 pub struct SyscallOutcome {
@@ -32,15 +32,15 @@ pub struct SyscallOutcome {
     pub reply: Option<Vec<u8>>,
     /// pids whose parked syscalls are now runnable (the kworker re-drives them).
     pub wakeups: Vec<u32>,
-    /// bytes a terminal-bound fd produced during this syscall (M2-T4 streams it).
+    /// bytes a terminal-bound fd produced during this syscall (terminal output streaming streams it).
     pub term_output: Vec<u8>,
     /// A child the kernel allocated this syscall (KSPAWN) that the kworker must
     /// now bring to life — load the image from the VFS and create its worker+ring.
     pub spawn: Option<SpawnRequest>,
-    /// pids the kworker must force-terminate (SIGKILL, M4-T5): the kernel has
+    /// pids the kworker must force-terminate (SIGKILL, signals): the kernel has
     /// already zombified them; the host tears down their worker + ring.
     pub reap: Vec<u32>,
-    /// A brokered network request (M5-T6, OQ-2): the caller parked on `net_request`
+    /// A brokered network request (network broker, OQ-2): the caller parked on `net_request`
     /// and the kworker must perform the fetch, then `deliver_net` the response.
     pub net: Option<NetRequest>,
     /// Set when the caller changed the terminal line-discipline via `tty_set_raw`:
@@ -50,7 +50,7 @@ pub struct SyscallOutcome {
     pub term_mode: Option<u8>,
 }
 
-/// A capability-gated network request the kworker must broker (M5-T6, FR-NG-1):
+/// A capability-gated network request the kworker must broker (network broker, FR-NG-1):
 /// the kernel checked the `Net` capability; the host performs the actual fetch.
 #[derive(Clone, Debug)]
 pub struct NetRequest {
@@ -98,7 +98,7 @@ pub enum Op {
     ArgsSizesGet = 0x0C,
     ArgsGet = 0x0D,
     ProcExit = 0x10,
-    // FS mutation (M2 — mkdir/rm/mv coreutils).
+    // FS mutation (shell and userland — mkdir/rm/mv coreutils).
     PathCreateDirectory = 0x11,
     PathUnlinkFile = 0x12,
     PathRemoveDirectory = 0x13,
@@ -109,16 +109,16 @@ pub enum Op {
     FdFdstatSetFlags = 0x17,
     // fd readiness query backing a real `poll_oneoff` (host-side in the shim).
     FdReady = 0x18,
-    // wasmos_kernel extension (guest process control, M2).
+    // wasmos_kernel extension (guest process control, shell and userland).
     KSpawn = 0x20,
     KPipe = 0x21,
     KWait = 0x22,
-    // wasmos_kernel compositor extension (M3). win_surface allocates a surface
+    // wasmos_kernel compositor extension (desktop compositor). win_surface allocates a surface
     // id under the Gpu capability; win_present is handled host-side in the
     // process worker (pixels never enter the ring), so it is NOT an opcode here.
     WinSurface = 0x23,
     // win_read_input drains brokered keyboard/mouse events (Input capability),
-    // parking until the compositor delivers some (M3-T3).
+    // parking until the compositor delivers some (brokered input).
     WinReadInput = 0x25,
     // tty_set_raw toggles the interactive terminal's line discipline (raw vs
     // cooked) for in-terminal editors like nano. The new mode is reported to the
@@ -167,7 +167,7 @@ pub mod errno {
     pub const SUCCESS: u16 = 0;
     pub const ACCES: u16 = 2;
     pub const BADF: u16 = 8;
-    pub const IO: u16 = 29; // I/O error (M5-T6 net_request fetch failure)
+    pub const IO: u16 = 29; // I/O error (network broker net_request fetch failure)
     pub const EXIST: u16 = 20;
     pub const INVAL: u16 = 28;
     pub const ISDIR: u16 = 31;
@@ -177,7 +177,7 @@ pub mod errno {
     pub const NOTDIR: u16 = 54;
     pub const NOTEMPTY: u16 = 55;
     pub const PIPE: u16 = 64;
-    pub const SRCH: u16 = 71; // no such process (M4-T5 signals)
+    pub const SRCH: u16 = 71; // no such process (signals)
     pub const NOTCAPABLE: u16 = 76;
 }
 
@@ -401,7 +401,7 @@ pub fn dispatch(
             SyscallOutcome::ready(Writer::new().u16(errno::SUCCESS).bytes(&blob).build())
         }
         Op::ProcExit => proc_exit(procs, pipes, pid, &mut r),
-        // FS mutation (M2).
+        // FS mutation (shell and userland).
         Op::PathCreateDirectory => SyscallOutcome::ready(path_create_directory(vfs, procs, pid, &mut r)),
         Op::PathUnlinkFile => SyscallOutcome::ready(path_unlink_file(vfs, procs, pid, &mut r)),
         Op::PathRemoveDirectory => SyscallOutcome::ready(path_remove_directory(vfs, procs, pid, &mut r)),
@@ -414,7 +414,7 @@ pub fn dispatch(
         Op::KSpawn => k_spawn(vfs, procs, pipes, pid, &mut r),
         Op::KPipe => k_pipe(procs, pipes, pid, &mut r),
         Op::KWait => k_wait(procs, pid, &mut r),
-        // wasmos_kernel compositor extension (M3).
+        // wasmos_kernel compositor extension (desktop compositor).
         Op::WinSurface => win_surface(procs, pid, &mut r),
         Op::WinReadInput => win_read_input(procs, pid, &mut r),
         Op::TtySetRaw => tty_set_raw(&mut r),
@@ -800,7 +800,7 @@ fn fd_readdir(vfs: &mut Vfs, procs: &mut ProcTable, pid: u32, r: &mut Reader) ->
     };
 
     // Real immediate children — from the live process table for /proc, else the
-    // hierarchical VFS (M2).
+    // hierarchical VFS (shell and userland).
     let entries = if crate::procfs::is_proc(&dir_path) {
         match crate::procfs::readdir(procs, &dir_path) {
             Some(e) => e,
@@ -965,8 +965,8 @@ fn proc_exit(procs: &mut ProcTable, pipes: &mut PipeTable, pid: u32, r: &mut Rea
     procs.set_exit(pid, code);
     procs.set_state(pid, ProcState::Zombie);
 
-    // Release the kernel-side ownership of any compositor surfaces (M3). The host
-    // tears down their windows when the worker dies (M3-T9); here we just keep the
+    // Release the kernel-side ownership of any compositor surfaces (desktop compositor). The host
+    // tears down their windows when the worker dies (launcher and window lifecycle); here we just keep the
     // surface-id authority's map clean so ids don't leak.
     procs.free_surfaces_of(pid);
 
@@ -1006,7 +1006,7 @@ fn proc_exit(procs: &mut ProcTable, pipes: &mut PipeTable, pid: u32, r: &mut Rea
 }
 
 // ---------------------------------------------------------------------------
-// FS mutation (M2 — mkdir/rm/mv coreutils)
+// FS mutation (shell and userland — mkdir/rm/mv coreutils)
 // ---------------------------------------------------------------------------
 
 /// Resolve a `(dirfd, path)` pair to an absolute path and enforce the process's
@@ -1109,7 +1109,7 @@ fn path_rename(vfs: &mut Vfs, procs: &mut ProcTable, pid: u32, r: &mut Reader) -
 }
 
 // ---------------------------------------------------------------------------
-// wasmos_kernel extension — guest process control (M2)
+// wasmos_kernel extension — guest process control (shell and userland)
 // ---------------------------------------------------------------------------
 
 /// One of a child's stdio fds, as the shell requests it. File `mode`: 0 = read
@@ -1174,7 +1174,7 @@ fn k_spawn(
     }
     // Working directory for the child (its preopen / relative-path base).
     let cwd = r.string().unwrap_or_else(|| "/".to_string());
-    // Capability delegation (M3): the parent may grant the child Gpu/Input, but
+    // Capability delegation (desktop compositor): the parent may grant the child Gpu/Input, but
     // ONLY caps it holds itself (a process cannot hand out authority it lacks).
     // Older callers omit these bytes → default 0 (no grant).
     let want_gpu = r.u8().unwrap_or(0) != 0;
@@ -1192,12 +1192,12 @@ fn k_spawn(
     if want_input && procs.has_cap(pid, &Capability::Input) {
         caps.grant(Capability::Input);
     }
-    // Signal delegation (M4-T5): the shell hands process-control authority to a
+    // Signal delegation (signals): the shell hands process-control authority to a
     // spawned `kill` so it can signal other processes — only if the shell holds it.
     if want_signal && procs.has_cap(pid, &Capability::Signal) {
         caps.grant(Capability::Signal);
     }
-    // Net delegation (M5-T6): the shell hands brokered networking to a spawned
+    // Net delegation (network broker): the shell hands brokered networking to a spawned
     // `fetch` — only if the shell holds Net.
     if want_net && procs.has_cap(pid, &Capability::Net) {
         caps.grant(Capability::Net);
@@ -1299,7 +1299,7 @@ const MAX_SURFACE_DIM: u32 = 4096;
 const MAX_SURFACES_PER_PID: usize = 64;
 
 /// `wasmos_kernel.win_surface(width, height)` — allocate a compositor surface
-/// (M3, FR-23). Requires the Gpu capability (default-deny, FR-31). The kernel is
+/// (desktop compositor, FR-23). Requires the Gpu capability (default-deny, FR-31). The kernel is
 /// the surface-id authority; the owning process worker allocates the framebuffer
 /// SAB and the compositor blits it (pixels never enter the kernel ring). Request:
 /// `[0x23][w u32][h u32]`. Reply: `[errno u16][surface_id u32]`.
@@ -1326,7 +1326,7 @@ fn win_surface(procs: &mut ProcTable, pid: u32, r: &mut Reader) -> SyscallOutcom
 const INPUT_EVENT_SIZE: usize = 12;
 
 /// `wasmos_kernel.win_read_input(max)` — drain queued keyboard/mouse events for
-/// this process (M3-T3, FR-25). Requires the Input capability (default-deny). If
+/// this process (brokered input, FR-25). Requires the Input capability (default-deny). If
 /// nothing is queued, PARKS on `WaitReason::Input`; a later `deliver_input`
 /// re-drives it. Reply: `[errno u16][len u32][event bytes]` (whole records).
 fn win_read_input(procs: &mut ProcTable, pid: u32, r: &mut Reader) -> SyscallOutcome {
@@ -1733,7 +1733,7 @@ mod tests {
         assert_eq!(read_u16(&resp), errno::NOSYS);
     }
 
-    // --- M2: stdin park/resume ---
+    // --- shell and userland: stdin park/resume ---
 
     #[test]
     fn fd_read_on_empty_open_stdin_parks() {
@@ -1758,7 +1758,7 @@ mod tests {
         assert_eq!(resp_bytes(&drive(&mut vfs, &mut procs, &mut pipes, pid, &req_fd_read(0, 10))), b"");
     }
 
-    // --- M2: kernel pipes (park/resume) ---
+    // --- shell and userland: kernel pipes (park/resume) ---
 
     /// (vfs, procs, pipes, reader_pid, writer_pid, pipe_id, read_fd, write_fd)
     fn pipe_setup() -> (Vfs, ProcTable, PipeTable, u32, u32, u32, u32, u32) {
@@ -1826,7 +1826,7 @@ mod tests {
         assert_eq!(out.wakeups, vec![writer]);
     }
 
-    // --- M2: crash containment (FR-34) — exit releases pipe ends ---
+    // --- shell and userland: crash containment (FR-34) — exit releases pipe ends ---
 
     #[test]
     fn proc_exit_of_writer_gives_parked_reader_eof() {
@@ -1884,7 +1884,7 @@ mod tests {
         assert_eq!(resp_bytes(&resp), b"");
     }
 
-    // --- M2: wasmos_kernel extension (spawn / pipe / wait) ---
+    // --- shell and userland: wasmos_kernel extension (spawn / pipe / wait) ---
 
     /// A caller process holding the Spawn capability (a shell).
     fn shell_setup() -> (Vfs, ProcTable, PipeTable, u32) {
@@ -2106,7 +2106,7 @@ mod tests {
         assert_eq!(read_u16(&again), errno::NOENT);
     }
 
-    // --- M3: compositor surfaces (win_surface) ---
+    // --- desktop compositor: compositor surfaces (win_surface) ---
 
     fn gpu_proc(procs: &mut ProcTable) -> u32 {
         let mut caps = CapabilitySet::default();
@@ -2159,7 +2159,7 @@ mod tests {
         assert!(procs.free_surfaces_of(pid).is_empty());
     }
 
-    // --- M3: brokered input (win_read_input / deliver_input, FR-25) ---
+    // --- desktop compositor: brokered input (win_read_input / deliver_input, FR-25) ---
 
     fn input_proc(procs: &mut ProcTable) -> u32 {
         let mut caps = CapabilitySet::default();
@@ -2197,7 +2197,7 @@ mod tests {
         assert_eq!(resp_bytes(&resp), &ev);
     }
 
-    // --- M3: capability delegation on spawn (file manager launches apps) ---
+    // --- desktop compositor: capability delegation on spawn (file manager launches apps) ---
 
     fn req_kspawn_grant(path: &str, argv: &[&str], gpu: bool, input: bool) -> Vec<u8> {
         let mut w = Writer::new();

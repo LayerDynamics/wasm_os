@@ -4,7 +4,7 @@ edition.workspace = true
 version.workspace = true
 license.workspace = true
 
-# Paint (L3 / M3, FR-18-adjacent graphical app): a real wasm32-wasip1 canvas app.
+# Paint (L3 / desktop compositor, FR-18-adjacent graphical app): a real wasm32-wasip1 canvas app.
 # Draws with the mouse into a wasmgfx framebuffer, has a colour palette + clear,
 # and saves/loads the canvas to the VFS (/home/paint.img).
 [[bin]]

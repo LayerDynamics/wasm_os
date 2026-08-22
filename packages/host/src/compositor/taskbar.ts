@@ -1,6 +1,6 @@
 /**
- * Taskbar (L3 / M3) — launcher button, per-window buttons, and a live clock
- * (FR-21). The launcher menu is populated in M3-T9 (app registry); here it is a
+ * Taskbar — launcher button, per-window buttons, and a live clock
+ * (FR-21). The launcher menu is populated in launcher and window lifecycle (app registry); here it is a
  * real, clickable button that the compositor owns. Window buttons focus/restore
  * their window; the clock updates every second.
  */
@@ -62,7 +62,7 @@ export class Taskbar {
     this.el.appendChild(this.clock);
   }
 
-  /** Populate the launcher menu with apps (M3-T9). */
+  /** Populate the launcher menu with apps (launcher and window lifecycle). */
   setApps(apps: Array<{ label: string; launch: () => void }>): void {
     this.menu.replaceChildren();
     for (const app of apps) {

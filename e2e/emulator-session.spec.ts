@@ -1,6 +1,6 @@
 import { test, expect, type Page } from "@playwright/test";
 
-// M5-T9 — Linux in the desktop session (FR-35 tie-in). The emulator is registered
+// Linux session restore — Linux in the desktop session (FR-35 tie-in). The emulator is registered
 // with the SessionManager, so a running Linux window is recorded in the session
 // manifest and re-opened after a reload — and the 9p shared folder (/home/shared)
 // persists via OPFS. Per the milestone scope this is a session/layout restore (the

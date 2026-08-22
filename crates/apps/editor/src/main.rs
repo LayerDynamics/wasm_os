@@ -1,4 +1,4 @@
-//! Text editor (L3 / M3) — a real `wasm32-wasip1` canvas app.
+//! Text editor (L3 / desktop compositor) — a real `wasm32-wasip1` canvas app.
 //!
 //! Opens the file named in `argv[1]` (or `/home/untitled.txt` when launched
 //! directly), renders it with the wasmgfx font, edits via brokered keyboard

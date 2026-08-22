@@ -4,7 +4,7 @@ edition.workspace = true
 version.workspace = true
 license.workspace = true
 
-# Welcome — a guided intro to WASM_OS (L3). A wasm32-wasip1 canvas app that renders
+# Welcome — a guided intro to WASM_OS. A wasm32-wasip1 canvas app that renders
 # a few readable slides explaining what WASM_OS is, how it works, and how to use it.
 # Navigate with ← / → (or Space/Enter), Home/End, or by clicking the left/right half.
 [[bin]]

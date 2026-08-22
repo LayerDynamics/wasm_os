@@ -1,5 +1,5 @@
 /**
- * Window (L3 / M3) — one framed surface with chrome.
+ * Window (L3 / desktop compositor) — one framed surface with chrome.
  *
  * Owns its DOM: a titlebar (drag to move, double-click to maximize, min/max/close
  * buttons) and a content host, plus 8 resize handles. Move/resize use Pointer
@@ -128,17 +128,17 @@ export class Win {
     this.root.style.zIndex = String(z);
   }
 
-  /** Content box size in CSS pixels (used by canvas surfaces in M3-T2). */
+  /** Content box size in CSS pixels (used by canvas surfaces in canvas surfaces). */
   contentSize(): { w: number; h: number } {
     return { w: this.geom.w, h: this.geom.h - TITLEBAR_H };
   }
 
-  /** Current window geometry in CSS pixels (M4-T9 session persistence). */
+  /** Current window geometry in CSS pixels (session restore session persistence). */
   geometry(): { x: number; y: number; w: number; h: number } {
     return { ...this.geom };
   }
 
-  /** Restore a saved geometry (M4-T9). Clamped to the minimum window size. */
+  /** Restore a saved geometry (session restore). Clamped to the minimum window size. */
   setGeometry(g: { x: number; y: number; w: number; h: number }): void {
     this.geom = { x: g.x, y: g.y, w: Math.max(MIN_W, g.w), h: Math.max(MIN_H, g.h) };
     this.applyGeom();

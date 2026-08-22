@@ -1,4 +1,4 @@
-//! Kernel pipes (M2) — bounded byte buffers connecting one process's output to
+//! Kernel pipes (shell and userland) — bounded byte buffers connecting one process's output to
 //! another's input. Blocking semantics (empty read, full write) are realized
 //! through the park/resume machinery (see `WaitReason::PipeRead/PipeWrite`): the
 //! syscall router parks the guest and a later read/write/close returns the

@@ -1,5 +1,5 @@
 /**
- * Hand-written `wasi_snapshot_preview1` shim for guest processes (M1).
+ * Hand-written `wasi_snapshot_preview1` shim for guest processes (WASI process runtime).
  *
  * This is the ONLY place guest linear memory is touched. Each WASI call reads
  * its pointer/length arguments out of the guest's memory, marshals the resolved
@@ -346,7 +346,7 @@ export function makeWasiImports(getMemory: () => WebAssembly.Memory, ring: RingC
 
     args_get(argvPtr: number, bufPtr: number): number {
       // The kernel returns argv as a NUL-terminated, NUL-joined blob; lay out the
-      // bytes at `bufPtr` and a pointer to each arg at `argvPtr[i]` (M2).
+      // bytes at `bufPtr` and a pointer to each arg at `argvPtr[i]` (shell and userland).
       const resp = new Reader(ring.call(new Writer().u8(OP.ARGS_GET).build()));
       const errno = resp.u16();
       const blob = resp.bytes();
@@ -488,7 +488,7 @@ const OP_WIN_SURFACE = 0x23;
 const OP_WIN_PRESENT = 0x24;
 
 /**
- * Host hooks for the M3 compositor surface path. Implemented by the process
+ * Host hooks for the desktop compositor surface path. Implemented by the process
  * worker: it allocates the per-surface framebuffer SAB and relays surface/present
  * notifications up to the compositor (pixels never traverse the kernel ring).
  */

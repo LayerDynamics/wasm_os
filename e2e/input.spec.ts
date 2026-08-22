@@ -1,6 +1,6 @@
 import { test, expect, type Page, type Locator } from "@playwright/test";
 
-// M3-T3 — brokered input (FR-25). The focused canvas window's mouse/keyboard is
+// brokered input — brokered input (FR-25). The focused canvas window's mouse/keyboard is
 // delivered to its owning process (win_read_input, Input-gated). gfxspike draws a
 // white marker that follows the pointer, so moving the mouse over the canvas
 // visibly CHANGES the presented framebuffer — proving the full loop: real pointer

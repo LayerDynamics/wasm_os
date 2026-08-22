@@ -1,5 +1,5 @@
 /**
- * Theme + wallpaper (L3 / M3, FR-26). A taskbar settings menu picks a desktop
+ * Theme + wallpaper (L3 / desktop compositor, FR-26). A taskbar settings menu picks a desktop
  * wallpaper and a light/dark theme; the choice is persisted to `/home/.desktop.json`
  * via the VFS and reapplied on boot, so it survives a reload (FR-30 persistence).
  */

@@ -1,5 +1,5 @@
 /**
- * SessionManager (L3 / M4-T9) — desktop session snapshot/restore (FR-35).
+ * SessionManager — desktop session snapshot/restore (FR-35).
  *
  * Records the set of open *app* windows (which app, where, what size) to
  * `/home/.session.json` and re-opens them on the next boot, so a reload brings

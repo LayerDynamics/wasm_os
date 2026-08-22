@@ -1,6 +1,6 @@
 import { test, expect, type Page } from "@playwright/test";
 
-// M5-T2 — the emulator as a privileged (Native, non-ring) process. It is launched
+// privileged Linux process — the emulator as a privileged (Native, non-ring) process. It is launched
 // through the kernel (a real PID + capability set), boots Linux in its dedicated
 // worker, shows up in proc_list/top, and is killable — all while a normal
 // wasm32-wasi process keeps running and stays isolated (FR-6/FR-27/FR-28).

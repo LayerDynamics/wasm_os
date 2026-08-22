@@ -1,4 +1,4 @@
-//! System Monitor (L3 / M4-T8, FR-33 + FR-8) — a real `wasm32-wasip1` process.
+//! System Monitor (L3 / system monitor, FR-33 + FR-8) — a real `wasm32-wasip1` process.
 //!
 //! Draws the live process table to a canvas surface (read from the `proc_list`
 //! syscall) and acts on the selected process from brokered keyboard input:

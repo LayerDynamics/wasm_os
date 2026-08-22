@@ -1,6 +1,6 @@
 import { test, expect, type Page } from "@playwright/test";
 
-// M3-T10 — desktop theming + wallpaper (FR-26), persisted to /home and reapplied
+// desktop theming — desktop theming + wallpaper (FR-26), persisted to /home and reapplied
 // on boot (FR-30). Pick a wallpaper → the desktop changes and /home/.desktop.json
 // is written → reload → the choice is restored from the VFS.
 

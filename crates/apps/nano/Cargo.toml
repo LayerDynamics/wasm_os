@@ -4,7 +4,7 @@ edition.workspace = true
 version.workspace = true
 license.workspace = true
 
-# nano — a real in-terminal text editor (L3). A wasm32-wasip1 process that takes
+# nano — a real in-terminal text editor. A wasm32-wasip1 process that takes
 # over the interactive terminal in raw mode (`tty_set_raw`), reads keystrokes one
 # at a time from stdin, renders the buffer + status bar with ANSI escapes to
 # stdout, edits a line buffer, and saves to the filesystem (Ctrl-O) — the same

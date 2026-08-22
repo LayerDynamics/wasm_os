@@ -1,6 +1,6 @@
 import { test, expect, type Page } from "@playwright/test";
 
-// M3-T2 — the compositor-surface spine (FR-23 canvas/WebGL framebuffer surfaces).
+// canvas surfaces — the compositor-surface spine (FR-23 canvas/WebGL framebuffer surfaces).
 // A WASI process requests a surface (win_surface, Gpu-gated), draws into a shared
 // framebuffer, and presents it (win_present); the compositor blits it to a real
 // <canvas> in a window. The whole path is real — worker → ring → kernel →

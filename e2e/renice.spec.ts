@@ -1,6 +1,6 @@
 import { test, expect, type Page } from "@playwright/test";
 
-// M4-T6 — runtime priority (FR-8). The `renice` coreutil changes a running
+// runtime priority — runtime priority (FR-8). The `renice` coreutil changes a running
 // process's scheduling priority live; the kernel re-buckets it in the run queue
 // and surfaces the new value through proc_list. The shell delegates its Signal
 // capability to `renice` (it reprioritises another process), mirroring `kill`.

@@ -1,4 +1,4 @@
-//! Lisp — a flagship code-runtime app (L3): an interactive REPL for a complete
+//! Lisp — a code-runtime app: an interactive REPL for a complete
 //! Scheme-like interpreter (`interp.rs`), running as a real `wasm32-wasip1` canvas
 //! process. You type expressions at the `λ` prompt; the interpreter evaluates them
 //! in a persistent environment (so `define`s accumulate across a session) and the

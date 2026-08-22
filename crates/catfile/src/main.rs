@@ -1,6 +1,6 @@
-//! M1 FS guest: open a fixed path, read it through `fd_read`, and write the
+//! WASI process runtime FS guest: open a fixed path, read it through `fd_read`, and write the
 //! bytes to stdout. Exercises `path_open` → `fd_read` → `fd_close` against the
-//! kernel-backed VFS (M1 exit criterion 4). Uses an explicit read loop so it
+//! kernel-backed VFS (WASI process runtime exit criterion 4). Uses an explicit read loop so it
 //! does not depend on `fd_filestat_get` for sizing.
 
 use std::fs::File;

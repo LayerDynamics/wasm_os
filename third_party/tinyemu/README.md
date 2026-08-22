@@ -1,6 +1,6 @@
-# Vendored TinyEMU (M5 emulator core — RISC-V, permissive)
+# Vendored TinyEMU (RISC-V emulator core)
 
-WASM_OS L5 boots a real Linux by hosting a CPU emulator with a WASM core as a
+WASM_OS boots a real Linux guest by hosting a CPU emulator with a WASM core as a
 single privileged process (FR-27/FR-28). This is the **permissively-licensed**
 core that replaced the GPLv2 `third_party/v86/`: **[TinyEMU](https://bellard.org/tinyemu/)**,
 a riscv64 emulator by Fabrice Bellard, built from source to WASM.
@@ -34,7 +34,7 @@ server deploy only needs the LFS objects, not emscripten/Docker:
 scripts/setup-vendored-assets.sh   # = git lfs install && git lfs pull + a sanity check
 ```
 
-This is the same model the previous v86 core already used.
+The generated files are loaded by `packages/host/src/worker/emulator-worker.ts`.
 
 ## Regenerating the core from source (maintainer / CI only)
 

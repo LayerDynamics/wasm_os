@@ -5,7 +5,7 @@
 //! processes run in FIFO/round-robin order (the run loop re-enqueues a process
 //! after its quantum, sending it to the back of its level's queue).
 //!
-//! At M0 there is no preemption timer and no WASM execution (that is the M1
+//! At kernel/VFS bootstrap there is no preemption timer and no WASM execution (that is the WASI process runtime
 //! runtime); this is the scheduling *decision* machinery — ready queues, the
 //! pick policy, blocking, and time accounting — exercised live by `boot()` and
 //! by unit tests with synthetic PIDs.

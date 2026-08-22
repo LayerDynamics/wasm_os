@@ -10,7 +10,7 @@ export default defineConfig({
   // fails all attempts. Locally, retries stay off so flakes surface loudly.
   retries: process.env.CI ? 2 : 0,
   use: { baseURL: "http://localhost:8080", ...devices["Desktop Chrome"] },
-  // Two lanes (M5-T10): the "fast" suite is the M0–M4 + light M5 checks that run in
+  // Two lanes (E2E lane split): the "fast" suite is the kernel, process, shell, desktop, and IPC + light Linux guest integration checks that run in
   // seconds; the "slow" suite boots a real Linux in the TinyEMU RISC-V emulator (multi-second,
   // multi-MB) — run separately so a slow boot can never flake the fast suite.
   projects: [

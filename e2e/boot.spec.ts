@@ -39,7 +39,7 @@ test("boots to ready under 1.5s and reports a tier", async ({ page }) => {
   await expect(page.locator("#status")).toContainText("ready in");
 
   // FR-2/FR-3 live through the real WASM boundary: boot registers the `init`
-  // process and the scheduler runs it; M2 also spawns the userland `sh`.
+  // process and the scheduler runs it; shell and userland also spawns the userland `sh`.
   const procs = await page.evaluate(() =>
     (window as unknown as { __wasmos: { control: { listProcs(): Promise<{ pid: number; name: string; state: string }[]> } } })
       .__wasmos.control.listProcs(),

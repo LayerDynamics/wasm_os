@@ -46,7 +46,7 @@ Railway auto-detects the root `Dockerfile`; `$PORT` is injected automatically.
 ```sh
 docker build -t wasmos .
 docker run --rm -p 8080:8080 -e PORT=8080 wasmos
-# open http://localhost:8080  (cross-origin isolated; the OS + riscv64 emulator boot)
+# open http://localhost:8080  (cross-origin isolated; the OS + RISC-V guest boot)
 ```
 
 ## Notes

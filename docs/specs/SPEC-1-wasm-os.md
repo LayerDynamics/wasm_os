@@ -164,7 +164,7 @@ Requirements are grouped by layer and traced to architecture (§3) and milestone
 | Metric | Target [PROPOSED] | Measurement |
 |--------|--------|-------------|
 | Cold boot to kernel-ready | < 1500 ms on mid-tier laptop, broadband | `performance.now()` from script start to kernel `ready` event |
-| Boot to interactive terminal (M2) | < 3000 ms cold, < 1000 ms warm (cached) | First shell prompt paint, instrumented |
+| Boot to interactive terminal (shell and userland) | < 3000 ms cold, < 1000 ms warm (cached) | First shell prompt paint, instrumented |
 | Process spawn latency (warm module) | p95 < 25 ms | Time from `spawn()` to process `running`, 1000-sample histogram |
 | Syscall overhead (FS read, SAB tier) | p95 < 0.5 ms added vs. raw host op | Microbenchmark harness in `tools/` |
 | Concurrent processes before scheduler thrash | ≥ 32 sustained at < 50% main-thread budget | Load harness spawning N spinners |
@@ -449,7 +449,7 @@ The `wit/` tree is authoritative. No component talks to another via hand-written
                    ────────────── binder check (CI drift gate) ──────────────
 ```
 
-This component is owned by **Build & Tooling** (§3.2) and is a hard dependency of M1 (the first process needs generated guest + kernel bindings to exist).
+This component is owned by **Build & Tooling** (§3.2) and is a hard dependency of WASI process runtime (the first process needs generated guest + kernel bindings to exist).
 
 ### 3.5 Data Flow
 
@@ -538,37 +538,37 @@ This component is owned by **Build & Tooling** (§3.2) and is a hard dependency 
 
 Phases map 1:1 to layers and to milestones (§5). **V1 = end of Phase 2 (the interactive terminal).** The remaining requested marquee moments are delivered in Phases 3–5.
 
-#### Phase 0 — Kernel & VFS skeleton (M0)
+#### Phase 0 — Kernel & VFS skeleton (kernel/VFS bootstrap)
 
 - **Goal:** A booting microkernel with a process table, scheduler, syscall router stub, and a working VFS (tmpfs + OPFS + IndexedDB), but no real processes yet.
 - **Scope:** FR-1, FR-2, FR-3 (scheduler scaffold), FR-30, FR-32; Tier-detection in the loader.
 - **Exit criteria:** Page boots to `ready` < 1.5 s; a host test can create/read/list files across all three VFS backends and they persist across reload.
 
-#### Phase 1 — First WASI process (M1)
+#### Phase 1 — First WASI process (WASI process runtime)
 
 - **Goal:** Run one real `wasm32-wasi` Rust binary as a process under the scheduler, via the SAB syscall ring.
 - **Scope:** FR-4, FR-5, FR-9, FR-6 (isolation), Tier-A transport; minimal `proc_exit`/`fd_write` to a captured stdout.
 - **Exit criteria:** `hello.wasm` (Rust) spawns, writes to stdout, exits with code 0; a second concurrent process proves isolation (cannot read peer memory).
 
-#### Phase 2 — Userland & terminal  →  **V1 / Marquee "terminal runs real WASI binaries"** (M2)
+#### Phase 2 — Userland & terminal  →  **V1 / Marquee "terminal runs real WASI binaries"** (shell and userland)
 
 - **Goal:** A real interactive shell running WASI coreutils with pipes and redirection.
 - **Scope:** FR-9..12, FR-14, FR-15..18, FR-34; coreutils built from ≥2 languages (Rust + C/Zig) to prove polyglot.
 - **Exit criteria:** From the terminal, a user runs `ls`, `cat`, a pipeline `cat f | grep x`, and a redirect `... > out`, with correct output and exit codes; a deliberately crashing binary terminates without taking down the shell.
 
-#### Phase 3 — Compositor & desktop  →  **Marquee "boot → desktop → run apps"** (M3)
+#### Phase 3 — Compositor & desktop  →  **Marquee "boot → desktop → run apps"** (desktop compositor)
 
 - **Goal:** A windowed desktop where multiple WASM apps run in windows with a file manager.
 - **Scope:** FR-21..26, FR-23 (DOM + canvas surfaces), FR-25.
 - **Exit criteria:** Boot to desktop; open file manager + terminal + one graphical app concurrently in windows; move/resize/focus work; launch a `.wasm` from the file manager.
 
-#### Phase 4 — Multi-process, IPC, persistence  →  **Marquee "it's really an OS"** (M4)
+#### Phase 4 — Multi-process, IPC, persistence  →  **Marquee "it's really an OS"** (process control and IPC)
 
 - **Goal:** Many processes scheduled concurrently, communicating via IPC, with state surviving reload; live `ps`/`top`.
 - **Scope:** FR-3 at scale (≥32), IPC channels/shm, FR-33, FR-35 (snapshot, COULD), FR-7 signals.
 - **Exit criteria:** 32 concurrent processes sustained within main-thread budget; two processes exchange messages via a channel; `/home` state + open session survive reload (snapshot if implemented); `top` shows live scheduler state.
 
-#### Phase 5 — Emulator as a privileged process  →  **Marquee "Linux in a tab"** (M5)
+#### Phase 5 — Emulator as a privileged process  →  **Marquee "Linux in a tab"** (Linux guest integration)
 
 - **Goal:** Boot a real Linux/BusyBox in a window via a WASM emulator process without breaking isolation or the scheduler.
 - **Scope:** FR-27, FR-28, FR-29 (COULD).
@@ -587,7 +587,7 @@ Phases map 1:1 to layers and to milestones (§5). **V1 = end of Phase 2 (the int
 ### 4.3 Rollout Strategy
 
 - **Tier feature-flagging:** ship Tier A (SAB) and Tier B (cooperative/Asyncify/JSPI) behind runtime detection; allow forcing a tier via URL param for testing.
-- **Per-layer enablement:** layers ship behind capability flags so M0–M2 can be released and dogfooded before M3+ exists.
+- **Per-layer enablement:** the kernel/VFS bootstrap, WASI process runtime, and shell and userland can be released and dogfooded before the desktop compositor is complete.
 - **Static immutable deploys** with hashed assets; service-worker cache rollover; rollback = re-point to previous build.
 - **Canary:** preview deploys per branch; a "dev HUD" build exposes observability for internal testing before promoting to prod.
 
@@ -607,33 +607,33 @@ Before a milestone is "production"/publicly demoable:
 
 | Milestone | Goal | Exit Criteria | Target Date | Owner |
 |-----------|------|---------------|-------------|-------|
-| **M0** Kernel & VFS skeleton | Boot to `ready`; tri-backend VFS | Boot <1.5s; files persist across reload on OPFS+IDB+tmpfs | TBD (seq. by dep) | TBD |
-| **M1** First WASI process | One Rust WASI binary runs under scheduler | `hello.wasm` runs/exits 0; 2nd proc proves memory isolation | TBD | TBD |
-| **M2 — V1** Userland & terminal | Shell + polyglot coreutils + pipes | `ls`, `cat f\|grep x`, `>` redirect work; crash contained | TBD | TBD |
-| **M3** Compositor & desktop | Windowed desktop + file manager | 3 apps in windows; move/resize/focus; launch .wasm from FM | TBD | TBD |
-| **M4** Multi-proc + IPC + persist | 32 procs, channels, live `top`, reload survives | 32 concurrent; channel message exchange; state survives reload | TBD | TBD |
-| **M5** Emulator process | Boot real Linux in a window | Linux boots to shell; peers isolated & running; killable | TBD | TBD |
+| **kernel/VFS bootstrap** Kernel & VFS skeleton | Boot to `ready`; tri-backend VFS | Boot <1.5s; files persist across reload on OPFS+IDB+tmpfs | TBD (seq. by dep) | TBD |
+| **WASI process runtime** First WASI process | One Rust WASI binary runs under scheduler | `hello.wasm` runs/exits 0; 2nd proc proves memory isolation | TBD | TBD |
+| **shell and userland — V1** Userland & terminal | Shell + polyglot coreutils + pipes | `ls`, `cat f\|grep x`, `>` redirect work; crash contained | TBD | TBD |
+| **desktop compositor** Compositor & desktop | Windowed desktop + file manager | 3 apps in windows; move/resize/focus; launch .wasm from FM | TBD | TBD |
+| **process control and IPC** Multi-proc + IPC + persist | 32 procs, channels, live `top`, reload survives | 32 concurrent; channel message exchange; state survives reload | TBD | TBD |
+| **Linux guest integration** Emulator process | Boot real Linux in a window | Linux boots to shell; peers isolated & running; killable | TBD | TBD |
 
-**Marquee-moment mapping:** "terminal runs WASI binaries" → **M2 (=V1)**; "boot→desktop→apps" → M3; "really an OS / multi-proc+IPC+persist" → M4; "Linux in a tab" → M5. All four requested moments are delivered — sequenced, not simultaneous.
+**Marquee-moment mapping:** "terminal runs WASI binaries" → **shell and userland (=V1)**; "boot→desktop→apps" → desktop compositor; "really an OS / multi-proc+IPC+persist" → process control and IPC; "Linux in a tab" → Linux guest integration. All four requested moments are delivered — sequenced, not simultaneous.
 
 ### Dependency Graph
 
 ```text
-M0 (kernel + VFS)
+kernel/VFS bootstrap (kernel + VFS)
    │
    ▼
-M1 (first WASI process)
+WASI process runtime (first WASI process)
    │
    ▼
-M2 (userland + terminal)  ◄── V1 release line
+shell and userland (userland + terminal)  ◄── V1 release line
    │
-   ├──────────────► M3 (compositor + desktop)
+   ├──────────────► desktop compositor (compositor + desktop)
    │                      │
    ▼                      ▼
-M4 (multi-proc + IPC + persistence)   ──► (needs M3 surfaces for windowed top/apps)
+process control and IPC (multi-proc + IPC + persistence)   ──► (needs desktop compositor surfaces for windowed top/apps)
    │
    ▼
-M5 (emulator as privileged process)   ──► (needs M3 canvas surface + M4 scheduling at scale)
+Linux guest integration (emulator as privileged process)   ──► (needs desktop compositor canvas surface + process control and IPC scheduling at scale)
 ```
 
 ---
@@ -644,12 +644,12 @@ M5 (emulator as privileged process)   ──► (needs M3 canvas surface + M4 sc
 
 | Metric | Target [PROPOSED] | Measurement Method |
 |--------|--------|--------------------|
-| V1 (M2) reachable in target browsers | Boot→terminal works in latest Chrome + Firefox (Tier A) and Safari (Tier B) | Playwright matrix run |
+| V1 (shell and userland) reachable in target browsers | Boot→terminal works in latest Chrome + Firefox (Tier A) and Safari (Tier B) | Playwright matrix run |
 | Polyglot proof | ≥ 2 source languages produce running coreutils | CI builds Rust + C/Zig binaries, both pass shell integration tests |
 | Process isolation | 100% of cross-process memory-read attempts fail | Security suite |
 | Boot performance | Meets §2.2 cold/warm targets on reference machine | Bench harness in CI |
 | Crash containment | 0 kernel crashes from process traps over fault-injection suite | Fault-injection CI gate |
-| "It's really an OS" (M4) | 32 concurrent procs + IPC + reload-survival demoable | E2E scenario recording |
+| "It's really an OS" (process control and IPC) | 32 concurrent procs + IPC + reload-survival demoable | E2E scenario recording |
 
 ### 6.2 Ongoing Monitoring
 
@@ -675,7 +675,7 @@ M5 (emulator as privileged process)   ──► (needs M3 canvas surface + M4 sc
 |----|------|--------|-----------|------------|-------------|
 | R-1 | **Cooperative (Tier B) fallback is not transparent** — no SAB means async syscalls via Asyncify/JSPI, imposing guest build requirements | High | High | Treat Tier B as a distinct, documented compatibility tier; ship Asyncify-instrumented guest builds; detect & message clearly; target JSPI as it matures | Restrict V1 "full" experience to Tier A browsers; Tier B = reduced feature set |
 | R-2 | **Polyglot fidelity uneven** — AssemblyScript/WAT WASI support is thinner than Rust/C/Zig | Medium | High | Anchor the polyglot *proof* on Rust + C/Zig (FR-14); treat AS/WAT as SHOULD/COULD with documented ABI shims | Demote AS/WAT to "supported with caveats"; keep the ABI-level claim, scope the practical claim |
-| R-3 | **Scope is enormous (5 layers).** Risk of half-finished layers and a non-shippable whole | High | High | Each layer is an independently demoable milestone with hard exit criteria; **V1 is defined as M2**, not "everything" | Ship at M2/M3 as legitimate releases; M4/M5 are stretch |
+| R-3 | **Scope is enormous (5 layers).** Risk of half-finished layers and a non-shippable whole | High | High | Each layer is an independently demoable milestone with hard exit criteria; **V1 is defined as shell and userland**, not "everything" | Ship at shell and userland/desktop compositor as legitimate releases; process control and IPC/Linux guest integration are stretch |
 | R-4 | **Cross-origin isolation tax** — COOP/COEP (for SAB) breaks easy embedding of third-party content & complicates emulator image fetch | Medium | Medium | Serve all assets CORP-compliant or proxied; document hosting header requirement as a hard constraint | Provide a same-origin asset bundle; proxy external emulator images |
 | R-5 | **OPFS variance / sync-handle limits** across browsers (esp. Safari) | Medium | Medium | Layered VFS with IndexedDB fallback; abstract backend behind one interface; capability-detect at boot | Run Safari on IDB-only `/home` with a perf caveat |
 | R-6 | **Emulator process undermines isolation/scheduling assumptions** (wants to run flat-out, large memory) | Medium | Medium | Special-cased privileged scheduling (FR-28) in a dedicated worker; still capability-bounded; killable | Cap emulator memory/CPU budget; make it an explicitly opt-in heavy app |
@@ -688,13 +688,13 @@ M5 (emulator as privileged process)   ──► (needs M3 canvas surface + M4 sc
 
 | # | Question | Owner | Due Date |
 |---|----------|-------|----------|
-| OQ-1 | WASI baseline: confirm **Preview 1 as process ABI + Preview 2/Component Model as capability layer** (Assumption 8). Or go p2-first and accept narrower language support? | Ryan O'Boyle | Before M1 |
-| OQ-2 | Networking model for processes: brokered `fetch`/WS/WebTransport capability only (Assumption 9), or invest in a WASI-sockets shim? | Ryan O'Boyle | Before M3 |
-| OQ-3 | Target browser matrix: confirm Chrome+Firefox (Tier A) + Safari (Tier B) (Assumption 10). Any mobile target? | Ryan O'Boyle | Before M2 |
-| OQ-4 | Confirm/replace the **[PROPOSED]** NFR numeric targets in §2.2 (boot, spawn p95, syscall overhead, concurrency, fps) with owned values | Ryan O'Boyle | Before M2 exit review |
-| OQ-5 | Is the optional app-registry / remote-sync server in scope at all, or strictly post-V1? (Affects FR-20, FR-35, compliance) | Ryan O'Boyle | Before M4 |
-| OQ-6 | Which emulator core for L4 (v86-class x86 vs a RISC-V core) and which Linux/initrd image? Licensing of bundled image? | Ryan O'Boyle | Before M5 |
-| OQ-7 | Scheduler policy specifics: confirm priority round-robin + time accounting; is any determinism guarantee required for the research goal? | Ryan O'Boyle | Before M1 |
+| OQ-1 | WASI baseline: confirm **Preview 1 as process ABI + Preview 2/Component Model as capability layer** (Assumption 8). Or go p2-first and accept narrower language support? | Ryan O'Boyle | Before WASI process runtime |
+| OQ-2 | Networking model for processes: brokered `fetch`/WS/WebTransport capability only (Assumption 9), or invest in a WASI-sockets shim? | Ryan O'Boyle | Before desktop compositor |
+| OQ-3 | Target browser matrix: confirm Chrome+Firefox (Tier A) + Safari (Tier B) (Assumption 10). Any mobile target? | Ryan O'Boyle | Before shell and userland |
+| OQ-4 | Confirm/replace the **[PROPOSED]** NFR numeric targets in §2.2 (boot, spawn p95, syscall overhead, concurrency, fps) with owned values | Ryan O'Boyle | Before shell and userland exit review |
+| OQ-5 | Is the optional app-registry / remote-sync server in scope at all, or strictly post-V1? (Affects FR-20, FR-35, compliance) | Ryan O'Boyle | Before process control and IPC |
+| OQ-6 | Which emulator core for L4 (v86-class x86 vs a RISC-V core) and which Linux/initrd image? Licensing of bundled image? | Ryan O'Boyle | Before Linux guest integration |
+| OQ-7 | Scheduler policy specifics: confirm priority round-robin + time accounting; is any determinism guarantee required for the research goal? | Ryan O'Boyle | Before WASI process runtime |
 | OQ-8 | Timeline & ownership: solo vs. contributors; do milestones get target dates, or stay dependency-only? | Ryan O'Boyle | Open |
 
 ---
@@ -721,7 +721,7 @@ M5 (emulator as privileged process)   ──► (needs M3 canvas surface + M4 sc
 
 ### Appendix B — API Contracts (summary)
 
-See §3.4. Two surfaces: (1) **Kernel⇄Host control API** (TS) — `spawn/kill/wait/list/grant/revoke/mount/on`. (2) **Process⇄Kernel syscall surface** — WASI `wasi_snapshot_preview1` baseline + `wasmos_kernel` extension namespace (`spawn/chan_open/shm_map/win_surface/net_request`), with the WASI p2 `wasmos:kernel` world as the forward target. Full IDL/witx to be produced at M1 (tracked OQ-1).
+See §3.4. Two surfaces: (1) **Kernel⇄Host control API** (TS) — `spawn/kill/wait/list/grant/revoke/mount/on`. (2) **Process⇄Kernel syscall surface** — WASI `wasi_snapshot_preview1` baseline + `wasmos_kernel` extension namespace (`spawn/chan_open/shm_map/win_surface/net_request`), with the WASI p2 `wasmos:kernel` world as the forward target. Full IDL/witx to be produced at WASI process runtime (tracked OQ-1).
 
 ### Appendix C — Data Migration Plan
 
@@ -738,7 +738,7 @@ V1 has no server and no prior data, so there is no inbound migration. Forward-co
 | Capability system | Forged/escalated capabilities | Capabilities unforgeable kernel refs; grants only by authorized holder; immediate revoke; audited |
 | Emulator process | Heavy/hostile guest affects host OS | Privileged but still capability-bounded, memory/CPU-budgeted, killable (R-6) |
 
-STRIDE pass and per-broker review scheduled at M2 (terminal opens the first untrusted-binary surface).
+STRIDE pass and per-broker review scheduled at shell and userland (terminal opens the first untrusted-binary surface).
 
 ### Appendix E — Capacity Model
 
@@ -762,7 +762,7 @@ Running cost is ~$0 in compute: the OS executes entirely on the user's device fr
 | D-4 | **SAB+Atomics primary tier**, cooperative as constrained fallback | True multi-process behavior; fallback honestly scoped (R-1) | 2026-05-30 |
 | D-5 | **OPFS primary + IndexedDB fallback** layered VFS | Best perf where available, broad compatibility everywhere | 2026-05-30 |
 | D-6 | **Hybrid DOM + canvas** compositor surfaces | Serves both web-native apps and graphical/emulator framebuffers | 2026-05-30 |
-| D-7 | **V1 = M2 (terminal)**; other marquee moments → M3/M4/M5 | Makes "all of it" a sequenced deliverable, not a fantasy single release | 2026-05-30 |
+| D-7 | **V1 = shell and userland (terminal)**; other marquee moments → desktop compositor/process control and IPC/Linux guest integration | Makes "all of it" a sequenced deliverable, not a fantasy single release | 2026-05-30 |
 | D-8 | **WASI p1 ABI baseline + p2/components as capability layer** [PROPOSED] | Max language breadth now; capability typing as it matures (OQ-1) | 2026-05-30 |
 | D-9 | **Centralized Binder** — all bindings generated from one `wit/` source via `tools/binder`, transport-neutral ABI, CI drift gate (FR-36, §3.4.1) | Avoids the N-langs × M-interfaces × 2-transports hand-coding explosion and silent ABI drift in a polyglot OS | 2026-05-30 |
 
@@ -789,6 +789,6 @@ Running cost is ~$0 in compute: the OS executes entirely on the user's device fr
 - [x] Data model covers all entities referenced in requirements (Process, Capability, VNode, Descriptor, IPC, Shm, Audit)
 - [x] Security section addresses auth(=capabilities)/encryption(=origin isolation)/access control (§3.7, App D)
 - [x] ≥ 3 risks identified with mitigations (8 risks, R-1..R-8)
-- [x] Milestones have exit criteria (M0..M5)
+- [x] Milestones have exit criteria (kernel/VFS bootstrap..Linux guest integration)
 - [x] Success metrics are measurable (§6)
 - [x] Open questions have owners (OQ-1..OQ-8)

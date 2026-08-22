@@ -1,6 +1,6 @@
 import { test, expect, type Page } from "@playwright/test";
 
-// M4-T1 — process metrics. The kernel accounts a scheduler tick per serviced
+// process metrics — process metrics. The kernel accounts a scheduler tick per serviced
 // syscall (CPU activity) and stores each process's reported memory size; the
 // process table projection (listProcs / the guest proc_list) carries priority,
 // cpu_ticks, mem_bytes, and parent. This exercises the real stack: worker reports

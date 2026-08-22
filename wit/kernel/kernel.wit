@@ -1,0 +1,67 @@
+package wasmos:kernel@0.1.0;
+
+/// The guest syscall extension beyond WASI Preview 1. Calls travel over the
+/// SAB syscall ring; the Rust guest crate provides the core-module transport.
+interface process {
+  variant stdio {
+    terminal,
+    pipe-read(u32),
+    pipe-write(u32),
+    file(file-redirect),
+  }
+  record file-redirect {
+    path: string,
+    write: bool,
+  }
+
+  spawn: func(path: string, argv: list<string>, stdio: tuple<stdio, stdio, stdio>, cwd: string,
+             grant-gpu: bool, grant-input: bool, grant-signal: bool, grant-net: bool) -> result<u32, u16>;
+  pipe: func() -> result<tuple<u32, u32, u32>, u16>;
+  wait: func(pid: u32) -> result<s32, u16>;
+
+  record proc-info {
+    pid: u32,
+    name: string,
+    state: u8,
+    priority: u8,
+    cpu-ticks: u64,
+    mem-bytes: u32,
+    parent: u32,
+  }
+  proc-list: func() -> list<proc-info>;
+  set-priority: func(pid: u32, priority: u8) -> u16;
+  chan-open: func(name: string) -> result<tuple<u32, u8>, u16>;
+  chan-send: func(chan-id: u32, msg: list<u8>) -> u16;
+  chan-recv: func(chan-id: u32) -> result<list<u8>, u16>;
+  shm-create: func(size: u32) -> result<u32, u16>;
+  shm-map: func(shm-id: u32) -> u16;
+  shm-read: func(shm-id: u32, off: u32, len: u32) -> result<list<u8>, u16>;
+  shm-write: func(shm-id: u32, off: u32, data: list<u8>) -> u16;
+  shm-grant: func(shm-id: u32, target-pid: u32) -> u16;
+  kill: func(target-pid: u32, sig: u8) -> u16;
+  sig-wait: func() -> list<u8>;
+  net-request: func(url: string) -> result<list<u8>, u16>;
+  tty-set-raw: func(raw: bool) -> u16;
+}
+
+interface compositor {
+  record input-event {
+    kind: u8,
+    button: u8,
+    x: u16,
+    y: u16,
+    key: u32,
+    mods: u8,
+  }
+  win-surface: func(width: u32, height: u32) -> result<u32, u16>;
+  win-present: func(surface-id: u32, framebuffer: list<u8>);
+  win-read-input: func() -> result<list<input-event>, u16>;
+}
+
+world shell-guest {
+  import process;
+}
+
+world canvas-guest {
+  import compositor;
+}

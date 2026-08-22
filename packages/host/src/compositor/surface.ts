@@ -1,5 +1,5 @@
 /**
- * Surface manager (L3 / M3) — presents process-owned framebuffers.
+ * Surface manager (L3 / desktop compositor) — presents process-owned framebuffers.
  *
  * A process requests a surface (`win_surface`); the host process worker allocates
  * a `width*height*4` RGBA `SharedArrayBuffer` and the kworker relays it here. We
@@ -28,9 +28,9 @@ export class SurfaceManager {
 
   constructor(
     private compositor: Compositor,
-    /** Bind pointer input on a new canvas to its owning process (M3-T3). */
+    /** Bind pointer input on a new canvas to its owning process (brokered input). */
     private bindInput: (canvas: HTMLCanvasElement, ownerPid: number) => void = () => {},
-    /** Title for a process-owned window, by owning pid (overridden in M3-T9). */
+    /** Title for a process-owned window, by owning pid (overridden in launcher and window lifecycle). */
     private titleFor: (pid: number) => string = (pid) => `App (pid ${pid})`,
     /** Whether a process-owned window should open centered (e.g. the Welcome guide). */
     private centeredFor: (pid: number) => boolean = () => false,
@@ -62,7 +62,7 @@ export class SurfaceManager {
       dirty: false,
     });
     this.byWindow.set(win.id, info.surfaceId);
-    // Route this canvas's pointer input to the owning process (M3-T3, FR-25).
+    // Route this canvas's pointer input to the owning process (brokered input, FR-25).
     this.bindInput(canvas, info.pid);
   }
 
@@ -74,7 +74,7 @@ export class SurfaceManager {
     this.scheduleBlit();
   }
 
-  /** Drop the surface backing a closed window (M3-T9 owner reaping). */
+  /** Drop the surface backing a closed window (launcher and window lifecycle owner reaping). */
   closeByWindow(windowId: number): number | undefined {
     const surfaceId = this.byWindow.get(windowId);
     if (surfaceId === undefined) return undefined;
@@ -83,7 +83,7 @@ export class SurfaceManager {
     return surfaceId;
   }
 
-  /** The owning pid of a surface's window (M3-T3 routes input to it). */
+  /** The owning pid of a surface's window (brokered input routes input to it). */
   ownerOfWindow(windowId: number): number | undefined {
     const surfaceId = this.byWindow.get(windowId);
     if (surfaceId === undefined) return undefined;

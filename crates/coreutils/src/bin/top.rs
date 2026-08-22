@@ -1,4 +1,4 @@
-//! top — the busiest processes first (M4-T7, FR-33). Like `ps` it snapshots the
+//! top — the busiest processes first (process-table tools, FR-33). Like `ps` it snapshots the
 //! live table via the `wasmos_kernel` proc_list syscall, but it sorts by CPU
 //! activity (scheduler ticks) descending and prints a summary header — the
 //! distinguishing `top` view. One-shot (equivalent to `top -n 1`) so it does not

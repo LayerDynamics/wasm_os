@@ -1,6 +1,6 @@
 import { test, expect, type Page } from "@playwright/test";
 
-// M4-T5 — signals (FR-8/FR-34). Exercises the full userland signal path through
+// signals — signals (FR-8/FR-34). Exercises the full userland signal path through
 // the real shell: the `kill` builtin and the `/bin/kill` coreutil send SIGTERM
 // (catchable — the target's sig_wait observes it and shuts down gracefully) and
 // SIGKILL (uncatchable — the kernel forcefully reaps the worker). The sigdemo
