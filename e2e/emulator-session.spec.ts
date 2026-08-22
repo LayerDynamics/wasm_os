@@ -3,7 +3,7 @@ import { test, expect, type Page } from "@playwright/test";
 // Linux session restore — Linux in the desktop session (FR-35 tie-in). The emulator is registered
 // with the SessionManager, so a running Linux window is recorded in the session
 // manifest and re-opened after a reload — and the 9p shared folder (/home/shared)
-// persists via OPFS. Per the milestone scope this is a session/layout restore (the
+// persists via OPFS. Per the Linux guest task scope this is a session/layout restore (the
 // guest re-boots and its shared files persist), NOT a freeze-dry of live VM memory.
 
 type Win = {

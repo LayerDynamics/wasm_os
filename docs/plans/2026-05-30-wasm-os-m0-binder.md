@@ -1,9 +1,9 @@
 # WASM_OS — kernel/VFS bootstrap (Kernel & VFS Skeleton) + Centralized Binder — Implementation Plan
 
 > **For Claude:** REQUIRED SUB-SKILL: Use lore:execute to implement this plan task-by-task.
-> **Scope guard:** Do ONLY what is listed here. This plan delivers SPEC-1 milestone **kernel/VFS bootstrap** plus the **Binder** prerequisite. It STOPS at kernel/VFS bootstrap's exit criteria. Do NOT start WASI process runtime (first WASI process), the shell, the compositor, or the emulator. If you discover adjacent issues, note them as a TODO and continue. Do NOT fix them.
+> **Scope guard:** Do ONLY what is listed here. This plan delivers the SPEC-1 **kernel/VFS bootstrap** task plus the **Binder** prerequisite. It STOPS at the kernel/VFS bootstrap exit criteria. Do NOT start WASI process runtime (first WASI process), the shell, the compositor, or the emulator. If you discover adjacent issues, note them as a TODO and continue. Do NOT fix them.
 
-**Goal:** Stand up the WASM_OS monorepo, the centralized WIT→bindings Binder, and a Rust→WASM microkernel that boots to `ready` in <1.5 s with a tri-backend virtual filesystem (tmpfs + OPFS + IndexedDB) that persists across reload — SPEC-1 milestone kernel/VFS bootstrap.
+**Goal:** Stand up the WASM_OS monorepo, the centralized WIT→bindings Binder, and a Rust→WASM microkernel that boots to `ready` in <1.5 s with a tri-backend virtual filesystem (tmpfs + OPFS + IndexedDB) that persists across reload — the SPEC-1 kernel/VFS bootstrap task.
 
 **Architecture:** The kernel is a Rust WebAssembly **Component** that *exports* the `wasmos:control` world (host↔kernel API) and *imports* the `wasmos:blockstore` world (host-implemented persistence over OPFS/IndexedDB). The TypeScript host transpiles the component with `jco`, supplies the blockstore implementation, performs execution-tier detection, and drives boot. `wit/` is the single source of truth; `tools/binder` generates all Rust + TS bindings and gates drift in CI.
 

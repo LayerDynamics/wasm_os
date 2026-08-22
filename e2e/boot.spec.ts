@@ -48,6 +48,23 @@ test("boots to ready under 1.5s and reports a tier", async ({ page }) => {
   expect(procs.some((p) => p.name === "sh")).toBe(true); // the shell is running
 });
 
+test("the packaged React client boots the same desktop runtime", async ({ page }) => {
+  const errors = captureErrors(page);
+  await page.goto("/apps/web/dist/index.html");
+  await waitForBoot(page, errors);
+
+  await expect(page.locator("#desktop")).toBeVisible();
+  await expect(page.locator("#taskbar")).toBeVisible();
+  await expect(page.locator("#status")).toContainText("ready in");
+
+  const result = await page.evaluate(() => {
+    const state = (window as unknown as { __wasmos: { shellPid: number; features: { tier: string } } }).__wasmos;
+    return { shellPid: state.shellPid, tier: state.features.tier };
+  });
+  expect(result.shellPid).toBeGreaterThan(1);
+  expect(result.tier).toBe("A");
+});
+
 test("writes to /home (OPFS) and /mnt (IndexedDB) survive a reload", async ({ page }) => {
   const errors = captureErrors(page);
   await page.goto("/");

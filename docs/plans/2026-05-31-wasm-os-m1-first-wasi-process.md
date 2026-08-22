@@ -1,9 +1,9 @@
 # WASM_OS — WASI process runtime (First WASI Process) — Implementation Plan
 
 > **For Claude:** REQUIRED SUB-SKILL: use `lore:execute` to implement this plan task-by-task.
-> **Scope guard:** Do ONLY what is listed here. This plan delivers SPEC-1 milestone **WASI process runtime**. It STOPS at WASI process runtime's exit criteria. Do NOT start shell and userland (the shell, coreutils, pipelines/redirection), the compositor, IPC channels/shm, signals, or the emulator. Do NOT add C/Zig/AssemblyScript/WAT guest toolchains (WASI process runtime is Rust-only by decision). If you discover adjacent issues, note them under **TODO / deferred** and continue — do NOT fix them.
+> **Scope guard:** Do ONLY what is listed here. This plan delivers the SPEC-1 **WASI process runtime** task. It STOPS at the WASI process runtime exit criteria. Do NOT start shell and userland (the shell, coreutils, pipelines/redirection), the compositor, IPC channels/shm, signals, or the emulator. Do NOT add C/Zig/AssemblyScript/WAT guest toolchains (WASI process runtime is Rust-only by decision). If you discover adjacent issues, note them under **TODO / deferred** and continue — do NOT fix them.
 
-**Goal:** Run one real Rust `wasm32-wasip1` binary as a scheduled process. The guest executes in its own Web Worker, makes **blocking WASI Preview 1 syscalls over a SharedArrayBuffer ring** that are routed to kernel handlers, writes to a captured stdout, and exits 0. A second concurrent process proves isolation, and a deliberately-trapping guest proves crash containment (FR-34, pulled forward) — SPEC-1 milestone **WASI process runtime** (Phase 1, §4.1).
+**Goal:** Run one real Rust `wasm32-wasip1` binary as a scheduled process. The guest executes in its own Web Worker, makes **blocking WASI Preview 1 syscalls over a SharedArrayBuffer ring** that are routed to kernel handlers, writes to a captured stdout, and exits 0. A second concurrent process proves isolation, and a deliberately-trapping guest proves crash containment (FR-34, pulled forward) — the SPEC-1 **WASI process runtime** task (Phase 1, §4.1).
 
 **Traces:** FR-4 (route WASI p1 syscalls to kernel handlers), FR-5 (`spawn`/`wait`), FR-9 (run unmodified Rust `wasm32-wasi` modules), FR-6 (process memory isolation), FR-34 (crash containment, brought forward), Tier-A SAB transport (§3.1, §3.4).
 

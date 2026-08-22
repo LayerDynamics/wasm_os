@@ -15,6 +15,9 @@ createServer(async (req, res) => {
     const url = new URL(req.url ?? "/", `http://localhost:${PORT}`);
     let path = decodeURIComponent(url.pathname);
     if (path === "/") path = "/packages/host/index.html";
+    // The packaged React client emits its hashed bundle under /spa-assets/;
+    // keep that URL stable while serving the build from apps/web/dist.
+    if (path.startsWith("/spa-assets/")) path = `/apps/web/dist${path}`;
     const file = normalize(join(ROOT, path));
     // Separator boundary so a sibling dir sharing ROOT's prefix can't slip through.
     if (file !== ROOT && !file.startsWith(ROOT + sep)) { res.writeHead(403).end("forbidden"); return; }

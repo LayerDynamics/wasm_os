@@ -1,7 +1,7 @@
 # desktop compositor — Compositor & Desktop (webtop)
 
 **Plan date:** 2026-05-31
-**Source of truth:** `docs/specs/SPEC-1-wasm-os.md` (Layer 3 / Phase 3 / Milestone desktop compositor)
+**Source of truth:** `docs/specs/SPEC-1-wasm-os.md` (Layer 3 / Phase 3 / desktop compositor task)
 **Predecessors:** kernel/VFS bootstrap (kernel+VFS), WASI process runtime (first WASI process), **shell and userland (userland & terminal — merged, CI-green on `main`)**
 **Branch / delivery:** `feat/m3-compositor-desktop` · per-task commits → PR → CI green → merge (same flow as process-runtime and shell work)
 
@@ -185,7 +185,7 @@ A **windowed desktop inside the tab**: a host-side compositor that manages real 
 - **Process can't touch the DOM.** *Resolved by design:* process windows are **canvas** surfaces (FM + apps render their own UI via `wasmgfx`); only the terminal is a DOM surface — together they satisfy FR-23's "DOM **or** canvas."
 - **Input focus/coordinate correctness** across overlapping windows. *Mitigation:* single-focus invariant; translate to surface-local coords in the compositor; only the focused canvas window's events are delivered.
 - **Crash containment under the compositor (FR-34).** A trapping graphical process must close its window + free its surface without wedging the desktop. *Mitigation:* extend the shell and userland `proc_exit` cleanup to also release surfaces/framebuffer SABs (sibling of the shell and userland pipe-end release); covered by a Task-9 E2E case.
-- **Scope.** Three sophisticated apps + compositor + two new kernel subsystems is large. *Mitigation:* spine-first (Tasks 1–3 gate everything); each app is independently demoable; the milestone is shippable after any app lands.
+- **Scope.** Three sophisticated apps + compositor + two new kernel subsystems is large. *Mitigation:* spine-first (Tasks 1–3 gate everything); each app is independently demoable; the desktop task is shippable after any app lands.
 
 ---
 

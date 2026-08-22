@@ -18,7 +18,7 @@ export { isCrossOriginIsolated } from "./features.js";
 // crash-containment path (a trapped process must not take down the shell) is
 // exercisable from the terminal.
 const BIN = [
-  "sh", "echo", "cat", "grep", "ls", "wc", "cp", "mv", "rm", "mkdir", "pwd", "head", "tail", "env",
+  "sh", "hello", "catfile", "echo", "cat", "grep", "ls", "wc", "cp", "mv", "rm", "mkdir", "pwd", "head", "tail", "env",
   "echo.zig", "crash",
   // desktop compositor graphical apps (canvas surfaces); launchable from the file manager.
   // "mandelbrot" is the Zig polyglot app (FR-14 on the graphics path).

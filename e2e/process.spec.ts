@@ -150,3 +150,43 @@ test("a guest reads a host-written file via path_open + fd_read (syscall router 
   expect(r.exitCode).toBe(0);
   expect(r.stdout).toBe("payload-from-host"); // path_open → fd_read returned the VFS bytes
 });
+
+test("boot-installed guests execute from their VFS paths", async ({ page }) => {
+  const errors = captureErrors(page);
+  await page.goto("/");
+  await waitForBoot(page, errors);
+
+  const result = await page.evaluate(async () => {
+    const c = (window as any).__wasmos.control;
+    const installed = await c.fsList("/usr/bin");
+
+    const helloPid = await c.spawnByPath("/usr/bin/hello", { name: "hello-from-vfs" });
+    const helloExit = await c.wait(helloPid);
+    const [helloStdout] = await c.takeCapture(helloPid);
+
+    await c.fsWrite("/mnt/in.txt", new TextEncoder().encode("payload-from-vfs"));
+    const catfilePid = await c.spawnByPath("/usr/bin/catfile", {
+      name: "catfile-from-vfs",
+      grantFsSubtree: "/mnt",
+    });
+    const catfileExit = await c.wait(catfilePid);
+    const [catfileStdout] = await c.takeCapture(catfilePid);
+
+    const decode = (bytes: Uint8Array) => new TextDecoder().decode(new Uint8Array(bytes));
+    return {
+      installedHello: installed.includes("/usr/bin/hello"),
+      installedCatfile: installed.includes("/usr/bin/catfile"),
+      helloExit: helloExit.exitCode,
+      helloStdout: decode(helloStdout),
+      catfileExit: catfileExit.exitCode,
+      catfileStdout: decode(catfileStdout),
+    };
+  });
+
+  expect(result.installedHello).toBe(true);
+  expect(result.installedCatfile).toBe(true);
+  expect(result.helloExit).toBe(0);
+  expect(result.helloStdout).toContain("hello from wasm_os");
+  expect(result.catfileExit).toBe(0);
+  expect(result.catfileStdout).toBe("payload-from-vfs");
+});

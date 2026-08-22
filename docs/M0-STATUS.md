@@ -64,7 +64,7 @@ After a completeness audit, the following spec-kernel/VFS bootstrap gaps were cl
 ## Post-kernel/VFS bootstrap follow-up closure (2026-05-31)
 
 Five review follow-ups were actioned. Three were completed; two were explicitly
-kept deferred by product decision (they require separate-milestone architecture).
+kept deferred by product decision (they require architecture that spans multiple subsystem tasks).
 
 | # | Item | Disposition | Evidence |
 |---|------|-------------|----------|

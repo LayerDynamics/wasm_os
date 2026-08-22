@@ -51,7 +51,7 @@ framebuffer surface), and **FR-36** (all new ABI through the Binder).
 
 ---
 
-## The one structural rule for this milestone: **spike first, assert on serial**
+## The one structural rule for the Linux guest task: **spike first, assert on serial**
 
 Unlike WASI process runtime–process control and IPC, the "spine" is **not our kernel** — it is *"does the third-party core
 even work in our headless environment, and how do we assert on it?"* So:

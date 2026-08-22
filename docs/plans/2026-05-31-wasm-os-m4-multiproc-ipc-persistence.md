@@ -1,7 +1,7 @@
 # process control and IPC — Multi-process, IPC, Persistence ("it's really an OS")
 
 **Plan date:** 2026-05-31
-**Source of truth:** `docs/specs/SPEC-1-wasm-os.md` (Phase 4 / Milestone process control and IPC)
+**Source of truth:** `docs/specs/SPEC-1-wasm-os.md` (Phase 4 / process control and IPC task)
 **Predecessors:** kernel/VFS bootstrap (kernel+VFS), WASI process runtime (first process), shell and userland (userland+terminal), **desktop compositor (compositor & desktop — merged, CI-green on `main`)**
 **Branch / delivery:** `feat/m4-multiproc-ipc` · per-task commits → PR → CI green → merge (same flow as WASI process runtime–desktop compositor)
 
@@ -9,7 +9,7 @@
 
 ## What process control and IPC is
 
-The milestone that makes WASM_OS *feel like an operating system*: **many processes
+The process-control task that makes WASM_OS *feel like an operating system*: **many processes
 scheduled concurrently, talking to each other through real IPC, observable live,
 controllable with signals, and a session that survives a reload.** Concretely —
 ≥32 concurrent processes within the main-thread budget; **message channels** and
@@ -325,7 +325,7 @@ lint · typecheck · test:rust · test:host · test:e2e); CI green on the PR.
 - **Resource cleanup on exit grows.** A dying process now releases pipes (shell and userland),
   surfaces (desktop compositor), **channels, shm mappings, and pending signals** (process control and IPC). *Mitigation:*
   one `proc_exit` cleanup path, each subsystem unit-tested for release-on-exit.
-- **Scope.** Largest milestone yet (IPC ×2 + signals + 2 monitors + session).
+- **Scope.** Largest task yet (IPC ×2 + signals + 2 monitors + session).
   *Mitigation:* spine-first (metrics → channels → shm), each subsystem independently
   demoable; ship after any phase as a coherent increment.
 

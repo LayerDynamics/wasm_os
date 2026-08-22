@@ -13,7 +13,7 @@
 
 This spec describes an intentionally ambitious system. To keep "do all of it" from collapsing into "do nothing well," the document is organized around one load-bearing idea:
 
-> **The four "kinds of web OS" the project set out to build are not four competing designs. They are five layers of one system, each a demoable milestone.**
+> **The four "kinds of web OS" the project set out to build are not four competing designs. They are five layers of one system, each with a concrete browser-demo task.**
 
 | The project asked for… | …is delivered as |
 |---|---|
@@ -87,7 +87,7 @@ The project intentionally serves four overlapping audiences (all four were chose
 
 ### 2.1 Functional Requirements
 
-Requirements are grouped by layer and traced to architecture (§3) and milestones (§5). Each is a testable statement.
+Requirements are grouped by layer and traced to architecture (§3) and the concrete delivery tasks (§5). Each is a testable statement.
 
 #### Layer 0 — Microkernel
 
@@ -548,7 +548,7 @@ This component is owned by **Build & Tooling** (§3.2) and is a hard dependency 
 
 ### 4.1 Build Phases
 
-Phases map 1:1 to layers and to milestones (§5). **V1 = end of Phase 2 (the interactive terminal).** The remaining requested marquee moments are delivered in Phases 3–5.
+Phases map 1:1 to layers and to the delivery tasks in §5. **V1 = end of Phase 2 (the interactive terminal).** The remaining requested marquee moments are delivered in Phases 3–5.
 
 #### Phase 0 — Kernel & VFS skeleton (kernel/VFS bootstrap)
 
@@ -605,7 +605,7 @@ Phases map 1:1 to layers and to milestones (§5). **V1 = end of Phase 2 (the int
 
 ### 4.4 Operational Readiness
 
-Before a milestone is "production"/publicly demoable:
+Before a subsystem task is "production"/publicly demoable:
 
 - Boot succeeds on both execution tiers on the target browser matrix.
 - Observability HUD (`top`, audit log, perf counters) is functional.
@@ -615,9 +615,9 @@ Before a milestone is "production"/publicly demoable:
 
 ---
 
-## 5. Milestones
+## 5. Concrete delivery tasks
 
-| Milestone | Goal | Exit Criteria | Target Date | Owner |
+| Task | Goal | Exit Criteria | Target Date | Owner |
 |-----------|------|---------------|-------------|-------|
 | **kernel/VFS bootstrap** Kernel & VFS skeleton | Boot to `ready`; tri-backend VFS | Boot <1.5s; files persist across reload on OPFS+IDB+tmpfs | TBD (seq. by dep) | TBD |
 | **WASI process runtime** First WASI process | One Rust WASI binary runs under scheduler | `hello.wasm` runs/exits 0; 2nd proc proves memory isolation | TBD | TBD |
@@ -667,7 +667,7 @@ Linux guest integration (emulator as privileged process)   ──► (needs desk
 
 - **Dev HUD** (every build): live `top`, capability audit log, perf counters (boot, spawn p95, syscall overhead, fps).
 - **CI dashboards:** per-PR bench results vs. thresholds; conformance + fault-injection pass rates; per-browser E2E matrix.
-- **Review cadence [PROPOSED]:** per-milestone exit review; weekly bench-trend check while a phase is active.
+- **Review cadence [PROPOSED]:** per-task exit review; weekly bench-trend check while a phase is active.
 
 ### 6.3 Remediation Triggers
 
@@ -675,7 +675,7 @@ Linux guest integration (emulator as privileged process)   ──► (needs desk
 |---------|--------|
 | Any process trap crashes the kernel (FR-34 violation) | Block release; treat as P0 |
 | Boot time regresses > 25% vs. last green | Bench gate fails PR; investigate before merge |
-| Spawn p95 > 2× target | Performance investigation milestone |
+| Spawn p95 > 2× target | Performance investigation task |
 | A capability-escape test passes (isolation broken) | P0 security stop-ship + regression test (per global rule) |
 | OPFS write loss detected | P0 durability stop-ship |
 
@@ -687,12 +687,12 @@ Linux guest integration (emulator as privileged process)   ──► (needs desk
 |----|------|--------|-----------|------------|-------------|
 | R-1 | **Cooperative (Tier B) fallback is not transparent** — no SAB means async syscalls via Asyncify/JSPI, imposing guest build requirements | High | High | Treat Tier B as a distinct, documented compatibility tier; ship Asyncify-instrumented guest builds; detect & message clearly; target JSPI as it matures | Restrict V1 "full" experience to Tier A browsers; Tier B = reduced feature set |
 | R-2 | **Polyglot fidelity uneven** — AssemblyScript/WAT WASI support is thinner than Rust/C/Zig | Medium | High | Anchor the polyglot *proof* on Rust + C/Zig (FR-14); treat AS/WAT as SHOULD/COULD with documented ABI shims | Demote AS/WAT to "supported with caveats"; keep the ABI-level claim, scope the practical claim |
-| R-3 | **Scope is enormous (5 layers).** Risk of half-finished layers and a non-shippable whole | High | High | Each layer is an independently demoable milestone with hard exit criteria; **V1 is defined as shell and userland**, not "everything" | Ship at shell and userland/desktop compositor as legitimate releases; process control and IPC/Linux guest integration are stretch |
+| R-3 | **Scope is enormous (5 layers).** Risk of half-finished layers and a non-shippable whole | High | High | Each layer is an independently demoable task with hard exit criteria; **V1 is defined as shell and userland**, not "everything" | Ship at shell and userland/desktop compositor as legitimate releases; process control and IPC/Linux guest integration are stretch |
 | R-4 | **Cross-origin isolation tax** — COOP/COEP (for SAB) breaks easy embedding of third-party content & complicates emulator image fetch | Medium | Medium | Serve all assets CORP-compliant or proxied; document hosting header requirement as a hard constraint | Provide a same-origin asset bundle; proxy external emulator images |
 | R-5 | **OPFS variance / sync-handle limits** across browsers (esp. Safari) | Medium | Medium | Layered VFS with IndexedDB fallback; abstract backend behind one interface; capability-detect at boot | Run Safari on IDB-only `/home` with a perf caveat |
 | R-6 | **Emulator process undermines isolation/scheduling assumptions** (wants to run flat-out, large memory) | Medium | Medium | Special-cased privileged scheduling (FR-28) in a dedicated worker; still capability-bounded; killable | Cap emulator memory/CPU budget; make it an explicitly opt-in heavy app |
 | R-7 | **WASI Preview 1 vs 2 split** forces rework if chosen wrong | Medium | Medium | p1 as ABI baseline now, p2/components as the capability/security layer & forward target (Assumption 8) | Maintain a thin adapter so the kernel syscall router can serve both surfaces |
-| R-8 | **Single-builder bandwidth** vs. 5-layer scope, no fixed timeline | High | Medium | Dependency-sequenced milestones; ruthless MoSCoW; each layer usable alone | Pause at any completed milestone as a coherent release |
+| R-8 | **Single-builder bandwidth** vs. 5-layer scope, no fixed timeline | High | Medium | Dependency-sequenced tasks; ruthless MoSCoW; each layer usable alone | Pause at any completed task as a coherent release |
 
 ---
 
@@ -707,7 +707,7 @@ Linux guest integration (emulator as privileged process)   ──► (needs desk
 | OQ-5 | Is the optional app-registry / remote-sync server in scope at all, or strictly post-V1? (Affects FR-20, FR-35, compliance) | Ryan O'Boyle | Before process control and IPC |
 | OQ-6 | Which emulator core for L4 (v86-class x86 vs a RISC-V core) and which Linux/initrd image? Licensing of bundled image? | Ryan O'Boyle | Before Linux guest integration |
 | OQ-7 | Scheduler policy specifics: confirm priority round-robin + time accounting; is any determinism guarantee required for the research goal? | Ryan O'Boyle | Before WASI process runtime |
-| OQ-8 | Timeline & ownership: solo vs. contributors; do milestones get target dates, or stay dependency-only? | Ryan O'Boyle | Open |
+| OQ-8 | Timeline & ownership: solo vs. contributors; do tasks get target dates, or stay dependency-only? | Ryan O'Boyle | Open |
 
 ---
 
@@ -801,6 +801,6 @@ Running cost is ~$0 in compute: the OS executes entirely on the user's device fr
 - [x] Data model covers all entities referenced in requirements (Process, Capability, VNode, Descriptor, IPC, Shm, Audit)
 - [x] Security section addresses auth(=capabilities)/encryption(=origin isolation)/access control (§3.7, App D)
 - [x] ≥ 3 risks identified with mitigations (8 risks, R-1..R-8)
-- [x] Milestones have exit criteria (kernel/VFS bootstrap..Linux guest integration)
+- [x] Delivery tasks have exit criteria (kernel/VFS bootstrap..Linux guest integration)
 - [x] Success metrics are measurable (§6)
 - [x] Open questions have owners (OQ-1..OQ-8)

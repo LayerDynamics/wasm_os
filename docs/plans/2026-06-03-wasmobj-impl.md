@@ -3,7 +3,7 @@
 > **For Claude:** REQUIRED SUB-SKILL: Use lore:execute to implement this plan task-by-task.
 > **Scope guard:** Do ONLY what is listed here. If you discover adjacent issues, note them as a TODO and continue. Do NOT fix them.
 
-**Goal:** Implement `crates/wasmobj` — a guest/userland Rust library that stores a document as a self-executing `wasm32-wasip1` module — and wire it into the editor, per [SPEC-2](../specs/SPEC-2-wasmobj.md) milestones M-BBS-1..3.
+**Goal:** Implement `crates/wasmobj` — a guest/userland Rust library that stores a document as a self-executing `wasm32-wasip1` module — and wire it into the editor, per [SPEC-2](../specs/SPEC-2-wasmobj.md) tasks M-BBS-1..3.
 
 **Architecture:** A document is a hand-emitted, deterministic `wasm32-wasip1` module with one active data segment (the "window") pre-filled with `0x20`. The window's first 4 bytes are `content_len` (u32 LE), followed by content, padded with `0x20` to the tier capacity. The module's fixed `_start` reads `content_len` from its own linear memory and writes the content to stdout via `fd_write` (FR-9 self-execution) — so the code section never changes when content does. A `wob0` custom section records `{version, window_offset, capacity, content_len, content_type}` for external readers. Save (FR-5) overwrites the window in place (content fits) or re-packs to the next power-of-two tier (FR-6). The editor links the crate and branches on whether the opened file is a wasm object.
 

@@ -7,8 +7,9 @@ make one of the existing runtime paths clearer, better tested, or easier to run.
 ## Ground rules
 
 - **The gate is `npm run verify`.** Every change should pass it before it lands —
-  build, guest build, ABI drift checks, lint, typecheck, Rust tests, host tests, and
-  the real-browser E2E. No mocked layers, no skipped gates.
+  kernel and guest builds, ABI drift checks, Rust lint and workspace tests,
+  TypeScript checks for the host and React client, the React production build,
+  host tests, and the real-browser E2E. No mocked layers, no skipped gates.
 - **The ABI lives in `wit/`.** It is the single source of truth for the component
   boundary and the guest syscall extension. If you change either contract, run
   `npm run binder:check` and update the generated or conformance output — see
@@ -51,8 +52,10 @@ Individual gates (all part of `verify`):
 | `npm run binder:kernel-check` | guest syscall stubs conform to the extension ABI (FR-36) |
 | `npm run lint` | `cargo clippy` (workspace + kernel `wasm32`) with `-D warnings` |
 | `npm run typecheck` | `tsc --noEmit` on the host |
-| `npm run test:rust` | kernel, `wasmgfx`, `wasmobj`, filemanager unit tests |
+| `npm run test:rust` | every Cargo workspace package, including kernel, `wasmgfx`, `wasmobj`, and filemanager tests |
 | `npm run test:host` | Vitest (features, blockstores, ring, polyglot byte-diff) |
+| `npm run typecheck:web` | Type-checks the packaged React client in `apps/web` |
+| `npm run build:web` | Builds the packaged React client and hashed browser assets |
 | `npm run test:e2e` | Playwright in real Chromium — real OPFS/IndexedDB, real workers |
 
 CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs the full pipeline on
@@ -75,7 +78,7 @@ Linux x86_64 on every push.
   compositor, terminal, blockstores).
 - [`wit/`](wit) — the ABI. [`docs/stack/`](docs/stack) explains how WASM, WASI, and
   WIT are used; [`docs/specs/`](docs/specs) holds the design specs; `docs/M*-STATUS.md`
-  record each milestone's verified exit criteria.
+  record the verified exit criteria for each concrete subsystem task.
 
 ## Commits & PRs
 

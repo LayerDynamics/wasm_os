@@ -102,7 +102,7 @@ impl ChannelTable {
             // it forever (gc only collects non-pending channels) and a later opener
             // of the same name would connect to the dead endpoint instead of starting
             // fresh.
-            if c.pending && end == 0 {
+            if c.pending && end == 0 && c.ends[1].inbox.is_empty() {
                 self.chans.remove(&id);
                 self.by_name.retain(|_, v| *v != id);
                 return;
@@ -169,6 +169,22 @@ mod tests {
         // ...and then the receiver sees EOF (peer gone, inbox drained).
         assert!(!t.peer_open(id, 1));
         assert!(t.recv(id, 1).is_none());
+    }
+
+    #[test]
+    fn buffered_message_survives_sender_exit_before_peer_connects() {
+        let mut t = ChannelTable::new();
+        let (id, end) = t.open("late-peer");
+        assert_eq!(end, 0);
+        assert!(t.send(id, end, b"buffered-before-connect".to_vec()));
+
+        // The creator can exit before the peer has finished starting. Keep the
+        // rendezvous alive because its peer inbox already contains a message.
+        t.close(id, end);
+        let (peer_id, peer_end) = t.open("late-peer");
+        assert_eq!(peer_id, id);
+        assert_eq!(peer_end, 1);
+        assert_eq!(t.recv(peer_id, peer_end).unwrap(), b"buffered-before-connect");
     }
 
     #[test]

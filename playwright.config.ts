@@ -19,7 +19,7 @@ export default defineConfig({
   ],
   webServer: {
     command:
-      "npm run build && npm run build:guests && npm run bundle && npm run bundle:harness && node tools/serve.mjs",
+      "npm run build && npm run build:guests && npm run bundle && npm run bundle:harness && npm run build:web && node tools/serve.mjs",
     url: "http://localhost:8080/",
     timeout: 120_000,
     reuseExistingServer: false,

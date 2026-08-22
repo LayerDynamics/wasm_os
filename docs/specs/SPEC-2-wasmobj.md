@@ -89,7 +89,7 @@ Every design goal now holds without contradiction:
 | FR-9 | MUST | A minted/filled object MUST be **self-executing**: running the saved `mydoc.wasm` as a WASM_OS process writes its current window content (`content_len` bytes) to stdout, rendering the document as a live module (§1.6). |
 | FR-10 | SHOULD | Block tiers SHOULD be powers of two — `256 B, 1 KiB, 4 KiB, 16 KiB, 64 KiB` — to bound re-pack frequency and keep the window aligned. |
 | FR-11 | SHOULD | The library SHOULD verify a candidate object (header magic/version present, offset + capacity in-bounds, capacity matches the data segment length) and reject malformed or forged objects with a typed error rather than panicking. |
-| FR-12 | SHOULD | The **editor** app SHOULD support the full open-wasm-object → edit → save flow end-to-end in V1 (this is the V1 milestone’s demoable proof). |
+| FR-12 | SHOULD | The **editor** app SHOULD support the full open-wasm-object → edit → save flow end-to-end in V1 (this is the V1 editor task’s demoable proof). |
 | FR-13 | COULD | A coreutils-style CLI (`wobj new｜info｜cat｜extract`) COULD let the terminal mint, inspect, and extract objects. |
 | FR-14 | COULD | An object COULD record optional document metadata in `wob0` (e.g. title, created/modified tick) beyond the core header fields. |
 | FR-15 | COULD | The `wob0` header COULD carry a richer `content_type` (e.g. `text/plain`, `application/octet-stream`) so one container format holds text or binary. |
@@ -346,7 +346,7 @@ Covered in §2.2 Security. Summary: no new capabilities; header validation befor
 - **Scope:** `wasi` module; the `render` export (FR-9, MUST); a tiny guest test binary that mints→writes→reads via the VFS.
 - **Exit criteria:** FR-8, FR-9 met; a guest can mint an object to `/home`, reload it, and read back identical content; running the object prints its content.
 
-#### Phase 3: Editor integration + E2E (V1 milestone)
+#### Phase 3: Editor integration + E2E (V1 editor task)
 - **Goal:** The full create→edit→save→reload flow works in the OS.
 - **Scope:** Editor open/save branch for wasm objects (FR-12, FR-7); run-the-document action (FR-9); preserve plain-file behavior (Constraint 5).
 - **Exit criteria:** FR-7, FR-9, FR-12 met; a real-browser E2E opens a template object, types, saves a new `.wasm` object, reloads the tab, re-opens it to identical content, **and runs it to render its own content** — no regression to plain-file open/save.
@@ -375,9 +375,9 @@ Covered in §2.2 Security. Summary: no new capabilities; header validation befor
 
 ---
 
-## 5. Milestones
+## 5. Concrete delivery tasks
 
-| Milestone | Goal | Exit Criteria | Target | Owner |
+| Task | Goal | Exit Criteria | Target | Owner |
 |-----------|------|---------------|--------|-------|
 | M-BBS-1 | Library core | FR-1..6,10,11; validate + round-trip + invariant tests green | — | LayerDynamics |
 | M-BBS-2 | Guest + self-exec | FR-8,9; mint→VFS→reload→read identical; object renders itself | — | LayerDynamics |
@@ -500,6 +500,6 @@ offset  size  field          notes
 - [x] Data model covers all entities in requirements (§3.3)
 - [x] Security section addresses trust boundary, forgery resistance, access (§2.2, §3.7)
 - [x] ≥3 risks identified with mitigations (6 — §7)
-- [x] Milestones have exit criteria (§5)
+- [x] Delivery tasks have exit criteria (§5)
 - [x] Success metrics are measurable (§6)
 - [x] Open questions have owners (§8)

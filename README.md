@@ -119,8 +119,11 @@ npm run verify
 ```
 
 The command builds the kernel, builds the guest programs, regenerates the ABI,
-runs the binder conformance check, lints Rust, type-checks the host, runs the
-Rust and Vitest suites, and runs the fast Playwright suite in Chromium.
+runs the binder conformance check, lints Rust, type-checks both TypeScript
+clients, builds the React client, runs the complete Rust and Vitest suites, and
+runs the fast Playwright suite in Chromium. The browser suite starts both the
+plain host entrypoint and the packaged React entrypoint, then executes guests
+from the VFS paths installed during boot.
 
 Individual checks are available when iterating:
 
@@ -131,8 +134,10 @@ Individual checks are available when iterating:
 | `npm run binder:kernel-check` | Guest syscall stubs against `wit/` |
 | `npm run lint` | Rust clippy for the workspace and kernel WASM target |
 | `npm run typecheck` | TypeScript host type-check |
-| `npm run test:rust` | Kernel, graphics SDK, wasm-object, and file-manager tests |
+| `npm run test:rust` | Every Cargo workspace package, including kernel, graphics SDK, wasm-object, and file-manager tests |
 | `npm run test:host` | Vitest for feature detection, blockstores, rings, and polyglot output |
+| `npm run typecheck:web` | Type-check the packaged React client in `apps/web` |
+| `npm run build:web` | Build the packaged React client and its hashed browser assets |
 | `npm run test:e2e` | Fast Playwright tests in real Chromium |
 | `npm run test:e2e:slow` | Linux boot and emulator tests |
 

@@ -1,10 +1,10 @@
 # WASM_OS — shell and userland (Userland & Terminal — V1) — Implementation Plan
 
 > **For Claude:** REQUIRED SUB-SKILL: use `lore:execute` to implement this plan task-by-task.
-> **Scope guard:** Do ONLY what is listed here. This plan delivers SPEC-1 milestone **shell and userland = V1** (the "terminal runs real WASI binaries" marquee). It STOPS at shell and userland's exit criteria. Do NOT start desktop compositor (the windowed compositor/desktop), process control and IPC (IPC channels/shm at scale, snapshot, signals beyond crash-kill), or Linux guest integration (the emulator). If you discover adjacent issues, note them under **TODO / deferred** and continue.
+> **Scope guard:** Do ONLY what is listed here. This plan delivers the SPEC-1 **shell and userland = V1** task (the "terminal runs real WASI binaries" marquee). It STOPS at the shell and userland exit criteria. Do NOT start desktop compositor (the windowed compositor/desktop), process control and IPC (IPC channels/shm at scale, snapshot, signals beyond crash-kill), or Linux guest integration (the emulator). If you discover adjacent issues, note them under **TODO / deferred** and continue.
 > **Builds on:** WASI process runtime (first WASI process) — 100% complete and merged (`docs/M1-STATUS.md`). shell and userland extends the WASI process runtime kworker + SAB syscall ring + WASI p1 router; it does **not** rebuild them.
 
-**Goal:** A real interactive terminal (xterm) bound to a **guest shell process** that runs WASI coreutils with pipelines and I/O redirection. From the terminal a user runs `ls`, `cat f`, `cat f | grep x`, and `... > out` with correct output and exit codes; a deliberately-crashing binary terminates without taking down the shell — SPEC-1 milestone **shell and userland** (Phase 2, §4.1).
+**Goal:** A real interactive terminal (xterm) bound to a **guest shell process** that runs WASI coreutils with pipelines and I/O redirection. From the terminal a user runs `ls`, `cat f`, `cat f | grep x`, and `... > out` with correct output and exit codes; a deliberately-crashing binary terminates without taking down the shell — the SPEC-1 **shell and userland** task (Phase 2, §4.1).
 
 **Traces:** FR-9..12 (run WASI modules), **FR-14** (polyglot: ≥1 Rust + ≥1 Zig coreutil, identical observable behavior), FR-15 (xterm bound to a shell process), FR-16 (`$PATH`, built-ins + on-disk binaries, exit codes), FR-17 (pipelines `a|b|c` + redirection `>`/`>>`/`<` via kernel pipes/fds), **FR-18** (the 13 coreutils), FR-34 (crash contained — terminal survives), FR-36 (the `wasmos:kernel` guest bindings come from the Binder).
 
@@ -95,7 +95,7 @@ deliver-stdin: func(pid: u32, bytes: list<u8>) -> list<u32>;
 
 > **Cascade discipline (correctness-critical — the shell and userland analog of the WASI process runtime ring race).** Process wakeups as an **iterative work-queue, not recursion**, and guard against **double-waking**: a pid can appear in two wakeup lists in one drain (e.g. a pipe write *and* a writer-close), but the guest did exactly one `Atomics.wait`, so bumping its `RESP_SEQ` twice corrupts the *next* syscall's response. Rules: (1) **remove a pid from the parked-stash the instant it is scheduled for re-drive**, so a duplicate wakeup is a no-op; (2) **dedup pids within a single wakeup batch**; (3) stash lifecycle — stash on `reply=None`; on re-drive, if it replies → bump `RESP_SEQ` and clear the stash; if it parks *again* (e.g. `wait` re-checking a not-yet-exited child) → re-stash and do not bump. Add a unit test that double-wakes a single parked pid and asserts exactly one `RESP_SEQ` bump.
 
-**Step 4 — the spike test (TDD, the gate for the whole milestone):**
+**Step 4 — the spike test (TDD, the gate for the entire shell-and-userland task):**
 
 - Kernel unit test: process parks on a stdin read (empty); `deliver_stdin(pid, b"hi")` returns `[pid]`; re-driving the read returns `b"hi"`.
 - **Real cross-thread test** (extend `packages/host/test/ring.test.ts` or a new `park.test.ts` with `worker_threads`): a client blocks on a read that parks; the server delivers bytes later; the client's `Atomics.wait` returns the delivered bytes — proving deferred fulfilment works across the real ring.
