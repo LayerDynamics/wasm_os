@@ -119,6 +119,20 @@ test("tail prints the last N lines; env runs with an empty environment", async (
   expect(await readLog(page)).toContain("ENV-RAN-7chk");
 });
 
+test("whoami and touch run from the boot-installed VFS paths", async ({ page }) => {
+  await ready(page);
+  await run(page, "whoami > /whoami-probe.txt");
+  await run(page, "touch /touch-probe.txt");
+  await run(page, "ls /touch-probe.txt");
+  await waitForLog(page, "touch-probe.txt");
+
+  const whoami = await page.evaluate(async () =>
+    new TextDecoder().decode(await (window as unknown as Win).__wasmos.control.fsRead("/whoami-probe.txt")),
+  );
+  expect(whoami.trim()).toMatch(/^[A-Za-z0-9_-]+$/);
+  expect(await page.evaluate(() => (window as unknown as Win).__wasmos.control.fsRead("/touch-probe.txt"))).toEqual(new Uint8Array());
+});
+
 test("the pwd binary reflects the working directory via $PWD, not wasi-libc cwd", async ({ page }) => {
   // `/bin/pwd` (the binary, distinct from the shell's `pwd` builtin) must report
   // the process's actual working directory. On wasm32-wasip1 std::env::current_dir

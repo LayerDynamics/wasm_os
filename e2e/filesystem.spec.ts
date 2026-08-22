@@ -97,6 +97,20 @@ test("/etc is real, consumed config: motd banner, os-release, and PATH spanning 
   expect(log).toContain("editor"); // /usr/bin is populated and `ls` resolved via PATH
 });
 
+test("the boot registry installs every shipped guest under /usr/bin", async ({ page }) => {
+  await page.goto("/");
+  await ready(page);
+
+  const installed = await page.evaluate(() => (window as unknown as Win).__wasmos.control.fsList("/usr/bin"));
+  expect(installed).toEqual(expect.arrayContaining([
+    "cat", "catfile", "chandemo", "crash", "cp", "echo", "echo.zig", "editor",
+    "env", "fetch", "filemanager", "gfxspike", "grep", "head", "hello", "kill",
+    "lisp", "ls", "mandelbrot", "mkdir", "mount", "mv", "nano", "paint", "ps",
+    "pwd", "renice", "rm", "sh", "shmdemo", "sigdemo", "spinner", "sysmon", "tail",
+    "touch", "top", "wc", "welcome", "whoami",
+  ].map((name) => `/usr/bin/${name}`)));
+});
+
 test("/proc is a live, real view of the process table (host + guest)", async ({ page }) => {
   await page.goto("/");
   await page.waitForFunction(() => Boolean((window as unknown as { __wasmos?: { control?: unknown } }).__wasmos?.control), null, {

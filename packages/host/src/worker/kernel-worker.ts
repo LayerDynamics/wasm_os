@@ -19,6 +19,7 @@ import { createRing, header, REQ_SEQ } from "../ring/layout.js";
 import { RingServer } from "../ring/host.js";
 import { OP, Writer } from "../ring/protocol.js";
 import type { ExitMessage } from "./process-worker.js";
+import type { Root as AbiRoot, instantiate as instantiateKernel } from "@wasmos/abi/kernel";
 
 // Cache-busting token for stable-path artifacts (see boot.ts ASSET_VERSION); kept in
 // sync by hand since this worker bundles independently of the main entry.
@@ -39,29 +40,8 @@ interface SpawnSpec {
   grantNet: boolean;
 }
 
-/** Synchronous kernel control surface (jco-generated export shape). */
-interface KernelControl {
-  boot(f: FeatureReport): { ready: boolean; bootMillis: number; features: FeatureReport };
-  mount(path: string, on: Backend): void;
-  fsWrite(path: string, bytes: Uint8Array): void;
-  fsRead(path: string): Uint8Array;
-  fsList(path: string): string[];
-  fsDelete(path: string): void;
-  fsMkdirp(path: string): void;
-  seedEntropy(seed: Uint8Array): void;
-  listProcs(): Array<{ pid: number; name: string; state: string }>;
-  spawn(spec: SpawnSpec): number;
-  spawnEmulator(name: string): number;
-  accountEmulator(pid: number, ticks: bigint): void;
-  deliverNet(pid: number, ok: boolean, body: Uint8Array): Uint32Array;
-  serviceSyscall(pid: number, request: Uint8Array): SyscallOutcome;
-  deliverStdin(pid: number, bytes: Uint8Array): Uint32Array;
-  deliverInput(pid: number, bytes: Uint8Array): Uint32Array;
-  setProcMem(pid: number, bytes: number): void;
-  bindTerminal(pid: number): void;
-  exitCode(pid: number): number | undefined;
-  takeCapture(pid: number): [Uint8Array, Uint8Array];
-}
+/** Synchronous kernel control surface, taken directly from the generated Binder types. */
+type KernelControl = AbiRoot["control"];
 
 /** shell and userland park/resume outcome (jco maps `option<list<u8>>` → `Uint8Array | undefined`). */
 interface SyscallOutcome {
@@ -80,12 +60,7 @@ interface SyscallOutcome {
   termMode?: number;
 }
 
-interface KernelModule {
-  instantiate(
-    getCoreModule: (path: string) => Promise<WebAssembly.Module>,
-    imports: Record<string, unknown>,
-  ): Promise<{ control: KernelControl }>;
-}
+type KernelModule = { instantiate: typeof instantiateKernel };
 
 type WorkerScope = {
   onmessage: ((ev: MessageEvent) => void) | null;
@@ -303,11 +278,12 @@ async function init(features: FeatureReport): Promise<{ bootMillis: number; feat
   const getCoreModule = (path: string) =>
     WebAssembly.compileStreaming(fetch(`${ABI_BASE}/${path}${ABI_V}`));
 
-  const instance = await mod.instantiate(getCoreModule, {
+  const kernelImports = {
     "wasmos:abi/home-store": home.imports(),
     "wasmos:abi/mnt-store": mnt.imports(),
     "wasmos:abi/sys-store": sys.imports(),
-  });
+  } as unknown as Parameters<typeof instantiateKernel>[1];
+  const instance = await mod.instantiate(getCoreModule, kernelImports);
   control = instance.control;
   const status = control.boot(features);
   if (!status.ready) throw new Error("kernel failed to reach ready");

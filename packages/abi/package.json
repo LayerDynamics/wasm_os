@@ -3,9 +3,12 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Generated WASI / wasmos_kernel ABI bindings. The textual contents of generated/ (kernel.js + .d.ts) are jco output produced by `npm run binder gen` from the kernel component and checked into the repository; the .core*.wasm payloads are build artifacts loaded at runtime by the kernel worker via /packages/abi/generated/kernel.js. This manifest exists so the directory is a well-formed npm workspace member (root workspaces: packages/*).",
+  "description": "Generated WASI / wasmos_kernel ABI bindings. The textual contents of generated/ (kernel.js + .d.ts) are jco output produced by the Binder from the kernel component and checked into the repository; the kernel worker loads kernel.js and imports kernel.d.ts through this package for its control type; the .core*.wasm payloads are build artifacts loaded at runtime by /packages/abi/generated/kernel.js.",
   "exports": {
-    "./kernel": "./generated/kernel.js"
+    "./kernel": {
+      "types": "./generated/kernel.d.ts",
+      "import": "./generated/kernel.js"
+    }
   },
   "files": [
     "generated/"
