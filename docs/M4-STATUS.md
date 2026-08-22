@@ -33,7 +33,7 @@ manifest, on top of the already-persistent VFS (FR-35).
 build         : kernel component (wasm32-unknown-unknown) + jco bindings regenerated
 build:guests  : 30 Rust wasm32-wasip1 guests (adds chandemo/shmdemo/sigdemo/spinner +
                 kill/renice/ps/top coreutils + the sysmon app) + 2 Zig wasm32-wasi guests
-binder        : kernel-check — wasmos-sys conforms to kernel.wit, 18 verbs: spawn, pipe,
+binder        : kernel-check — wasmos-sys signatures conform to wit/kernel/kernel.wit, 18 verbs: spawn, pipe,
                 wait, proc-list, set-priority, chan-open/send/recv, shm-create/map/read/
                 write/grant, kill, sig-wait, win-surface/present/read-input (FR-36)
 lint          : clippy clean (-D warnings) on the whole workspace + kernel wasm target

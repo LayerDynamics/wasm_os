@@ -54,9 +54,10 @@ npm run build          # build:kernel, then `binder gen` (jco transpile)
 Because a browser cannot yet load a Component directly, the [Binder](wit.md)
 transpiles it: `jco transpile` (in *instantiation* mode, so the host can inject the
 store imports at runtime) lowers the component into a plain ES module + a core
-`.wasm`, written to `packages/abi/generated` (a build artifact, not committed). The
-kworker imports that module and calls `control.*`. See [wit.md](wit.md) for the full
-binder flow and the `control` interface.
+`.wasm`, written to `packages/abi/generated`. The textual JS/TypeScript bindings are
+committed; the split-out core wasm is a build artifact. The kworker imports that
+module and calls `control.*`. See [wit.md](wit.md) for the full Binder flow and the
+`control` interface.
 
 > The kernel crate is built `crate-type = ["cdylib", "rlib"]`
 > ([`crates/kernel/Cargo.toml`](../../crates/kernel/Cargo.toml)): the `cdylib` is

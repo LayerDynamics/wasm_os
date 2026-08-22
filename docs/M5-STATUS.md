@@ -29,7 +29,7 @@ capability-gated `net_request` broker and a `fetch` utility to WASI guests.
 ```text
 build         : kernel component and generated bindings
 build:guests  : Rust wasm32-wasip1 guests plus the Zig guests
-binder        : wasmos-sys conforms to kernel.wit, including net_request
+binder        : wasmos-sys signatures conform to wit/kernel/kernel.wit, including net_request
 lint          : clippy clean on the workspace and kernel WASM target
 typecheck     : host TypeScript clean
 cargo test    : kernel, graphics SDK, and emulator/network lifecycle tests passed

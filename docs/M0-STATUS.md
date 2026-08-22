@@ -24,13 +24,10 @@ clippy       : clean (-D warnings) on both wasm32 + host targets
 CI (GitHub)  : runs the full pipeline on Linux x86_64 every push (real Actions)
 ```
 
-> **Bindings are build output (gitignored), not committed.** The jco glue is not
-> byte-reproducible across CPU arch (mac arm64 vs CI x86_64) — jco's identifier
-> de-duplication for the two identical `home-store`/`mnt-store` interfaces depends
-> on the component's import ordering, which `cargo-component` emits differently per
-> arch. So we do **not** byte-diff committed bindings. Correctness is enforced by:
-> regenerate-from-`wit/` (catches invalid WIT / gen failure) + host typecheck +
-> the E2E exercising the freshly-built `kernel.js` end-to-end in a real browser.
+> **Textual bindings are committed and checked.** The split-out core wasm payload is
+> still ignored. `binder check` compares the tracked JS/TypeScript output with a
+> fresh `jco` run, then checks the guest syscall signatures; `npm run verify` also
+> type-checks and exercises the fresh bindings in a real browser.
 
 ## Post-review gap closure (FR-2, FR-3, sub-gaps)
 
@@ -44,7 +41,7 @@ After a completeness audit, the following spec-kernel/VFS bootstrap gaps were cl
 | **Sound verify gate** | `npm run verify` = build (regen bindings from wit/) + typecheck + rust + host + e2e | `npm run verify` exit 0 |
 | **Full cold-load timing** | `coldLoadMillis` (navigation start → ready) | E2E asserts `coldLoadMillis < 1500` |
 | **Real OPFS test** | in-browser harness exercising `OpfsBlockstore` directly | `e2e/opfs.spec.ts` (real OPFS + IndexedDB) |
-| **Generated bindings are build output** | jco glue is NOT byte-reproducible across CPU arch (real CI finding) → `packages/abi/generated/` is gitignored and regenerated everywhere; gate is regen + typecheck + E2E, not byte-diff | real GitHub Actions run on Linux x86_64 (green) |
+| **Generated bindings are tracked output** | textual jco glue is committed and compared by `binder check`; split-out core wasm remains build output | `npm run binder:check` plus real browser E2E |
 
 ## Architecture as built
 
@@ -74,7 +71,7 @@ kept deferred by product decision (they require separate-milestone architecture)
 | 1 | `fs-delete` control verb (was the lone `#[allow(dead_code)]`) | **Done** — added to `wit/control.wit`; `Vfs::delete`/`KernelCore::delete`/component `fs_delete`; host `KernelControl.fsDelete`; bindings regenerated. `Blockstore::delete` now has a real caller (dead_code removed). | `vfs::tests::delete_*` (2) + `e2e/boot.spec.ts` "fsDelete unlinks across backends and the deletion persists across reload" |
 | 2 | Actually **use** SAB/JSPI (not just report) | **Deferred (decision)** — requires WASI process runtime worker-per-process execution + SharedArrayBuffer syscall ring; no honest kernel/VFS bootstrap-scoped partial. | tracked below |
 | 3 | Hierarchical VFS dirs | **Deferred (decision)** — real directory tree + `fd_readdir` is shell and userland. | tracked below |
-| 4 | Cross-platform binding determinism on CI's arch | **Corrected by real CI** — the first assumption (byte-identical glue cross-arch) was **false**: GitHub CI x86_64 emitted different jco identifier de-dup (`get$1` vs `get`) than mac arm64 because `cargo-component`'s component import ordering differs per arch. Earlier local "determinism" checks missed this (`verify-linux-determinism.sh` ran jco against the *mac-built* wasm; `ci-linux-determinism.sh` ran on the *pre-fs-delete* kernel). **Resolution (chosen):** generated bindings are now **gitignored build output**, regenerated everywhere; the gate is regen + typecheck + E2E, not a byte-diff. | real GitHub Actions failure → root-caused → gate redesigned; CI now green |
+| 4 | Cross-platform binding determinism on CI's arch | **Corrected by real CI** — the first assumption (byte-identical glue cross-arch) was **false**: GitHub CI x86_64 emitted different jco identifier de-dup (`get$1` vs `get`) than mac arm64 because `cargo-component`'s component import ordering differs per arch. Earlier local "determinism" checks missed this (`verify-linux-determinism.sh` ran jco against the *mac-built* wasm; `ci-linux-determinism.sh` ran on the *pre-fs-delete* kernel). **Resolution:** textual bindings are tracked for review and checked by Binder; split-out core wasm payloads remain ignored. | real GitHub Actions finding → root-caused → gate redesigned; `npm run binder:check` green |
 | 5 | clippy `should_implement_trait` on `Scheduler::next` | **Done** — renamed `next` → `pick_next` (a non-`Iterator` `next` was misleading); all call sites updated. | `cargo clippy -D warnings` clean on wasm32 + host |
 
 ## Deferred to process-runtime and shell work (genuinely out of kernel/VFS bootstrap scope; tracked)
@@ -85,8 +82,8 @@ kept deferred by product decision (they require separate-milestone architecture)
 - **(item 3)** Hierarchical VFS dirs (kernel/VFS bootstrap uses flat keys); revisit with `fd_readdir` in shell and userland.
 
 > Watch-item resolution: cross-platform binding determinism is **not** assumed — it
-> was disproven by real CI (jco glue differs by arch). Generated bindings are now
-> gitignored build output, regenerated on every build (local + CI). The legacy
+> was disproven by real CI (jco glue differs by arch). Textual bindings are tracked
+> so the generated result is reviewable; the legacy
 > `tools/ci-linux-determinism.sh` / `tools/verify-linux-determinism.sh` scripts are
 > retained only as historical diagnostics; they are **no longer part of the gate**.
 > The authoritative check is the real GitHub Actions run (Linux x86_64) on every push.

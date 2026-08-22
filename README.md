@@ -156,7 +156,7 @@ crates/
                    # process, fault, graphics, IPC, and signal fixtures
 guests/zig/        # Zig echo and Mandelbrot guests
 packages/host/     # workers, shared-memory ring, compositor, terminal, blockstores
-packages/abi/      # generated bindings (build output, gitignored)
+packages/abi/      # tracked JS/TypeScript bindings + ignored core wasm payloads
 wit/               # control, blockstore, and world ABI definitions
 third_party/       # TinyEMU RISC-V emulator and build recipe
 assets/linux/      # RISC-V bootloader, kernel, rootfs, and VM configuration

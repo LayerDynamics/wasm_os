@@ -32,7 +32,7 @@ a **file manager** + three sophisticated apps (**Paint**, **Editor**, **Mandelbr
 build         : kernel component (wasm32-unknown-unknown) + jco bindings regenerated
 build:guests  : 20 Rust wasm32-wasip1 guests (incl. filemanager/paint/editor/gfxspike)
                 + 2 Zig wasm32-wasi guests (echo.zig, mandelbrot)
-binder        : kernel-check — wasmos-sys conforms to kernel.wit: spawn, pipe, wait,
+binder        : kernel-check — wasmos-sys signatures conform to wit/kernel/kernel.wit: spawn, pipe, wait,
                 win-surface, win-present, win-read-input (FR-36)
 lint          : clippy clean (-D warnings) on the whole workspace + kernel wasm target
 typecheck     : tsc -p packages/host/tsconfig.json --noEmit — clean

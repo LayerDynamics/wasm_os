@@ -7,7 +7,7 @@
 
 **Traces:** FR-4 (route WASI p1 syscalls to kernel handlers), FR-5 (`spawn`/`wait`), FR-9 (run unmodified Rust `wasm32-wasi` modules), FR-6 (process memory isolation), FR-34 (crash containment, brought forward), Tier-A SAB transport (§3.1, §3.4).
 
-> **As-built note (2026-05-31):** WASI process runtime is implemented and verified — see `docs/M1-STATUS.md`. Two plan instructions are obsolete and were NOT followed: generated bindings under `packages/abi/generated` are **gitignored build output** (commit `5d735e3`), so they are never committed, and there is **no `npm run drift`** script — the real gate is `npm run build` (regenerate) + `npm run lint` (clippy `-D warnings`) + `npm run typecheck` + tests. Ignore the "commit `packages/abi/generated`" and "`npm run drift`" steps in Tasks 1/4/12 below.
+> **As-built note (2026-05-31):** WASI process runtime is implemented and verified — see `docs/M1-STATUS.md`. The Binder's textual JS/TypeScript output under `packages/abi/generated` is tracked and checked by `npm run binder:check`; the split-out core wasm payloads remain build artifacts. The old `npm run drift` instructions below are replaced by `npm run binder:check`.
 
 ---
 
@@ -96,10 +96,10 @@ The kernel/VFS bootstrap kernel runs synchronously on the main thread. WASI proc
 **Step 2 — regenerate + verify drift gate.**
 
 ```bash
-npm run build && npm run binder gen && npm run drift
+npm run build && npm run binder:check
 ```
 
-→ Expected: `binder gen` rewrites `packages/abi/generated`; `npm run drift` exits 0 (committed == rebuilt). Confirm the generated `kernel.d.ts` now lists `spawn`, `serviceSyscall`, `exitCode`.
+→ Expected: `binder gen` refreshes `packages/abi/generated`; `npm run binder:check` exits 0 (tracked == rebuilt). Confirm the generated `kernel.d.ts` now lists `spawn`, `serviceSyscall`, `exitCode`.
 
 **Step 3 — commit.**
 
@@ -225,7 +225,7 @@ pub fn exit_code(&self, pid: u32) -> Option<i32>;
 **Step 4 — build, regen, drift, run wasm + host tests:**
 
 ```bash
-npm run build && npm run binder gen && npm run drift
+npm run build && npm run binder:check
 cargo test -p kernel 2>&1 | tail -20
 git add crates/kernel/src packages/abi/generated && git commit -m "feat(kernel): spawn/service_syscall/exit_code wired through KernelCore + component (TDD)"
 ```

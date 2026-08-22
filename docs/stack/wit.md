@@ -84,8 +84,9 @@ resume mechanism. The semantics live in the type.
 - **`binder gen`** (part of `npm run build`) — runs `jco transpile` on the built
   kernel component in **instantiation mode** (so the host can inject the
   `home-store`/`mnt-store`/`sys-store` imports at runtime) and writes the JS + core
-  `.wasm` bindings to `packages/abi/generated`. That directory is a **build
-  artifact, gitignored** — the WIT is the source of truth, the bindings are derived.
+  `.wasm` payloads to `packages/abi/generated`. The textual JS and TypeScript
+  bindings in that directory are tracked and checked; the `.wasm` payloads remain
+  build artifacts.
 
 - **`binder check`** — re-transpiles into a temp dir, compares the generated host
   bindings with the build output, and runs `kernel-check` for the guest side.
@@ -108,7 +109,7 @@ in [`syscall.rs`](../../crates/kernel/src/syscall.rs); guest stubs in
 [`wasmos-sys`](../../crates/wasmos-sys/src/lib.rs); the matching `wasmos_kernel.syscall`
 import provided by the host shim).
 
-[`crates/wasmos-sys/wit/kernel.wit`](../../crates/wasmos-sys/wit/kernel.wit) is the
+[`wit/kernel/kernel.wit`](../../wit/kernel/kernel.wit) is the
 **documented source of truth** for that extension. It is hand-written WIT used as a
 spec (and checked by `kernel-check`), declaring two interfaces:
 
@@ -122,7 +123,9 @@ spec (and checked by `kernel-check`), declaring two interfaces:
 ```wit
 // the pipeline primitives the shell uses (wasmos:kernel `process`):
 spawn: func(path: string, argv: list<string>,
-            stdio: tuple<stdio, stdio, stdio>, cwd: string) -> result<u32, u16>;
+            stdio: tuple<stdio, stdio, stdio>, cwd: string,
+            grant-gpu: bool, grant-input: bool,
+            grant-signal: bool, grant-net: bool) -> result<u32, u16>;
 pipe:  func() -> result<tuple<u32, u32, u32>, u16>;  // (read-fd, write-fd, pipe-id)
 wait:  func(pid: u32) -> result<s32, u16>;           // child exit code
 ```
@@ -155,7 +158,7 @@ calls.
 | [`wit/blockstore.wit`](../../wit/blockstore.wit) | the three host-implemented storage interfaces |
 | [`wit/kernel/kernel.wit`](../../wit/kernel/kernel.wit) | `wasmos_kernel` extension ABI (process + compositor) |
 | [`tools/binder/binder.mjs`](../../tools/binder/binder.mjs) | `gen` (jco transpile) · `check` (binding drift) · `kernel-check` (stub drift) |
-| [`packages/abi/generated`](../../packages/abi) | jco output — build artifact, gitignored |
+| [`packages/abi/generated`](../../packages/abi) | tracked jco JS/TypeScript output plus ignored core wasm payloads |
 | [`crates/wasmos-sys/src/lib.rs`](../../crates/wasmos-sys/src/lib.rs) | guest transport shim checked against `wit/kernel/kernel.wit` |
 
 See also: [WASM](wasm.md) for how the component is built and transpiled, [WASI](wasi.md)

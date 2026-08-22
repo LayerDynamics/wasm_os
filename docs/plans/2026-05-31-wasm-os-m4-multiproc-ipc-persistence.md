@@ -167,7 +167,7 @@ shows ≥ 32 running; the terminal still echoes a command (main-thread budget in
 per-endpoint inbox, framed messages); `syscall.rs` (`Op::ChanOpen 0x32`,
 `ChanSend 0x33`, `ChanRecv 0x34`; `WaitReason::ChanRecv(id)`; park/resume + EOF on
 peer close); `types.rs` (`DescKind::Chan{id, end}`); `kcore.rs`/`lib.rs`;
-`crates/wasmos-sys` (`chan_open`/`chan_send`/`chan_recv`); `wit/kernel.wit` +
+`crates/wasmos-sys` (`chan_open`/`chan_send`/`chan_recv`); `wit/kernel/kernel.wit` +
 `binder kernel-check`.
 
 **Steps:** `chan_open(name)` → fd; first opener creates, second connects (rendezvous
@@ -188,7 +188,7 @@ the payload to a verifiable sink (file or terminal).
 `k_spawn` shm-cap delegation; host: `kernel-worker.ts` allocates the shared SAB +
 routes it to mapping process workers; `process-worker.ts`/`wasi-shim.ts`
 (`shm_read`/`shm_write` copy guest-mem ⇄ shared SAB, like the desktop compositor framebuffer);
-`crates/wasmos-sys`; `wit/kernel.wit` + kernel-check.
+`crates/wasmos-sys`; `wit/kernel/kernel.wit` + kernel-check.
 
 **Steps:** `shm_create(size)` → `shm_id`; the kworker allocates a `SharedArrayBuffer`
 shared to the creator's worker; the kernel grants the creator `Shm{shm_id}` and
