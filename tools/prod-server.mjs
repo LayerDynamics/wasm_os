@@ -148,10 +148,10 @@ const server = createServer(async (req, res) => {
     if (spaHit) {
       // Vite emits hashed bundles under /spa-assets/ — those are safe to cache hard.
       const immutable = urlPath.startsWith("/spa-assets/");
-      return send(req, res, spaHit.file, spaHit.size, { immutable });
+      return send(req, res, spaHit.file, spaHit.size, { immutable, mtimeMs: spaHit.mtimeMs });
     }
     const index = await resolveFile(SPA_DIR, "/index.html");
-    if (index) return send(req, res, index.file, index.size);
+    if (index) return send(req, res, index.file, index.size, { mtimeMs: index.mtimeMs });
 
     res.statusCode = 404;
     setBaseHeaders(res, "text/plain");

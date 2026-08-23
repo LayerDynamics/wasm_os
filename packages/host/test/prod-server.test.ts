@@ -77,6 +77,12 @@ describe("prod-server.mjs", () => {
     expect(second.status).toBe(304);
   });
 
+  it("uses the SPA index mtime in its validator so deploys cannot reuse an old shell", async () => {
+    const r = await fetch(`${BASE}/`);
+    expect(r.status).toBe(200);
+    expect(r.headers.get("etag")).toMatch(/^W\/"[0-9a-f]+-[1-9][0-9a-f]*"$/);
+  });
+
   it("honours HTTP Range requests with a 206 + Content-Range", async () => {
     const r = await fetch(`${BASE}${STABLE_PATH}`, { headers: { Range: "bytes=0-3" } });
     expect(r.status).toBe(206);
