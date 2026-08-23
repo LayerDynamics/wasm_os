@@ -22,8 +22,12 @@ The launcher registers these process-backed apps in
 
 Each launcher entry resolves to a guest image, starts a process, and gives the
 process the capabilities needed for its surface and input. The terminal is a
-separate DOM window backed by the shell process. Linux is an additional
-privileged process entry, not a replacement for the WASI apps.
+separate DOM window backed by the shell process. The packaged React client
+starts with the Welcome guide as the only visible window; the terminal is
+minimized but remains available from the taskbar. Saved app windows wait until
+the Welcome guide has been dismissed, so a new visitor sees the instructions
+before the previous session is restored. Linux is an additional privileged
+process entry, not a replacement for the WASI apps.
 
 Mandelbrot is an interactive Zig guest rather than a fixed screenshot: drag to
 pan, use `+`/`-` to zoom, press `N` or Space for another seeded view, and press

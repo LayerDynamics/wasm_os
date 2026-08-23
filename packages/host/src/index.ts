@@ -38,6 +38,8 @@ const BIN = [
   "gfxspike", "filemanager", "paint", "editor", "mandelbrot", "sysmon", "lisp", "welcome", "spinner", "chandemo", "shmdemo", "sigdemo", "kill", "renice", "ps", "top", "fetch", "mount", "whoami", "touch", "nano",
 ];
 const GUESTS = "/packages/host/guests";
+const WELCOME_LINK_BAR_H = 32;
+const WELCOME_DISMISSED_PATH = "/home/.welcome-dismissed";
 
 /** Boot result + cold-load timing + the running shell/terminal session. */
 export type ReadyState = BootResult & {
@@ -222,7 +224,9 @@ export async function startDesktop(opts: StartOptions = {}): Promise<ReadyState>
 
   // Bring up the desktop compositor and run the terminal inside its first window
   // (a DOM surface). The content host keeps id="terminal" so xterm sizing + the
-  // existing E2E selectors continue to work under the compositor.
+  // existing E2E selectors continue to work under the compositor. The React entry
+  // minimizes this window for first-run onboarding; it remains available from the
+  // taskbar while Welcome is the only visible window.
   const desktop = opts.desktop ?? document.getElementById("desktop") ?? document.body;
   const taskbarEl = opts.taskbar ?? document.getElementById("taskbar") ?? document.body;
   const compositor = new Compositor(desktop, taskbarEl);
@@ -290,6 +294,29 @@ export async function startDesktop(opts: StartOptions = {}): Promise<ReadyState>
       return (name && APP_LABELS[name]) || `App (pid ${pid})`;
     },
     (pid) => session.appForPid(pid) === "welcome", // the guide opens centered
+    (pid) => (session.appForPid(pid) === "welcome" ? WELCOME_LINK_BAR_H : 0),
+    (win, canvas, pid) => {
+      if (session.appForPid(pid) !== "welcome") return;
+      canvas.style.height = `calc(100% - ${WELCOME_LINK_BAR_H}px)`;
+
+      const links = document.createElement("nav");
+      links.className = "wasmos-welcome-links";
+      links.setAttribute("aria-label", "WASM_OS links");
+      const destinations = [
+        ["Codebase", "https://github.com/LayerDynamics/wasm_os"],
+        ["GitHub", "https://github.com/LayerDynamics"],
+        ["layerdynamics.co", "https://layerdynamics.co"],
+      ] as const;
+      for (const [label, href] of destinations) {
+        const link = document.createElement("a");
+        link.href = href;
+        link.target = "_blank";
+        link.rel = "noreferrer noopener";
+        link.textContent = label;
+        links.appendChild(link);
+      }
+      win.content.appendChild(links);
+    },
     (pid) => inputMetrics.markCanvasRendered(pid),
   );
   control.onSurface((info) => surfaces.onSurface(info));
@@ -399,14 +426,27 @@ export async function startDesktop(opts: StartOptions = {}): Promise<ReadyState>
     new CustomEvent("wasmos:ready", { detail: { bootMillis: result.bootMillis, coldLoadMillis, features: result.features } }),
   );
 
-  // The Welcome guide is owned by the on-load logic below — it opens every visit
-  // until dismissed — so it must NOT be recorded or re-opened by the session
-  // snapshot, or it would double-open (restore + on-load) or get stuck open.
+  // The Welcome guide is owned by the on-load logic below — it opens until
+  // dismissed — so it must NOT be recorded or re-opened by the session snapshot.
+  // Read the marker before restoring anything: on a first visit the guide is the
+  // only visible window, while returning users get their saved app layout back.
+  let welcomeDismissed = false;
+  if (opts.welcomeOnLoad) {
+    try {
+      await control.fsRead(WELCOME_DISMISSED_PATH);
+      welcomeDismissed = true;
+    } catch {
+      // No marker means this is still the onboarding view.
+    }
+  }
   if (opts.welcomeOnLoad) session.setTransient("welcome");
 
-  // Re-open the apps from the previous session (FR-35). Fire-and-forget: their
-  // windows stream in as each process boots and requests its surface.
-  void session.restore();
+  if (opts.welcomeOnLoad && !welcomeDismissed) termWin.minimize();
+
+  // Re-open the apps from the previous session (FR-35) after onboarding has
+  // been dismissed. Fire-and-forget: their windows stream in as each process
+  // boots and requests its surface.
+  if (!opts.welcomeOnLoad || welcomeDismissed) void session.restore();
 
   // Open the Welcome guide centered on every load, until the user dismisses it.
   // Closing its window (which reaps its process) writes a dismissal marker so it
@@ -414,19 +454,13 @@ export async function startDesktop(opts: StartOptions = {}): Promise<ReadyState>
   // so the deterministic E2E harness isn't perturbed by an extra window.
   if (opts.welcomeOnLoad) {
     void (async () => {
-      const dismissed = "/home/.welcome-dismissed";
-      try {
-        await control.fsRead(dismissed);
-        return; // the user closed it on a previous visit — honor that, stay closed
-      } catch {
-        // never dismissed — open the guide
-      }
+      if (welcomeDismissed) return; // the user closed it on a previous visit
       const pid = await session.launch("welcome");
       if (pid === undefined) return;
       // Persist the dismissal when the user closes the guide's window — its process
       // is reaped on close, firing onExit — so it does not reappear next load.
       control.onExit((exited) => {
-        if (exited === pid) void control.fsWrite(dismissed, new Uint8Array([1])).catch(() => {});
+        if (exited === pid) void control.fsWrite(WELCOME_DISMISSED_PATH, new Uint8Array([1])).catch(() => {});
       });
     })();
   }

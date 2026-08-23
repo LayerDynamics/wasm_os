@@ -35,6 +35,10 @@ export class SurfaceManager {
     private titleFor: (pid: number) => string = (pid) => `App (pid ${pid})`,
     /** Whether a process-owned window should open centered (e.g. the Welcome guide). */
     private centeredFor: (pid: number) => boolean = () => false,
+    /** Extra content height reserved below the canvas for host-provided controls. */
+    private extraContentHeightFor: (pid: number) => number = () => 0,
+    /** Add host controls to a process window after its canvas has been mounted. */
+    private decorate: (win: Win, canvas: HTMLCanvasElement, ownerPid: number) => void = () => {},
     /** Called after the shared framebuffer has been copied to the visible canvas. */
     private onBlit: (pid: number) => void = () => {},
   ) {}
@@ -44,7 +48,7 @@ export class SurfaceManager {
     const win = this.compositor.open({
       title: this.titleFor(info.pid),
       width: info.width + 2,
-      height: info.height + 30, // + titlebar
+      height: info.height + 30 + this.extraContentHeightFor(info.pid), // + titlebar + host controls
       ownerPid: info.pid,
       surface: "canvas",
       centered: this.centeredFor(info.pid),
@@ -65,6 +69,7 @@ export class SurfaceManager {
       view: new Uint8Array(info.sab),
       dirty: false,
     });
+    this.decorate(win, canvas, info.pid);
     this.byWindow.set(win.id, info.surfaceId);
     // Route this canvas's pointer input to the owning process (brokered input, FR-25).
     this.bindInput(canvas, info.pid);

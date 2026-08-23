@@ -108,9 +108,11 @@ npm run bundle
 node tools/serve.mjs
 ```
 
-Open `http://localhost:8080`. The page boots to the desktop with a taskbar,
-terminal, and launcher. Linux starts from the launcher and uses the RISC-V
-configuration in [`assets/linux/wasmos-riscv64.cfg`](assets/linux/wasmos-riscv64.cfg).
+Open `http://localhost:8080`. The page opens with the Welcome guide as the only
+visible window. It explains the desktop, terminal, apps, filesystem, and
+keyboard controls; the terminal is already running and stays available from
+the taskbar. Linux starts from the launcher and uses the RISC-V configuration
+in [`assets/linux/wasmos-riscv64.cfg`](assets/linux/wasmos-riscv64.cfg).
 
 ## Verification
 
