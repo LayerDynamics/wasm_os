@@ -297,15 +297,16 @@ export async function startDesktop(opts: StartOptions = {}): Promise<ReadyState>
     (pid) => (session.appForPid(pid) === "welcome" ? WELCOME_LINK_BAR_H : 0),
     (win, canvas, pid) => {
       if (session.appForPid(pid) !== "welcome") return;
-      canvas.style.height = `calc(100% - ${WELCOME_LINK_BAR_H}px)`;
+      win.content.classList.add("wasmos-content-welcome");
+      canvas.classList.add("wasmos-welcome-canvas");
 
       const links = document.createElement("nav");
       links.className = "wasmos-welcome-links";
       links.setAttribute("aria-label", "WASM_OS links");
       const destinations = [
         ["Codebase", "https://github.com/LayerDynamics/wasm_os"],
-        ["GitHub", "https://github.com/LayerDynamics"],
-        ["layerdynamics.co", "https://layerdynamics.co"],
+        ["GitHub profile", "https://github.com/LayerDynamics"],
+        ["Portfolio", "https://layerdynamics.co"],
       ] as const;
       for (const [label, href] of destinations) {
         const link = document.createElement("a");

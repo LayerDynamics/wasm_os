@@ -58,10 +58,19 @@ test("the packaged React client boots the same desktop runtime", async ({ page }
   await expect(page.locator("#status")).toContainText("ready in");
   await expect(page.locator(".wasmos-window:visible")).toHaveCount(1, { timeout: 15_000 });
   await expect(page.locator(".wasmos-window:visible .wasmos-title")).toHaveText("Welcome", { timeout: 15_000 });
+  await expect(page.locator(".wasmos-welcome-links")).toBeVisible();
   await expect(page.locator(".wasmos-welcome-links a")).toHaveCount(3);
-  await expect(page.locator('.wasmos-welcome-links a[href="https://github.com/LayerDynamics/wasm_os"]')).toHaveCount(1);
-  await expect(page.locator('.wasmos-welcome-links a[href="https://github.com/LayerDynamics"]')).toHaveCount(1);
-  await expect(page.locator('.wasmos-welcome-links a[href="https://layerdynamics.co"]')).toHaveCount(1);
+  for (const href of [
+    "https://github.com/LayerDynamics/wasm_os",
+    "https://github.com/LayerDynamics",
+    "https://layerdynamics.co",
+  ]) {
+    const link = page.locator(`.wasmos-welcome-links a[href="${href}"]`);
+    await expect(link).toHaveCount(1);
+    await expect(link).toBeVisible();
+    await expect(link).toHaveAttribute("target", "_blank");
+    await expect(link).toHaveAttribute("rel", "noreferrer noopener");
+  }
 
   const result = await page.evaluate(() => {
     const state = (window as unknown as { __wasmos: { shellPid: number; features: { tier: string } } }).__wasmos;

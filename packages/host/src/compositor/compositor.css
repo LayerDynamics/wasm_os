@@ -174,12 +174,19 @@ body[data-theme="light"] .wasmos-clock { color: #4a5160; }
 .wasmos-content > #terminal { width: 100%; height: 100%; }
 .wasmos-content > canvas { display: block; width: 100%; height: 100%; image-rendering: pixelated; }
 
+.wasmos-content-welcome { display: flex; flex-direction: column; }
+.wasmos-content-welcome > .wasmos-welcome-canvas {
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+  height: auto;
+  image-rendering: pixelated;
+}
 .wasmos-welcome-links {
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 0;
+  position: static;
+  flex: 0 0 32px;
   height: 32px;
+  box-sizing: border-box;
   display: flex;
   align-items: center;
   justify-content: center;

@@ -59,8 +59,6 @@ const SLIDES: &[Slide] = &[
             "At startup, Welcome is the only open window. Terminal — sh",
             "is running behind its taskbar button.",
             "",
-            "Use the links below for the codebase, GitHub, and portfolio.",
-            "",
             "Use the \u{2190} and \u{2192} arrow keys (or Space) to read on.",
         ],
     },
