@@ -1,9 +1,13 @@
 # desktop compositor — Compositor & Desktop (webtop)
 
 **Plan date:** 2026-05-31
-**Source of truth:** `docs/specs/SPEC-1-wasm-os.md` (Layer 3 / Phase 3 / desktop compositor task)
+**Source of truth:** `docs/specs/SPEC-1-wasm-os.md` (desktop compositor task)
 **Predecessors:** kernel/VFS bootstrap (kernel+VFS), WASI process runtime (first WASI process), **shell and userland (userland & terminal — merged, CI-green on `main`)**
-**Branch / delivery:** `feat/m3-compositor-desktop` · per-task commits → PR → CI green → merge (same flow as process-runtime and shell work)
+**Branch / delivery:** `feat/m3-compositor-desktop` · historical delivery record. The current desktop behavior is in `docs/M3-STATUS.md`.
+
+> The scope and “out of scope” notes below describe sequencing during implementation;
+> they are not current claims that process control, networking, Linux, or session
+> restore are missing.
 
 ---
 
@@ -88,12 +92,12 @@ A **windowed desktop inside the tab**: a host-side compositor that manages real 
 
 ### Task 3 — Input brokering (FR-25): focused canvas window → owning process
 
-**Files:** `wit/` (`win-read-input` `0x25` + `deliver-input` host→kernel) + regen; `crates/kernel/src/{syscall.rs,types.rs,kcore.rs,lib.rs}` (`WaitReason::Input`, per-process input queue, `win_read_input` park/resume, `deliver_input` returns wakeups — siblings of shell and userland `deliver_stdin`/stdin-read; `Input` cap check); `packages/host/src/compositor/input.ts` (capture focused canvas window's pointer/key events, normalize to a compact event encoding); `kernel-worker.ts` (`deliverInput` command + wakeups); `boot.ts`/control.
+**Files:** `wit/` (`win-read-input` `0x25` + `deliver-input` host→kernel) + regen; `crates/kernel/src/{syscall.rs,types.rs,kcore.rs,lib.rs}` (`WaitReason::Input`, per-process input queue, `win_read_input` park/resume, `deliver_input` returns acceptance + wakeups — siblings of shell and userland `deliver_stdin`/stdin-read; `Input` cap check); `packages/host/src/compositor/input.ts` (capture focused canvas window's pointer/key events, normalize to a compact event encoding, and record delivery/render latency); `kernel-worker.ts` (`deliverInput` command + wakeups); `boot.ts`/control.
 
 **Steps:**
 1. Define a compact input event encoding (type: pointer-move/down/up, key-down/up; x,y; button/keycode; modifiers).
 2. Kernel: enqueue per process; `win_read_input` returns queued events or **parks** on `WaitReason::Input`; `deliver_input` enqueues + returns the woken pid (reuse the exact shell and userland wakeup plumbing).
-3. Compositor: on a focused canvas window, capture pointer/keyboard, translate to surface-local coords, call `control.deliverInput(pid, bytes)` (capability-checked: owner holds `Input`).
+3. Compositor: on a focused canvas window, capture pointer/keyboard, translate to surface-local coords, call `control.deliverInput(pid, bytes)` (capability-checked: owner holds `Input`), and close the metric sample when the guest's frame is blitted.
 
 **Tests:** kernel unit tests (read-empty parks on `Input`; `deliver_input` wakes it; re-driven read returns the event bytes; no `Input` cap → events dropped). Extend the Task-2 spike to **change color on click / on keypress**; `e2e/input.spec.ts`: focus the canvas window, dispatch real mouse+key events, assert the framebuffer reacts. (FR-25.)
 

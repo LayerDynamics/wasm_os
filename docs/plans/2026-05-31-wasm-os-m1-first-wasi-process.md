@@ -1,9 +1,9 @@
 # WASM_OS — WASI process runtime (First WASI Process) — Implementation Plan
 
-> **For Claude:** REQUIRED SUB-SKILL: use `lore:execute` to implement this plan task-by-task.
-> **Scope guard:** Do ONLY what is listed here. This plan delivers the SPEC-1 **WASI process runtime** task. It STOPS at the WASI process runtime exit criteria. Do NOT start shell and userland (the shell, coreutils, pipelines/redirection), the compositor, IPC channels/shm, signals, or the emulator. Do NOT add C/Zig/AssemblyScript/WAT guest toolchains (WASI process runtime is Rust-only by decision). If you discover adjacent issues, note them under **TODO / deferred** and continue — do NOT fix them.
+> **Status:** Implemented. This is the historical implementation record for the WASI process runtime.
+> **Historical scope guard:** At the time this plan covered only the first WASI process path and stopped before shell, desktop, IPC, signals, and Linux integration. Those later tasks are implemented now; the status reports describe the live paths. The current guest set also includes Zig and WAT programs.
 
-**Goal:** Run one real Rust `wasm32-wasip1` binary as a scheduled process. The guest executes in its own Web Worker, makes **blocking WASI Preview 1 syscalls over a SharedArrayBuffer ring** that are routed to kernel handlers, writes to a captured stdout, and exits 0. A second concurrent process proves isolation, and a deliberately-trapping guest proves crash containment (FR-34, pulled forward) — the SPEC-1 **WASI process runtime** task (Phase 1, §4.1).
+**Goal:** Run one real Rust `wasm32-wasip1` binary as a scheduled process. The guest executes in its own Web Worker, makes **blocking WASI Preview 1 syscalls over a SharedArrayBuffer ring** that are routed to kernel handlers, writes to a captured stdout, and exits 0. A second concurrent process proves isolation, and a deliberately-trapping guest proves crash containment (FR-34, pulled forward) — the SPEC-1 **WASI process runtime** task.
 
 **Traces:** FR-4 (route WASI p1 syscalls to kernel handlers), FR-5 (`spawn`/`wait`), FR-9 (run unmodified Rust `wasm32-wasi` modules), FR-6 (process memory isolation), FR-34 (crash containment, brought forward), Tier-A SAB transport (§3.1, §3.4).
 
@@ -39,7 +39,7 @@ The kernel/VFS bootstrap kernel runs synchronously on the main thread. WASI proc
 
 **Load-bearing separations (do not violate):**
 
-1. **The guest uses stock WASI.** `hello.wasm` is a plain Rust `wasm32-wasip1` binary importing `wasi_snapshot_preview1` from std. It needs **zero** generated `wasmos:kernel` stubs. The Binder / `wasmos:abi` generated bindings are used only for the **kworker ↔ kernel-component** boundary (which already exists), never on the guest path. Do NOT build a guest-stub generator in WASI process runtime (that is the `wasmos:kernel` world, deferred).
+1. **The guest uses stock WASI.** `hello.wasm` is a plain Rust `wasm32-wasip1` binary importing `wasi_snapshot_preview1` from std. It needs **zero** generated `wasmos:kernel` stubs. The Binder / `wasmos:abi` generated bindings are used only for the **kworker ↔ kernel-component** boundary (which already exists), never on the stock-WASI guest path. The shell and graphics guests use the separately checked hand-written `wasmos:kernel` transport where they need OS extensions.
 2. **Memory marshalling happens in the JS shim, not in Rust.** The process worker's WASI shim reads/writes the *guest's* linear memory (gather iovecs for `fd_write`, scatter bytes for `fd_read`). The ring carries already-resolved values. The Rust kernel router only ever sees `(fd, bytes, len, …)` — **never** a guest pointer. This is what makes the kernel host-testable and keeps isolation clean.
 3. **The kworker never blocks.** Process workers WANT to block (`Atomics.wait` on the response slot — that is Tier-A synchronous syscall semantics). The kworker must stay responsive to N rings + the control proxy, so it multiplexes with **`Atomics.waitAsync`** (Chrome + Firefox evergreen). A `postMessage`-wakeup fallback is documented but NOT implemented in WASI process runtime (single code path).
 4. **Host-orchestrated spawn, owned by the kworker.** The Rust kernel cannot create Workers. The kworker (which both hosts kernel state AND can spawn nested workers) orchestrates spawn end-to-end: `control.spawn(...)` allocates the PID + fd table + capset in the kernel and returns it; the kworker then creates the process worker and hands it the guest bytes + a fresh ring SAB.
@@ -435,7 +435,7 @@ git add e2e/process.spec.ts playwright.config.ts crates/catfile 2>/dev/null; git
 
 **Step 1 — CI:** add `rustup target add wasm32-wasip1` (already pinned) and a `cargo build -p hello -p crash --target wasm32-wasip1 --release` step before E2E. Confirm the existing Linux-determinism + drift jobs still pass with the new generated bindings.
 
-**Step 2 — `docs/M1-STATUS.md`:** record each WASI process runtime exit criterion, the test that proves it, and the actual result from a real `npm run verify` run (fill from the log — no placeholders). Note the as-built deviations (e.g. `Atomics.waitAsync` chosen; `fd_readdir` synthesized from flat list; preopen at fd 3 = `/`; clock_time_get deterministic stub).
+**Step 2 — `docs/M1-STATUS.md`:** record each WASI process runtime exit criterion, the test that proves it, and the actual result from a real `npm run verify` run (fill from the log — no placeholders). Note the as-built deviations (e.g. `Atomics.waitAsync` chosen; `fd_readdir` synthesized from the hierarchical VFS; preopen at fd 3 = `/`; clock and random handlers use the host's real time and browser CSPRNG).
 
 **Step 3 — full verify + commit.**
 
@@ -460,7 +460,8 @@ All five WASI process runtime exit criteria (top of plan) must hold:
 4. ✅ `path_open`/`fd_read`/`fd_seek`/`fd_close` reach the VFS (Test D + `syscall` unit tests).
 5. ✅ Binder drift gate green; kernel/VFS bootstrap tri-backend persistence still passes through the async proxy.
 
-**STOP here.** shell and userland (shell, coreutils, pipelines `a|b`, redirection `>`/`<`, polyglot C/Zig coreutils, FR-14) is the next plan, not this one.
+**STOP here.** This historical task ended before shell and userland. Those paths
+are implemented in the shell/userland task and documented in `docs/M2-STATUS.md`.
 
 ---
 
@@ -470,6 +471,8 @@ All five WASI process runtime exit criteria (top of plan) must hold:
 - **Hierarchical VFS dirs** + real `fd_readdir` (WASI process runtime synthesizes entries from the flat-key store; the kernel/VFS bootstrap flat-key TODO persists).
 - **OPFS sync access handles** for `/home` to retire the `CachedStore` bridge in the kworker (WASI process runtime reuses `CachedStore`; sync handles are a worker-only optimization).
 - **`Atomics.waitAsync` fallback:** the documented `postMessage`-wakeup path for any target browser lacking `waitAsync` (not implemented in WASI process runtime).
-- **Real clock/entropy brokers:** WASI process runtime uses a deterministic `clock_time_get` stub + `random_get`; the capability-gated clock/entropy device brokers (§3.6) land later.
+- **Real clock/entropy brokers:** the current WASI shim uses the worker clock and
+  browser CSPRNG; the kernel's seeded `/dev/random` and `/dev/urandom` paths are
+  separate device behavior.
 - **Tier B (Asyncify/JSPI):** WASI process runtime is Tier-A only; the cooperative no-SAB path is a separate effort (R-1).
 - **Control `kill`/signals** (FR-7) and live `ps`/`top` UI (FR-33) — process control and IPC.

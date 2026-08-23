@@ -1,61 +1,129 @@
-# WASM_OS — make apps clearly run + be usable within the OS
+# WASM_OS app and terminal usability — current behavior
 
-Date: 2026-06-03
+Date: 2026-08-22
+Status: implemented
 
-## Context
+WASM_OS is a browser-hosted desktop where the terminal and graphical apps are
+real WASI/WASM processes. This record describes the live paths that matter when
+someone opens the desktop and starts typing; it is not a deployment log.
 
-User reported the OS apps "can't run within the os," pointing at DevTools **Sources**
-showing only the kernel wasm + one process-worker module.
+## Desktop entry points
 
-**Deep-investigation verdict: the apps DO run as real processes and render.** Verified
-empirically on the live deploy:
+The launcher registers these process-backed apps in
+`packages/host/src/index.ts`:
 
-- Launching each app from the taskbar launcher (`☰ Apps`) spawns a process and renders:
-  `Files, Paint, Editor, Mandelbrot, Monitor, Lisp` → pids 3-8, non-blank canvases.
-- The Lisp REPL prints its banner; a screenshot shows 5 app windows open concurrently.
-- The user's own `listProcs` dump listed `sysmon` + `linux` as **running** processes.
+- Welcome
+- Files
+- Paint
+- Editor
+- Mandelbrot
+- Monitor
+- Lisp
 
-The DevTools Sources panel only lists wasm loaded by URL (`compileStreaming`, the kernel
-cores) or compiled-and-running in a worker (hash-named, e.g. `00045d2e` = the shell).
-Guests are fetched as bytes into the VFS `/bin` and compiled per-process on `exec`, so
-they appear by hash and only while running — not a defect, but it reads as "missing."
+Each launcher entry resolves to a guest image, starts a process, and gives the
+process the capabilities needed for its surface and input. The terminal is a
+separate DOM window backed by the shell process. Linux is an additional
+privileged process entry, not a replacement for the WASI apps.
 
-The real defects were **usability / identifiability**, not execution.
+Mandelbrot is an interactive Zig guest rather than a fixed screenshot: drag to
+pan, use `+`/`-` to zoom, press `N` or Space for another seeded view, and press
+`R` to reseed the view.
 
-## What was fixed (all committed to `main`, deployed to Railway)
+## Runtime entry points
 
-1. **Keyboard focus on window re-activation** (`Win.onActivate`, commit `f52a92f`).
-   Switching away and clicking back to the terminal left the xterm textarea blurred —
-   the terminal looked active but was keyboard-dead. The compositor now re-focuses a
-   DOM window's content on activation.
-2. **Dead-shell recovery** (shell respawn watcher, commit `41bea31`). The shell could
-   become an unreaped zombie (`exit` builtin / crash / sysmon kill); the terminal stayed
-   bound to the corpse so typing echoed but Enter/Backspace did nothing. The host now
-   polls process state and respawns + rebinds a fresh shell, keeping the terminal alive.
-   The terminal window is no longer owned by the shell pid (so the shell exiting can't
-   close it).
-3. **App window titles** (commit `4a6d686`). Process-owned windows were titled
-   `App (pid N)`. `SurfaceManager.titleFor` now resolves the launching app's label via
-   `SessionManager.appForPid` → `Files`/`Editor`/`Lisp`/`Linux`.
-4. **Tiled window placement** (commit `4a6d686`). New windows cascaded onto the same
-   top-left origin, burying the terminal. `Compositor.open` now places an un-pinned
-   window in the emptiest slot (least overlap with visible windows, preferring top-left,
-   first free slot). Restored windows still pin their saved geometry.
-5. **Editor forward-Delete** (`KEY_DELETE`, commit `f52a92f`).
-6. **Boot speed** (parallel guest load + parallel persisted-store read, commit `7376407`)
-   — 6.6× faster guest load under latency; boot-phase timing logged to the console.
+These are the non-test callers that make the workspace artifacts usable:
+
+| Code | Production entry point |
+|---|---|
+| `crates/sh` | `startDesktop` installs and starts `/usr/bin/sh`; the terminal stays bound to that process and respawns it after exit. |
+| `crates/coreutils` | `startDesktop` installs all 21 binaries under `/usr/bin` and `/bin` (`kill`, `renice`, `ps`, `top`, and `mount` also under `/sbin`); the shell resolves them through `$PATH`. |
+| `crates/apps/{welcome,filemanager,paint,editor,sysmon,lisp}` | `startDesktop` registers each app with the taskbar and session restore, then spawns it from its VFS path with its declared capabilities. |
+| `crates/apps/nano` | The shell resolves `/usr/bin/nano`; nano takes the terminal into raw input mode and uses the shared document helpers. |
+| `crates/hello`, `catfile`, `crash`, `spinner`, `chandemo`, `shmdemo`, `sigdemo` | Boot installs each executable in the VFS, so the shell and the file manager can start it. `shmdemo` self-spawns its reader; the channel demo is usable as two pipeline stages; the signal and spinner processes are observable through the System Monitor. |
+| `crates/gfxspike` | Boot installs it as an executable WASM file; the file manager’s generic executable path starts it with `Gpu` and `Input`. |
+| `guests/zig/*` and `guests/wat/watinfo.wat` | The build scripts emit artifacts into the same VFS loader: `echo.zig` and `watinfo` are shell commands, and `mandelbrot` is a launcher app. |
+| `crates/wasmgfx`, `crates/wasmobj`, `crates/wasmos-sys` | These are libraries rather than standalone guests. The canvas apps import `wasmgfx`, Editor/File Manager/nano import `wasmobj`, and the shell, demos, and graphical apps import `wasmos-sys`. |
+| `packages/host/src/worker/wasi-runtime.ts` | `process-worker.ts` constructs one runtime for every spawned WASI process; `packages/host/src/wasi.ts` and the package export expose the same runtime type to host embedders. |
+
+## Input behavior
+
+The compositor converts browser keyboard events into the kernel input event
+format. Printable keys use Unicode code points. Named keys have stable
+`KEY_*` values, including navigation, paging, insert, delete, function, lock,
+pause, print-screen, and context-menu keys.
+
+The terminal has two input modes:
+
+- Cooked shell input edits a local line before submitting it to the shell. It
+  supports insertion, Backspace, Delete, Home, End, left/right arrows, command
+  history, Ctrl-A/E/U/W/C/D, Tab as four spaces, Escape sequences, and pasted
+  text containing a newline.
+- Raw input is forwarded unchanged to the foreground guest. Nano uses this
+  path, so its own cursor movement, save prompts, and control keys remain under
+  nano's control.
+
+The editor consumes the brokered Home, End, Delete, and Tab keys directly. Tab
+inserts four spaces; Home and End move within the current line. Files, Paint,
+Mandelbrot, Monitor, Lisp, and the Linux console receive their respective
+brokered input events through the same compositor path.
+
+## Document path
+
+The canvas Editor and nano share the document lifecycle in
+`crates/wasmobj/src/wasi.rs`. A valid wasmobj is opened by extracting its
+payload, a plain file is opened as bytes, and save writes a content-bearing
+wasmobj when the destination is a `.wasm` path. This keeps the object format in
+the live app path instead of maintaining separate editor and nano logic.
 
 ## Verification
 
-- Full fast e2e suite **63/63**; host unit tests **21/21**; typecheck clean.
-- Red→green regression tests added for: terminal focus-restore, shell respawn, editor
-  forward-Delete.
-- Live screenshot proof of all apps running with named windows + tiled layout.
+The current local verification run completed on 2026-08-22:
 
-## Remaining / optional (not yet done)
+```text
+Binder generation/check: passed; 20 wasmos-sys stubs matched the WIT contract
+Rust workspace tests: passed
+Host tests: 32 passed
+Fast browser workflows: 89 passed
+Slow Linux browser workflows: 8 passed
+```
 
-- **DevTools observability** — give each compiled guest a `//# sourceURL` (or a named
-  `WebAssembly.Module`) so it shows as `editor.wasm` in Sources instead of a hash. Purely
-  cosmetic; would prevent the "only the kernel loaded" misread that started this.
-- **Window placement polish** — current placement is greedy least-overlap; could add true
-  tiling/snap zones if desired.
+The fast browser coverage includes launcher process creation, editor editing and
+save, nano raw input, terminal history/navigation/paste/focus recovery, the
+named-key matrix, and WAT reading `/proc/uptime` through WASI. The slow lane
+boots and drives the real TinyEMU Linux guest, including its 9p shared folder,
+serial console, process lifecycle, reload recovery, and framebuffer window.
+These checks exercise the production entry points; the reachability claims above
+come from the host registration and import paths in the source.
+
+The named-key matrix sends all 32 stable named-key values to each of the seven
+launcher canvas guests: Welcome, Files, Paint, Editor, Mandelbrot, Monitor, and
+Lisp. That is 224 real browser keydown events. The run recorded 224 generated,
+224 kernel-accepted, and 224 guest-rendered events, with 0 dropped, 0 missed,
+and 0 pending. The measured input-to-paint results were:
+
+| Guest | p50 | p95 | max |
+|-------|-----|-----|-----|
+| Welcome | 5.63 ms | 13.47 ms | 15.00 ms |
+| Files | 3.55 ms | 7.89 ms | 8.09 ms |
+| Paint | 5.88 ms | 13.41 ms | 14.13 ms |
+| Editor | 3.40 ms | 7.29 ms | 7.97 ms |
+| Mandelbrot | 3.89 ms | 10.03 ms | 10.77 ms |
+| Monitor | 4.67 ms | 8.74 ms | 10.16 ms |
+| Lisp | 7.02 ms | 13.73 ms | 14.38 ms |
+
+The negative capability check is also real: a guest without `Input` generated
+one event, accepted zero, and recorded one drop. `InputMetrics` keeps separate
+generated, delivered, rendered, dropped, and missed counters and exposes p50,
+p95, max, and rates through `window.__wasmos.inputMetrics`. The terminal E2E
+also resets the same recorder, types a real `echo latency` command, waits for
+the shell output, and asserts that keystroke-to-echo p50/p95/max exist, p95 is
+below 100 ms, and dropped, missed, and pending counts are all zero.
+The latest isolated terminal run measured 13 input samples at p50 30.87 ms,
+p95 32.69 ms, and max 32.69 ms.
+
+## Follow-up work
+
+The remaining usability work is polish rather than a missing execution path:
+the cooked line editor does not attempt full terminal emulation for wrapped
+wide-character layouts, and the canvas apps still own their own editing and
+display behavior. Those are bounded improvements to existing live paths.

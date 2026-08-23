@@ -43,22 +43,8 @@ interface SpawnSpec {
 /** Synchronous kernel control surface, taken directly from the generated Binder types. */
 type KernelControl = AbiRoot["control"];
 
-/** shell and userland park/resume outcome (jco maps `option<list<u8>>` → `Uint8Array | undefined`). */
-interface SyscallOutcome {
-  reply: Uint8Array | undefined;
-  wakeups: Uint32Array;
-  termOutput: Uint8Array;
-  /** Set when a guest spawned a child the kworker must instantiate (guest spawning).
-   *  `terminalStdin` marks a foreground job whose fd 0 is the terminal. */
-  spawn?: { pid: number; imagePath: string; terminalStdin: boolean };
-  /** pids the kworker must force-terminate (SIGKILL, signals). */
-  reap: Uint32Array;
-  /** Set when a guest parked on net_request (network broker) — the kworker fetches the URL. */
-  net?: { pid: number; url: string };
-  /** Set when a guest toggled the terminal line discipline via `tty_set_raw`:
-   *  `1` => raw, `0` => cooked, `undefined` => no change (jco maps `option<u8>`). */
-  termMode?: number;
-}
+/** Shell/userland park-resume outcome, taken from the generated Binder control ABI. */
+type SyscallOutcome = ReturnType<KernelControl["serviceSyscall"]>;
 
 type KernelModule = { instantiate: typeof instantiateKernel };
 
@@ -174,11 +160,15 @@ function applyTermMode(pid: number, termMode: number | undefined): void {
   setTerminalRaw(termMode === 1);
 }
 
+function serviceSyscall(pid: number, request: Uint8Array): SyscallOutcome {
+  return requireControl().serviceSyscall(pid, request);
+}
+
 /** Drive one syscall: complete it now, or park it; then process its wakeups. */
 function driveSyscall(pid: number, request: Uint8Array): void {
   const rt = procs.get(pid);
   if (!rt) return;
-  const outcome = requireControl().serviceSyscall(pid, request);
+  const outcome = serviceSyscall(pid, request);
   if (outcome.termOutput.length > 0) {
     ctx.postMessage({ type: "output", pid, bytes: outcome.termOutput });
   }
@@ -212,7 +202,7 @@ function processWakeups(wakeups: Uint32Array | number[]): void {
     parked.delete(w); // remove BEFORE re-drive so a duplicate wakeup no-ops
     const rt = procs.get(w);
     if (!rt) continue;
-    const outcome = requireControl().serviceSyscall(w, request);
+    const outcome = serviceSyscall(w, request);
     if (outcome.termOutput.length > 0) {
       ctx.postMessage({ type: "output", pid: w, bytes: outcome.termOutput });
     }
@@ -306,7 +296,7 @@ function onProcExit(pid: number, msg: ExitMessage): void {
   // so without this the kernel never zombifies it and a parent parked in
   // `wait()` would hang (guest spawning) — and a trap would not be contained (FR-34).
   if (requireControl().exitCode(pid) === undefined) {
-    const outcome = requireControl().serviceSyscall(pid, encodeProcExit(msg.exit.code));
+    const outcome = serviceSyscall(pid, encodeProcExit(msg.exit.code));
     processWakeups(outcome.wakeups);
   }
   rt.exited = true;
@@ -420,7 +410,7 @@ function reapEmulator(pid: number, emu: EmulatorRuntime): void {
   // If the kernel doesn't already know it exited (e.g. window-close, not SIGKILL),
   // record it so proc_list zombifies it and any waiter wakes.
   if (requireControl().exitCode(pid) === undefined) {
-    const outcome = requireControl().serviceSyscall(pid, encodeProcExit(137));
+    const outcome = serviceSyscall(pid, encodeProcExit(137));
     processWakeups(outcome.wakeups);
   }
   emu.worker.terminate();
@@ -527,7 +517,7 @@ function handleSpawnRequest(req: { pid: number; imagePath: string; terminalStdin
     // allocated but never started, which would hang the shell forever.
     console.error(`spawn of pid ${req.pid} (${req.imagePath}) failed:`, e);
     if (requireControl().exitCode(req.pid) === undefined) {
-      const outcome = requireControl().serviceSyscall(req.pid, encodeProcExit(127));
+      const outcome = serviceSyscall(req.pid, encodeProcExit(127));
       processWakeups(outcome.wakeups);
     }
     return;
@@ -652,16 +642,18 @@ ctx.onmessage = async (ev: MessageEvent) => {
         if (target !== undefined) {
           const wakeups = requireControl().deliverStdin(target, args.bytes as Uint8Array);
           processWakeups(wakeups);
+          result = true;
+        } else {
+          result = false;
         }
-        result = undefined;
         break;
       }
       case "deliverInput": {
         // Deliver brokered keyboard/mouse to the focused window's process (brokered input);
         // wake any parked win_read_input.
-        const wakeups = requireControl().deliverInput(args.pid as number, args.bytes as Uint8Array);
-        processWakeups(wakeups);
-        result = undefined;
+        const delivery = requireControl().deliverInput(args.pid as number, args.bytes as Uint8Array);
+        processWakeups(delivery.wakeups);
+        result = delivery;
         break;
       }
       case "bindTerminal":

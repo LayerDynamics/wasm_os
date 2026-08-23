@@ -7,8 +7,7 @@
 > foreign-architecture emulator running *as one privileged process among many*,
 > not a separate app and not the whole system.
 
-**Status:** PLAN (authored 2026-06-01). Builds on kernel, process, shell, desktop, and IPC (all merged to `main`;
-process control and IPC = `docs/M4-STATUS.md`). Source of truth: `docs/specs/SPEC-1-wasm-os.md`.
+**Status:** Implemented. This is the historical implementation record for the Linux integration task. Current behavior is in `docs/M5-STATUS.md` and `docs/specs/SPEC-1-wasm-os.md`.
 
 ---
 
@@ -111,7 +110,7 @@ over the per-syscall ring.
 
 ---
 
-## Linux guest integration exit criteria (definition of done — spec §4.1 Phase 5 / §5)
+## Linux guest integration exit criteria (definition of done)
 
 **Phase A criteria are the spec's Linux guest integration MUSTs and are independently shippable.**
 

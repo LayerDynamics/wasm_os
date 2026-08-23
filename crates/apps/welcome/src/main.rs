@@ -223,14 +223,16 @@ fn main() {
             Err(_) => return, // no Input capability
         };
         let mut changed = false;
+        let mut received_key = false;
         for ev in &events {
             if ev.kind == EV_KEY_DOWN {
+                received_key = true;
                 changed |= deck.key(ev.key);
             } else if ev.kind == EV_POINTER_DOWN {
                 changed |= deck.click(ev.x as i32);
             }
         }
-        if changed {
+        if changed || received_key {
             deck.draw(&mut fb);
             win_present(surface, fb.bytes());
         }

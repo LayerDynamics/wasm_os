@@ -53,10 +53,18 @@ pub struct DirEntry {
 /// Reserved key prefixes (a real path always starts with `/`, never `\x01`).
 const VERSION_KEY: &str = "\u{1}vfs_version";
 const DIR_PREFIX: &str = "\u{1}d:";
+const LINK_PREFIX: &str = "\u{1}l:";
+const TIME_PREFIX: &str = "\u{1}t:";
 const VFS_VERSION: &[u8] = b"2";
 
 fn dir_marker(path: &str) -> String {
     format!("{DIR_PREFIX}{path}")
+}
+fn link_marker(path: &str) -> String {
+    format!("{LINK_PREFIX}{path}")
+}
+fn time_marker(path: &str) -> String {
+    format!("{TIME_PREFIX}{path}")
 }
 fn is_reserved(key: &str) -> bool {
     key.starts_with('\u{1}')
@@ -74,12 +82,22 @@ pub struct Vfs {
     sys: Box<dyn Blockstore>,     // bound to /etc, /var, … (opfs, separate store)
     dev_rng: u64,                 // /dev/[u]random state, seeded with host entropy
     dev_seeded: bool,             // true once the host has plumbed in real entropy
+    timestamps: BTreeMap<String, [u64; 3]>, // atime, mtime, ctime for WASI filestat
 }
 
 impl Vfs {
     pub fn new(home: Box<dyn Blockstore>, mnt: Box<dyn Blockstore>, sys: Box<dyn Blockstore>) -> Self {
         let mut v =
-            Self { tmpfs: BTreeMap::new(), mounts: Vec::new(), home, mnt, sys, dev_rng: 0, dev_seeded: false };
+            Self {
+                tmpfs: BTreeMap::new(),
+                mounts: Vec::new(),
+                home,
+                mnt,
+                sys,
+                dev_rng: 0,
+                dev_seeded: false,
+                timestamps: BTreeMap::new(),
+            };
         v.mounts.push(("/".into(), Mount { backend: Backend::Tmpfs }));
         v
     }
@@ -217,11 +235,35 @@ impl Vfs {
         }
     }
 
+    fn symlink_target(&self, path: &str) -> Option<String> {
+        let backend = self.resolve(path).ok()?;
+        let bytes = self.kv_get(backend, &link_marker(path))?;
+        String::from_utf8(bytes).ok()
+    }
+
+    fn followed_path(&self, path: &str) -> Result<String, FsError> {
+        if !path.starts_with('/') {
+            return Err(FsError::BadPath(path.into()));
+        }
+        let mut current = path.to_string();
+        for _ in 0..40 {
+            let Some(target) = self.symlink_target(&current) else { return Ok(current) };
+            current = if target.starts_with('/') {
+                normalize_path(&target)
+            } else {
+                let parent = current.rsplit_once('/').map(|(p, _)| p).unwrap_or("/");
+                normalize_path(&format!("{parent}/{target}"))
+            };
+        }
+        Err(FsError::BadPath("too many symbolic links".into()))
+    }
+
     // --- directory predicates ---
 
     /// True if `path` names a directory (the root, an explicit marker, or any
     /// path that has at least one descendant key).
     pub fn is_dir(&self, path: &str) -> bool {
+        let Ok(path) = self.followed_path(path) else { return false };
         if path == "/" {
             return true;
         }
@@ -230,11 +272,11 @@ impl Vfs {
         if self.mounts.iter().any(|(p, _)| p.trim_end_matches('/') == trimmed) {
             return true;
         }
-        let b = match self.resolve(path) {
+        let b = match self.resolve(&path) {
             Ok(b) => b,
             Err(_) => return false,
         };
-        if self.kv_get(b, &dir_marker(path)).is_some() {
+        if self.kv_get(b, &dir_marker(&path)).is_some() {
             return true;
         }
         let child_prefix = format!("{path}/");
@@ -244,44 +286,112 @@ impl Vfs {
     }
 
     pub fn is_file(&self, path: &str) -> bool {
-        self.resolve(path).map(|b| self.kv_get(b, path).is_some()).unwrap_or(false)
+        let Ok(path) = self.followed_path(path) else { return false };
+        self.resolve(&path).map(|b| self.kv_get(b, &path).is_some()).unwrap_or(false)
     }
 
     pub fn exists(&self, path: &str) -> bool {
-        path == "/" || self.is_file(path) || self.is_dir(path)
+        path == "/" || self.symlink_target(path).is_some() || self.is_file(path) || self.is_dir(path)
     }
 
     // --- file ops ---
 
     pub fn write(&mut self, path: &str, bytes: Vec<u8>) -> Result<(), FsError> {
-        let b = self.resolve(path)?;
-        if self.is_dir(path) {
+        let path = self.followed_path(path)?;
+        let b = self.resolve(&path)?;
+        if self.is_dir(&path) {
             return Err(FsError::IsDir);
         }
-        if self.kv_put(b, path, bytes) {
+        if self.kv_put(b, &path, bytes) {
             Ok(())
         } else {
-            Err(FsError::IoFailure(path.into()))
+            Err(FsError::IoFailure(path))
         }
     }
 
     pub fn read(&self, path: &str) -> Result<Vec<u8>, FsError> {
-        let b = self.resolve(path)?;
-        match self.kv_get(b, path) {
+        let path = self.followed_path(path)?;
+        let b = self.resolve(&path)?;
+        match self.kv_get(b, &path) {
             Some(v) => Ok(v),
-            None if self.is_dir(path) => Err(FsError::IsDir),
+            None if self.is_dir(&path) => Err(FsError::IsDir),
             None => Err(FsError::NotFound),
         }
+    }
+
+    /// Create a symbolic link. Link metadata is kept in the same backend as the
+    /// link path, so the link follows its mount point without changing the file
+    /// storage format used by existing files.
+    pub fn symlink(&mut self, target: &str, link: &str) -> Result<(), FsError> {
+        let backend = self.resolve(link)?;
+        if self.exists(link) {
+            return Err(FsError::Exists);
+        }
+        self.kv_put_checked(backend, &link_marker(link), target.as_bytes().to_vec())
+    }
+
+    /// Read a symbolic link without following it.
+    pub fn readlink(&self, link: &str) -> Result<String, FsError> {
+        self.symlink_target(link).ok_or(FsError::NotFound)
+    }
+
+    /// Create a content-preserving hard-link equivalent. The VFS is backed by
+    /// key/value stores rather than inode objects, so this copies the file bytes
+    /// while preserving the observable WASI link operation and isolation rules.
+    pub fn link(&mut self, source: &str, target: &str) -> Result<(), FsError> {
+        if self.is_dir(source) {
+            return Err(FsError::IsDir);
+        }
+        let content = self.read(source)?;
+        self.write(target, content)
+    }
+
+    /// Set WASI file times. The kernel keeps the values with the current VFS
+    /// instance so subsequent filestat calls observe the update.
+    pub fn set_times(&mut self, path: &str, times: [u64; 3]) -> Result<(), FsError> {
+        let path = self.followed_path(path)?;
+        let backend = self.resolve(&path)?;
+        if !self.exists(&path) {
+            return Err(FsError::NotFound);
+        }
+        let mut encoded = Vec::with_capacity(24);
+        for value in times {
+            encoded.extend_from_slice(&value.to_le_bytes());
+        }
+        self.kv_put_checked(backend, &time_marker(&path), encoded)?;
+        self.timestamps.insert(path, times);
+        Ok(())
+    }
+
+    pub fn times(&self, path: &str) -> [u64; 3] {
+        let Ok(path) = self.followed_path(path) else { return [0; 3] };
+        if let Some(times) = self.timestamps.get(&path) {
+            return *times;
+        }
+        let Ok(backend) = self.resolve(&path) else { return [0; 3] };
+        let Some(encoded) = self.kv_get(backend, &time_marker(&path)) else { return [0; 3] };
+        if encoded.len() != 24 {
+            return [0; 3];
+        }
+        [
+            u64::from_le_bytes(encoded[0..8].try_into().unwrap()),
+            u64::from_le_bytes(encoded[8..16].try_into().unwrap()),
+            u64::from_le_bytes(encoded[16..24].try_into().unwrap()),
+        ]
     }
 
     /// Unlink a file (used by the control `fs-delete` verb). Directories are
     /// rejected with `IsDir`; use [`Vfs::rmdir`].
     pub fn delete(&mut self, path: &str) -> Result<(), FsError> {
         let b = self.resolve(path)?;
+        if self.symlink_target(path).is_some() {
+            return if self.kv_delete(b, &link_marker(path)) { Ok(()) } else { Err(FsError::NotFound) };
+        }
         if self.kv_get(b, path).is_none() {
             return if self.is_dir(path) { Err(FsError::IsDir) } else { Err(FsError::NotFound) };
         }
         if self.kv_delete(b, path) {
+            self.kv_delete(b, &time_marker(path));
             Ok(())
         } else {
             Err(FsError::NotFound)
@@ -330,14 +440,16 @@ impl Vfs {
             return Err(FsError::NotEmpty);
         }
         self.kv_delete(b, &dir_marker(path));
+        self.kv_delete(b, &time_marker(path));
         Ok(())
     }
 
     /// List the immediate children of a directory.
     pub fn readdir(&self, path: &str) -> Result<Vec<DirEntry>, FsError> {
-        let b = self.resolve(path)?;
-        if !self.is_dir(path) {
-            return Err(if self.is_file(path) { FsError::IsDir } else { FsError::NotFound });
+        let path = self.followed_path(path)?;
+        let b = self.resolve(&path)?;
+        if !self.is_dir(&path) {
+            return Err(if self.is_file(&path) { FsError::IsDir } else { FsError::NotFound });
         }
         let prefix = if path == "/" { "/".to_string() } else { format!("{path}/") };
         let mut dirs: BTreeMap<String, bool> = BTreeMap::new(); // name -> is_dir
@@ -364,6 +476,17 @@ impl Vfs {
                 let name = rest.split('/').next().unwrap_or(rest);
                 if !name.is_empty() {
                     dirs.insert(name.to_string(), true);
+                }
+            }
+        }
+
+        // Symbolic links are directory entries in their own right. Their target
+        // is resolved only when the link is opened or stat'ed.
+        for key in self.kv_keys(b, LINK_PREFIX) {
+            let Some(marked) = key.strip_prefix(LINK_PREFIX) else { continue };
+            if let Some(rest) = marked.strip_prefix(&prefix) {
+                if !rest.contains('/') && !rest.is_empty() {
+                    dirs.entry(rest.to_string()).or_insert(false);
                 }
             }
         }
@@ -397,7 +520,14 @@ impl Vfs {
             // Cross-backend move is copy+unlink at a higher layer; not atomic.
             return Err(FsError::IoFailure("cross-backend rename".into()));
         }
-        if self.is_file(from) {
+        if let Some(target) = self.symlink_target(from) {
+            if self.exists(to) {
+                return Err(FsError::Exists);
+            }
+            self.kv_put_checked(bt, &link_marker(to), target.into_bytes())?;
+            self.kv_delete(bf, &link_marker(from));
+            Ok(())
+        } else if self.is_file(from) {
             let content = self.kv_get(bf, from).ok_or(FsError::NotFound)?;
             if self.exists(to) {
                 return Err(FsError::Exists);
@@ -441,6 +571,20 @@ impl Vfs {
             Err(FsError::NotFound)
         }
     }
+}
+
+fn normalize_path(path: &str) -> String {
+    let mut parts: Vec<&str> = Vec::new();
+    for part in path.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => {
+                parts.pop();
+            }
+            value => parts.push(value),
+        }
+    }
+    if parts.is_empty() { "/".into() } else { format!("/{}", parts.join("/")) }
 }
 
 #[cfg(test)]

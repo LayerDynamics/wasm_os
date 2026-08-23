@@ -1,9 +1,13 @@
 # process control and IPC — Multi-process, IPC, Persistence ("it's really an OS")
 
 **Plan date:** 2026-05-31
-**Source of truth:** `docs/specs/SPEC-1-wasm-os.md` (Phase 4 / process control and IPC task)
+**Source of truth:** `docs/specs/SPEC-1-wasm-os.md` (process control and IPC task)
 **Predecessors:** kernel/VFS bootstrap (kernel+VFS), WASI process runtime (first process), shell and userland (userland+terminal), **desktop compositor (compositor & desktop — merged, CI-green on `main`)**
-**Branch / delivery:** `feat/m4-multiproc-ipc` · per-task commits → PR → CI green → merge (same flow as WASI process runtime–desktop compositor)
+**Branch / delivery:** `feat/m4-multiproc-ipc` · historical delivery record. The current process-control and IPC behavior is in `docs/M4-STATUS.md`.
+
+> The scope notes below describe what this task delivered at the time. Networking,
+> Linux integration, and the other later runtime layers are implemented now; do not
+> read historical “deferred” labels as current repository status.
 
 ---
 

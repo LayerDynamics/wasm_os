@@ -11,7 +11,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           # Materialize the git-lfs binaries (vendored TinyEMU riscv64 core + the Linux
-          # image under third_party/tinyemu + assets/linux) the M5 emulator needs.
+          # image under third_party/tinyemu + assets/linux) the Linux integration task needs.
           lfs: true
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -71,9 +71,9 @@ jobs:
         run: npm run build:guests
       - name: Host tests
         run: npm run test:host
-      - name: E2E fast lane (M0–M4 + light M5)
+      - name: E2E fast lane (kernel, userland, desktop, IPC, and Linux smoke checks)
         run: npm run test:e2e
-      - name: E2E slow lane (boot real riscv64 Linux in the MIT TinyEMU emulator, M5)
+      - name: E2E slow lane (full RISC-V Linux boot and lifecycle checks)
         # A separate lane (multi-second, multi-MB boots) so it can never flake the
         # fast suite. Reuses the webServer the fast lane built.
         run: npm run test:e2e:slow

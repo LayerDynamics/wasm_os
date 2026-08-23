@@ -98,6 +98,11 @@ export interface ProcExit {
   sharedMemory: boolean;
 }
 
+export interface InputDelivery {
+  accepted: boolean;
+  wakeups: Uint32Array;
+}
+
 /**
  * Async control surface. Every call round-trips to the kernel worker (the
  * kernel itself no longer runs on the main thread), so all methods are async.
@@ -138,13 +143,13 @@ export interface AsyncKernelControl {
   /** Deliver keystrokes to the terminal's current foreground job (a running
    *  editor/filter, else the shell). The kworker tracks the foreground stack so
    *  input reaches a program like nano while the shell is parked in `wait()`. */
-  terminalInput(bytes: Uint8Array): Promise<void>;
+  terminalInput(bytes: Uint8Array): Promise<boolean>;
   /** A foreground program toggled the terminal's line discipline via
    *  `tty_set_raw` — `raw` true means pass keys through verbatim (no echo, no
    *  line buffering); false restores cooked mode. Reset to cooked if it exits. */
   onTermMode(cb: (raw: boolean) => void): void;
   /** Deliver brokered input events to the focused window's process (brokered input). */
-  deliverInput(pid: number, bytes: Uint8Array): Promise<void>;
+  deliverInput(pid: number, bytes: Uint8Array): Promise<InputDelivery>;
   /** Bind a process's stdout/stderr to the terminal (writes stream to xterm). */
   bindTerminal(pid: number): Promise<void>;
   /** Register a listener for streamed terminal output (stdout/stderr → xterm). */

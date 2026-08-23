@@ -36,6 +36,13 @@ pub struct KernelCore {
     booted: bool,
 }
 
+/// Result of a brokered input delivery. The host needs the acceptance bit to
+/// distinguish a kernel enqueue from a capability-gated drop.
+pub struct InputDelivery {
+    pub accepted: bool,
+    pub wakeups: Vec<u32>,
+}
+
 impl KernelCore {
     pub fn new(home: Box<dyn Blockstore>, mnt: Box<dyn Blockstore>, sys: Box<dyn Blockstore>) -> Self {
         Self {
@@ -668,17 +675,18 @@ impl KernelCore {
     /// Deliver brokered input events to a process's focused window (brokered input, FR-25).
     /// Default-deny: only a process holding the Input capability receives events.
     /// Returns the pids whose parked `win_read_input` calls are now runnable.
-    pub fn deliver_input(&mut self, pid: u32, bytes: &[u8]) -> Vec<u32> {
+    pub fn deliver_input(&mut self, pid: u32, bytes: &[u8]) -> InputDelivery {
         if !self.procs.has_cap(pid, &Capability::Input) {
-            return vec![];
+            return InputDelivery { accepted: false, wakeups: Vec::new() };
         }
         self.procs.push_input(pid, bytes);
-        if self.procs.blocked_on(pid) == Some(crate::types::WaitReason::Input) {
+        let wakeups = if self.procs.blocked_on(pid) == Some(crate::types::WaitReason::Input) {
             self.procs.clear_blocked(pid);
             vec![pid]
         } else {
             vec![]
-        }
+        };
+        InputDelivery { accepted: true, wakeups }
     }
 
     /// The process's exit code, if it has exited (FR-5 `wait`).
@@ -884,12 +892,16 @@ mod tests {
         let with = k.spawn("g", None, false, false, true); // Input granted
         let without = k.spawn("n", None, false, false, false); // no Input
         // Default-deny: a process without Input receives nothing (no wakeups).
-        assert!(k.deliver_input(without, &[0u8; 12]).is_empty());
+        let denied = k.deliver_input(without, &[0u8; 12]);
+        assert!(!denied.accepted);
+        assert!(denied.wakeups.is_empty());
         // Park `with` on win_read_input (opcode 0x25, cap=120) with an empty queue,
         // then a delivery wakes exactly that pid.
         let req = vec![0x25u8, 120, 0, 0, 0];
         assert!(k.service_syscall(with, &req).reply.is_none());
-        assert_eq!(k.deliver_input(with, &[0u8; 12]), vec![with]);
+        let delivered = k.deliver_input(with, &[0u8; 12]);
+        assert!(delivered.accepted);
+        assert_eq!(delivered.wakeups, vec![with]);
     }
 
     // --- process control and IPC: process metrics + proc_list + runtime priority ---

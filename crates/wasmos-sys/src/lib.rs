@@ -258,6 +258,27 @@ pub const KEY_ESCAPE: u32 = 0x107;
 pub const KEY_DELETE: u32 = 0x108;
 pub const KEY_HOME: u32 = 0x109;
 pub const KEY_END: u32 = 0x10a;
+pub const KEY_INSERT: u32 = 0x10b;
+pub const KEY_PAGE_UP: u32 = 0x10c;
+pub const KEY_PAGE_DOWN: u32 = 0x10d;
+pub const KEY_F1: u32 = 0x10e;
+pub const KEY_F2: u32 = 0x10f;
+pub const KEY_F3: u32 = 0x110;
+pub const KEY_F4: u32 = 0x111;
+pub const KEY_F5: u32 = 0x112;
+pub const KEY_F6: u32 = 0x113;
+pub const KEY_F7: u32 = 0x114;
+pub const KEY_F8: u32 = 0x115;
+pub const KEY_F9: u32 = 0x116;
+pub const KEY_F10: u32 = 0x117;
+pub const KEY_F11: u32 = 0x118;
+pub const KEY_F12: u32 = 0x119;
+pub const KEY_CAPS_LOCK: u32 = 0x11a;
+pub const KEY_NUM_LOCK: u32 = 0x11b;
+pub const KEY_SCROLL_LOCK: u32 = 0x11c;
+pub const KEY_PAUSE: u32 = 0x11d;
+pub const KEY_PRINT_SCREEN: u32 = 0x11e;
+pub const KEY_CONTEXT_MENU: u32 = 0x11f;
 
 /// A decoded keyboard/mouse event delivered to a process's focused window.
 #[derive(Clone, Copy, Debug)]
@@ -269,7 +290,7 @@ pub struct InputEvent {
     /// Surface-local pointer position (pixels).
     pub x: u16,
     pub y: u16,
-    /// Key code for key events (a `KeyboardEvent.keyCode`-class value).
+    /// Unicode code point for printable keys, or one of the `KEY_*` values above.
     pub key: u32,
     /// Modifier bitfield: 1=Shift, 2=Ctrl, 4=Alt, 8=Meta.
     pub mods: u8,

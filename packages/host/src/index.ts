@@ -4,8 +4,19 @@ import { attachTerminal, type TerminalSession } from "./term/terminal.js";
 import { Compositor } from "./compositor/compositor.js";
 import { SurfaceManager } from "./compositor/surface.js";
 import { SessionManager } from "./compositor/session.js";
-import { InputRouter } from "./compositor/input.js";
+import { InputMetrics, InputRouter } from "./compositor/input.js";
 import { ThemeManager } from "./compositor/theme.js";
+
+// Keep the runtime available from the package's main entry as well as the
+// dedicated `@wasmos/host/wasi` export. The desktop launcher and embedders now
+// share the same process runtime instead of maintaining a second instantiation
+// path.
+export {
+  WasiRuntime,
+  type WasiRuntimeInspection,
+  type WasiRuntimeOptions,
+  type WasiRuntimeState,
+} from "./wasi.js";
 
 // Re-export so the React client can pre-flight the same isolation check this entry
 // enforces (and render actionable guidance instead of a cryptic crash).
@@ -17,9 +28,11 @@ export { isCrossOriginIsolated } from "./features.js";
 // "crash" is the fault-injection guest (FR-34): it traps on purpose so the
 // crash-containment path (a trapped process must not take down the shell) is
 // exercisable from the terminal.
+// "watinfo" is hand-authored WAT compiled from guests/wat/watinfo.wat. It reads
+// the live /proc/uptime file through WASI and writes the result to the terminal.
 const BIN = [
   "sh", "hello", "catfile", "echo", "cat", "grep", "ls", "wc", "cp", "mv", "rm", "mkdir", "pwd", "head", "tail", "env",
-  "echo.zig", "crash",
+  "echo.zig", "watinfo", "crash",
   // desktop compositor graphical apps (canvas surfaces); launchable from the file manager.
   // "mandelbrot" is the Zig polyglot app (FR-14 on the graphics path).
   "gfxspike", "filemanager", "paint", "editor", "mandelbrot", "sysmon", "lisp", "welcome", "spinner", "chandemo", "shmdemo", "sigdemo", "kill", "renice", "ps", "top", "fetch", "mount", "whoami", "touch", "nano",
@@ -34,6 +47,7 @@ export type ReadyState = BootResult & {
   compositor: Compositor;
   surfaces: SurfaceManager;
   session: SessionManager;
+  inputMetrics: InputMetrics;
 };
 
 declare global {
@@ -72,7 +86,7 @@ function keyEventToConsoleText(bytes: Uint8Array): string {
   const kind = dv.getUint8(0);
   if (kind !== 4) return ""; // EV_KEY_DOWN only
   const key = dv.getUint32(6, true);
-  if (key < 0x100) return String.fromCharCode(key); // printable (layout+shift applied)
+  if (key < 0x100) return String.fromCodePoint(key); // printable (layout+shift applied)
   switch (key) {
     case 0x100: return "\n"; // Enter
     case 0x101: return "\x7f"; // Backspace → DEL
@@ -82,6 +96,24 @@ function keyEventToConsoleText(bytes: Uint8Array): string {
     case 0x105: return "\x1b[B"; // ArrowDown
     case 0x106: return "\t"; // Tab
     case 0x107: return "\x1b"; // Escape
+    case 0x108: return "\x1b[3~"; // Delete
+    case 0x109: return "\x1b[H"; // Home
+    case 0x10a: return "\x1b[F"; // End
+    case 0x10b: return "\x1b[2~"; // Insert
+    case 0x10c: return "\x1b[5~"; // PageUp
+    case 0x10d: return "\x1b[6~"; // PageDown
+    case 0x10e: return "\x1bOP"; // F1
+    case 0x10f: return "\x1bOQ"; // F2
+    case 0x110: return "\x1bOR"; // F3
+    case 0x111: return "\x1bOS"; // F4
+    case 0x112: return "\x1b[15~"; // F5
+    case 0x113: return "\x1b[17~"; // F6
+    case 0x114: return "\x1b[18~"; // F7
+    case 0x115: return "\x1b[19~"; // F8
+    case 0x116: return "\x1b[20~"; // F9
+    case 0x117: return "\x1b[21~"; // F10
+    case 0x118: return "\x1b[23~"; // F11
+    case 0x119: return "\x1b[24~"; // F12
     default: return "";
   }
 }
@@ -114,8 +146,8 @@ export async function startDesktop(opts: StartOptions = {}): Promise<ReadyState>
   if (!isCrossOriginIsolated()) {
     throw new Error(
       "WASM_OS needs a cross-origin-isolated browser context (SharedArrayBuffer is " +
-        "unavailable here). Open the page directly in Safari or Chrome — not inside another " +
-        "app's in-app browser — on a current OS version.",
+        "unavailable here). Open the page directly in a supported isolated Chromium or Firefox " +
+        "window — not inside another app's in-app browser.",
     );
   }
   const result = await boot();
@@ -201,23 +233,28 @@ export async function startDesktop(opts: StartOptions = {}): Promise<ReadyState>
   // The emulator processes (Linux guest integration) — their windows route keys to the guest console as
   // text, not as brokered input-event records (they make no win_read_input syscall).
   const emulatorPids = new Set<number>();
+  const inputMetrics = new InputMetrics();
 
   // Brokered input (brokered input): the focused canvas window's keyboard/mouse is routed
   // to its owning process; keys target the active canvas window. For an emulator
   // window, keystrokes are translated to console text and sent to the guest (Linux framebuffer).
   const inputRouter = new InputRouter(
-    (pid, bytes) => {
+    async (pid, bytes) => {
       if (emulatorPids.has(pid)) {
         const text = keyEventToConsoleText(bytes);
-        if (text) void control.emulatorInput(pid, text);
+        if (!text) return false;
+        await control.emulatorInput(pid, text);
+        return true;
       } else {
-        void control.deliverInput(pid, bytes);
+        const delivery = await control.deliverInput(pid, bytes);
+        return delivery.accepted;
       }
     },
     () => {
       const w = compositor.activeWindow();
       return w && w.surface === "canvas" ? w.ownerPid : undefined;
     },
+    inputMetrics,
   );
 
   // Session snapshot/restore (session restore, FR-35): records open app windows + geometry to
@@ -253,6 +290,7 @@ export async function startDesktop(opts: StartOptions = {}): Promise<ReadyState>
       return (name && APP_LABELS[name]) || `App (pid ${pid})`;
     },
     (pid) => session.appForPid(pid) === "welcome", // the guide opens centered
+    (pid) => inputMetrics.markCanvasRendered(pid),
   );
   control.onSurface((info) => surfaces.onSurface(info));
   control.onPresent((id) => surfaces.onPresent(id));
@@ -286,7 +324,7 @@ export async function startDesktop(opts: StartOptions = {}): Promise<ReadyState>
   const termHost = document.createElement("div");
   termHost.id = "terminal";
   termWin.content.appendChild(termHost);
-  const term = attachTerminal(termHost, control, shellPid);
+  const term = attachTerminal(termHost, control, shellPid, inputMetrics);
   // Restore xterm keyboard focus whenever the terminal window is (re)activated —
   // otherwise switching to another window and clicking back leaves the terminal
   // visually active but keyboard-dead (typing/Backspace/Delete silently lost).
@@ -335,7 +373,7 @@ export async function startDesktop(opts: StartOptions = {}): Promise<ReadyState>
     if (ownerPid !== undefined) void control.kill(ownerPid);
   };
 
-  const state: ReadyState = { ...result, coldLoadMillis, shellPid, term, compositor, surfaces, session };
+  const state: ReadyState = { ...result, coldLoadMillis, shellPid, term, compositor, surfaces, session, inputMetrics };
   window.__wasmos = state;
 
   const statusText = `ready in ${coldLoadMillis}ms · tier ${result.features.tier} · shell pid ${shellPid}`;

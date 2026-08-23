@@ -153,11 +153,18 @@ interface control {
   /// pids whose parked stdin reads are now runnable.
   deliver-stdin: func(pid: u32, bytes: list<u8>) -> list<u32>;
 
+  /// Result of attempting to deliver one brokered input batch. `accepted` is
+  /// false when the target lacks the Input capability or no longer exists.
+  record input-delivery {
+    accepted: bool,
+    wakeups: list<u32>,
+  }
+
   /// Deliver brokered input events (keyboard/mouse, fixed-size records) to the
-  /// process owning the focused window (brokered input, FR-25). Returns the pids whose
-  /// parked `win_read_input` calls are now runnable. Default-deny: events for a
-  /// process without the Input capability are dropped.
-  deliver-input: func(pid: u32, bytes: list<u8>) -> list<u32>;
+  /// process owning the focused window (brokered input, FR-25). Returns whether
+  /// the batch was accepted and the pids whose parked `win_read_input` calls are
+  /// now runnable. Default-deny: events without the Input capability are dropped.
+  deliver-input: func(pid: u32, bytes: list<u8>) -> input-delivery;
 
   /// Bind a process's stdout/stderr to the interactive terminal: subsequent
   /// writes stream out as `syscall-outcome.term-output` (shell and userland).

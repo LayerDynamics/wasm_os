@@ -1,7 +1,7 @@
 # WASM_OS — kernel/VFS bootstrap (Kernel & VFS Skeleton) + Centralized Binder — Implementation Plan
 
-> **For Claude:** REQUIRED SUB-SKILL: Use lore:execute to implement this plan task-by-task.
-> **Scope guard:** Do ONLY what is listed here. This plan delivers the SPEC-1 **kernel/VFS bootstrap** task plus the **Binder** prerequisite. It STOPS at the kernel/VFS bootstrap exit criteria. Do NOT start WASI process runtime (first WASI process), the shell, the compositor, or the emulator. If you discover adjacent issues, note them as a TODO and continue. Do NOT fix them.
+> **Status:** Implemented. This is the historical implementation record for the kernel/VFS bootstrap and Binder contract.
+> **Historical scope guard:** At the time this plan was executed it stopped at the kernel/VFS bootstrap and Binder prerequisite. The later WASI process, shell, compositor, IPC, and emulator tasks are now implemented; use the status reports for their current behavior.
 
 **Goal:** Stand up the WASM_OS monorepo, the centralized WIT→bindings Binder, and a Rust→WASM microkernel that boots to `ready` in <1.5 s with a tri-backend virtual filesystem (tmpfs + OPFS + IndexedDB) that persists across reload — the SPEC-1 kernel/VFS bootstrap task.
 
@@ -120,7 +120,7 @@ command -v wit-bindgen >/dev/null 2>&1 || cargo install wit-bindgen-cli --locked
 echo "== binaryen (wasm-opt) =="
 command -v wasm-opt >/dev/null 2>&1 || brew install binaryen
 
-echo "== wabt (wat2wasm, for hand-written WAT later) =="
+echo "== wabt (wat2wasm, for the hand-written WAT guest) =="
 command -v wat2wasm >/dev/null 2>&1 || brew install wabt
 
 echo "== node deps (jco, vitest, playwright via package.json) =="

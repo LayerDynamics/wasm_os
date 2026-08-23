@@ -9,14 +9,17 @@
 > see [wit.md](wit.md).
 
 A guest in WASM_OS is a normal Rust/Zig program that imports standard
-`wasi_snapshot_preview1` — nothing project-specific. It calls `fd_write`,
-`path_open`, `fd_read`, `proc_exit` exactly as it would under `wasmtime`. WASM_OS
-makes those calls real by supplying its **own implementation of WASI**, split across
-three layers:
+`wasi_snapshot_preview1`. It calls `fd_write`, `path_open`, `fd_read`, and
+`proc_exit` exactly as it would under another Preview 1 runtime. WASM_OS runs those
+imports through `WasiRuntime`, the per-process runtime in
+[`packages/host/src/worker/wasi-runtime.ts`](../../packages/host/src/worker/wasi-runtime.ts):
+it compiles the guest, supplies the import namespaces, validates the memory and
+`_start` contract, and enters the guest. The import calls then cross the shim and
+kernel layers:
 
 ```text
 guest .wasm (wasm32-wasip1)        process worker (TS)            kworker (TS) → kernel component (Rust)
-  fd_write(fd, iovs, …)  ──import──▶ wasi-shim.ts                  control.service-syscall(pid, bytes)
+  fd_write(fd, iovs, …)  ──import──▶ WasiRuntime → wasi-shim.ts     control.service-syscall(pid, bytes)
                                      reads iovs out of guest mem    syscall.rs: decode → VFS/pipe/proc
                                      → binary msg over SAB ring ───▶ → reply bytes (or PARK)
                                      ◀── scatters result into mem ◀──  errno + fields
@@ -25,12 +28,32 @@ guest .wasm (wasm32-wasip1)        process worker (TS)            kworker (TS) �
 The dividing line is strict: **the shim is the only place guest linear memory is
 touched; the kernel only ever sees resolved values, never a guest pointer.**
 
+The same path accepts hand-authored WAT. The shipped
+[`guests/wat/watinfo.wat`](../../guests/wat/watinfo.wat) utility opens
+the live `/proc/uptime` file, reads it, and writes the result to stdout.
+`wat2wasm` produces `packages/host/guests/watinfo.wasm` during
+`npm run build:guests`; boot installs that artifact as
+`/usr/bin/watinfo` and `/bin/watinfo`. WAT does not get special
+runtime treatment and it does not use Binder-generated guest bindings: its imports
+are the same WASI Preview 1 functions the Rust and Zig guests use.
+
 ---
 
-## 1. The shim: `wasi_snapshot_preview1`, hand-written
+## 1. The runtime and shim: `wasi_snapshot_preview1`
+
+[`packages/host/src/worker/wasi-runtime.ts`](../../packages/host/src/worker/wasi-runtime.ts)
+is the runtime entry point. It owns one guest instance, its lifecycle, and the
+process memory contract. The worker reports the guest memory size after
+instantiation and rejects a guest that does not export private linear memory named
+`memory` or a `_start` function. The public host package exports the same runtime
+from [`packages/host/src/wasi.ts`](../../packages/host/src/wasi.ts), so other host
+launchers do not need to reconstruct the import wiring.
+
+The runtime delegates import calls to the hand-written shim:
 
 [`packages/host/src/worker/wasi-shim.ts`](../../packages/host/src/worker/wasi-shim.ts)
-builds the import object the process worker hands to `WebAssembly.instantiate`. Each
+builds the `wasi_snapshot_preview1` import object that `WasiRuntime` hands to
+`WebAssembly.instantiate`. Each
 WASI function:
 
 1. reads its pointer/length arguments out of the guest's `WebAssembly.Memory` (e.g.
@@ -42,27 +65,46 @@ WASI function:
 This is "the ONLY place guest linear memory is touched" — its module docstring says
 so, and it is what keeps the kernel host-testable and isolation clean.
 
-The implemented WASI Preview 1 surface (the real handler set in `wasi-shim.ts`):
+The runtime has named handlers for the Preview 1 surface used by the shipped guests:
 
 ```text
-fd_write  fd_read  fd_seek  fd_close  fd_readdir  fd_fdstat_get  fd_fdstat_set_flags
-fd_filestat_get  fd_prestat_get  fd_prestat_dir_name
-path_open  path_create_directory  path_remove_directory  path_unlink_file
-path_rename  path_filestat_get
 args_get  args_sizes_get  environ_get  environ_sizes_get
-clock_time_get  random_get  poll_oneoff  sched_yield  proc_exit
+clock_res_get  clock_time_get  random_get  poll_oneoff  sched_yield  proc_exit
+fd_advise  fd_allocate  fd_close  fd_datasync  fd_fdstat_get
+fd_fdstat_set_flags  fd_fdstat_set_rights  fd_filestat_get
+fd_filestat_set_size  fd_filestat_set_times  fd_pread  fd_pwrite
+fd_read  fd_readdir  fd_renumber  fd_seek  fd_sync  fd_tell  fd_write
+fd_prestat_get  fd_prestat_dir_name
+path_open  path_create_directory  path_filestat_get  path_filestat_set_times
+path_link  path_readlink  path_remove_directory  path_rename path_symlink
+path_unlink_file  proc_raise
+sock_accept  sock_recv  sock_send  sock_shutdown
 ```
 
-Two of these are handled **entirely host-side**, without the kernel, because they are
-about worker-local timing, not kernel state:
+The file and process calls are split between the shim and the kernel router. The
+shim owns guest-memory marshalling; the kernel owns descriptor state, pipes,
+capabilities, VFS contents, timestamps, links, and park/resume behavior.
+`fd_advise` and `fd_datasync` are valid operations with browser-appropriate
+semantics: the former validates the descriptor and the latter reaches the
+synchronous store boundary. `fd_allocate` grows a bounded sparse file when the
+requested range is outside its current size.
+
+The timing, entropy, and yield calls are handled entirely host-side because they
+are about worker-local facilities rather than kernel state:
 
 - `poll_oneoff` blocks the worker for a relative duration via `Atomics.wait` on a
   private cell that is never notified (a real timed sleep).
 - `clock_time_get` reads `performance.now()` / `performance.timeOrigin`.
+- `random_get` uses the worker's CSPRNG, and `sched_yield` completes immediately
+  because the guest worker has no second guest coroutine to yield to.
 
-`random_get` is seeded with real host CSPRNG entropy that the host hands the kernel
-once at boot (`control.seed-entropy` — the kernel is otherwise deterministic and has
-no RNG of its own).
+`random_get` uses the browser's CSPRNG directly. `/dev/random` and `/dev/urandom`
+are separate kernel device paths and receive their seed through
+`control.seed-entropy`.
+
+The four socket imports are explicit. WASM_OS does not expose WASI Preview 1 socket
+descriptors; each returns `NOSYS` so a guest can detect the boundary and use the
+WASM_OS network broker when it has the corresponding `Net` capability.
 
 ---
 
@@ -96,6 +138,13 @@ The WASI opcodes (`Op` enum, request byte 0):
 | `EnvironGet` | `0x0B` | | |
 | `ArgsSizesGet` | `0x0C` | | |
 | `ArgsGet` | `0x0D` | | |
+| `FdPread` | `0x19` | `FdPwrite` | `0x1A` |
+| `FdFilestatSetSize` | `0x1B` | `FdFilestatSetTimes` | `0x1C` |
+| `FdSync` | `0x1D` | `PathLink` | `0x1E` |
+| `PathReadlink` | `0x1F` | `PathSymlink` | `0x27` |
+| `FdTell` | `0x28` | `PathFilestatSetTimes` | `0x29` |
+| `FdFdstatSetRights` | `0x2A` | `FdRenumber` | `0x2B` |
+| `ProcRaise` | `0x2C` | | |
 
 Opcodes `0x20+` are the **`wasmos_kernel` extension** (spawn/pipe/wait, surfaces,
 channels, shm, signals, net, tty) — beyond WASI; see [wit.md](wit.md). The router
@@ -179,7 +228,9 @@ rather than silently misbehaving.
 | Path | Role |
 |------|------|
 | [`packages/host/src/worker/wasi-shim.ts`](../../packages/host/src/worker/wasi-shim.ts) | the hand-written `wasi_snapshot_preview1` (only place guest memory is read) |
-| [`packages/host/src/worker/process-worker.ts`](../../packages/host/src/worker/process-worker.ts) | per-process worker; instantiates the guest with the shim |
+| [`packages/host/src/worker/wasi-runtime.ts`](../../packages/host/src/worker/wasi-runtime.ts) | per-process WASI runtime; compiles, instantiates, validates, and starts one guest |
+| [`packages/host/src/wasi.ts`](../../packages/host/src/wasi.ts) | public host-package export for launching and inspecting the runtime |
+| [`packages/host/src/worker/process-worker.ts`](../../packages/host/src/worker/process-worker.ts) | per-process worker; owns the runtime and reports process lifecycle events |
 | [`packages/host/src/ring/`](../../packages/host/src/ring) | the SAB syscall ring (client/protocol/layout) |
 | [`crates/kernel/src/syscall.rs`](../../crates/kernel/src/syscall.rs) | the kernel WASI router + binary wire format + park/resume |
 | [`crates/kernel/src/vfs.rs`](../../crates/kernel/src/vfs.rs) | tri-backend VFS the router calls |

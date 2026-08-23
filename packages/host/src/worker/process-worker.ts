@@ -12,7 +12,8 @@
  * way the worker posts its exit and terminates.
  */
 import { RingClient } from "../ring/guest.js";
-import { makeWasiImports, makeKernelImports, ProcExit } from "./wasi-shim.js";
+import { ProcExit } from "./wasi-shim.js";
+import { WasiRuntime } from "./wasi-runtime.js";
 
 interface SpawnMessage {
   wasmBytes: ArrayBuffer;
@@ -38,41 +39,38 @@ const ctx = self as unknown as WorkerScope;
 ctx.onmessage = async (ev: MessageEvent) => {
   const { wasmBytes, pid, ringSab } = ev.data as SpawnMessage;
   const ring = new RingClient(ringSab);
-  let instance: WebAssembly.Instance | undefined;
-  const getMemory = () => instance!.exports.memory as WebAssembly.Memory;
-  const wasi = makeWasiImports(getMemory, ring);
   // Desktop compositor surfaces: this worker owns each surface's framebuffer SAB and
   // relays surface/present notifications to the kworker (→ compositor). Pixels are
   // copied guest-memory → SAB here; they never enter the kernel ring.
   const surfaces = new Map<number, Uint8Array>(); // surfaceId -> framebuffer SAB view
-  const wasmosKernel = makeKernelImports(getMemory, ring, {
-    onSurface(surfaceId: number, width: number, height: number): void {
-      const sab = new SharedArrayBuffer(width * height * 4);
-      surfaces.set(surfaceId, new Uint8Array(sab));
-      ctx.postMessage({ type: "surface", pid, surfaceId, width, height, sab });
-    },
-    onPresent(surfaceId: number, src: Uint8Array): void {
-      const view = surfaces.get(surfaceId);
-      if (!view) return;
-      view.set(src.subarray(0, view.length));
-      ctx.postMessage({ type: "present", pid, surfaceId });
+  const runtime = new WasiRuntime({
+    wasmBytes,
+    ring,
+    surfaces: {
+      onSurface(surfaceId: number, width: number, height: number): void {
+        const sab = new SharedArrayBuffer(width * height * 4);
+        surfaces.set(surfaceId, new Uint8Array(sab));
+        ctx.postMessage({ type: "surface", pid, surfaceId, width, height, sab });
+      },
+      onPresent(surfaceId: number, src: Uint8Array): void {
+        const view = surfaces.get(surfaceId);
+        if (!view) return;
+        view.set(src.subarray(0, view.length));
+        ctx.postMessage({ type: "present", pid, surfaceId });
+      },
     },
   });
   let sharedMemory = false;
 
   try {
-    const result = await WebAssembly.instantiate(wasmBytes, {
-      wasi_snapshot_preview1: wasi,
-      wasmos_kernel: wasmosKernel,
-    });
-    instance = result.instance;
-    const mem = instance.exports.memory as WebAssembly.Memory;
-    sharedMemory = mem.buffer instanceof SharedArrayBuffer;
+    // Publish memory metrics as soon as the guest exists. `_start` may remain
+    // inside a blocking WASI read for the lifetime of an interactive process,
+    // so waiting until run() returns would leave the process table at zero.
+    const state = await runtime.instantiate();
+    sharedMemory = state.sharedMemory;
     // Report the instantiated guest memory size for `ps`/`top` (process control and IPC).
-    ctx.postMessage({ type: "mem", pid, bytes: mem.buffer.byteLength });
-
-    const start = instance.exports._start as () => void;
-    start();
+    ctx.postMessage({ type: "mem", pid, bytes: state.memory.buffer.byteLength });
+    await runtime.run();
     // _start returned without calling proc_exit → conventional exit 0.
     const msg: ExitMessage = { pid, exit: { kind: "exit", code: 0 }, sharedMemory };
     ctx.postMessage(msg);

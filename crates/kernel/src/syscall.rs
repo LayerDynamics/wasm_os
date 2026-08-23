@@ -109,6 +109,14 @@ pub enum Op {
     FdFdstatSetFlags = 0x17,
     // fd readiness query backing a real `poll_oneoff` (host-side in the shim).
     FdReady = 0x18,
+    // The remaining common WASI Preview 1 file operations.
+    FdPread = 0x19,
+    FdPwrite = 0x1A,
+    FdFilestatSetSize = 0x1B,
+    FdFilestatSetTimes = 0x1C,
+    FdSync = 0x1D,
+    PathLink = 0x1E,
+    PathReadlink = 0x1F,
     // wasmos_kernel extension (guest process control, shell and userland).
     KSpawn = 0x20,
     KPipe = 0x21,
@@ -124,6 +132,12 @@ pub enum Op {
     // cooked) for in-terminal editors like nano. The new mode is reported to the
     // host via `syscall-outcome.term-mode`.
     TtySetRaw = 0x26,
+    PathSymlink = 0x27,
+    FdTell = 0x28,
+    PathFilestatSetTimes = 0x29,
+    FdFdstatSetRights = 0x2A,
+    FdRenumber = 0x2B,
+    ProcRaise = 0x2C,
 }
 
 impl Op {
@@ -151,12 +165,25 @@ impl Op {
             0x16 => Op::FdFilestatGet,
             0x17 => Op::FdFdstatSetFlags,
             0x18 => Op::FdReady,
+            0x19 => Op::FdPread,
+            0x1A => Op::FdPwrite,
+            0x1B => Op::FdFilestatSetSize,
+            0x1C => Op::FdFilestatSetTimes,
+            0x1D => Op::FdSync,
+            0x1E => Op::PathLink,
+            0x1F => Op::PathReadlink,
             0x20 => Op::KSpawn,
             0x21 => Op::KPipe,
             0x22 => Op::KWait,
             0x23 => Op::WinSurface,
             0x25 => Op::WinReadInput,
             0x26 => Op::TtySetRaw,
+            0x27 => Op::PathSymlink,
+            0x28 => Op::FdTell,
+            0x29 => Op::PathFilestatSetTimes,
+            0x2A => Op::FdFdstatSetRights,
+            0x2B => Op::FdRenumber,
+            0x2C => Op::ProcRaise,
             _ => return None,
         })
     }
@@ -192,6 +219,25 @@ pub mod filetype {
 pub mod fdflags {
     /// O_APPEND — every write goes to the current end of file.
     pub const APPEND: u16 = 0x0001;
+}
+
+/// WASI Preview 1 rights bits used by `fd_fdstat_get` and
+/// `fd_fdstat_set_rights`. The kernel keeps the capability decision in the
+/// descriptor's coarse read/write rights, but exposes the standard bitmask so
+/// stock libc can negotiate rights without seeing a synthetic all-bits value.
+mod rights {
+    pub const FD_READ: u64 = 1 << 1;
+    pub const FD_WRITE: u64 = 1 << 6;
+    pub const FD_PREAD: u64 = 1 << 13;
+    pub const FD_PWRITE: u64 = 1 << 14;
+    pub const FD_FDSTAT_SET_FLAGS: u64 = 1 << 3;
+    pub const FD_FDSTAT_SET_RIGHTS: u64 = 1 << 9;
+    pub const FD_SYNC: u64 = 1 << 4;
+    pub const FD_TELL: u64 = 1 << 5;
+    pub const FD_FILESTAT_GET: u64 = 1 << 10;
+    pub const FD_FILESTAT_SET_SIZE: u64 = 1 << 11;
+    pub const FD_FILESTAT_SET_TIMES: u64 = 1 << 12;
+    pub const FD_READDIR: u64 = 1 << 15;
 }
 
 /// WASI `whence` values for `fd_seek`.
@@ -410,6 +456,19 @@ pub fn dispatch(
         Op::FdFilestatGet => SyscallOutcome::ready(fd_filestat_get(vfs, procs, pid, &mut r)),
         Op::FdFdstatSetFlags => SyscallOutcome::ready(fd_fdstat_set_flags(procs, pid, &mut r)),
         Op::FdReady => SyscallOutcome::ready(fd_ready(vfs, procs, pipes, pid, &mut r)),
+        Op::FdPread => SyscallOutcome::ready(fd_pread(vfs, procs, pid, &mut r)),
+        Op::FdPwrite => SyscallOutcome::ready(fd_pwrite(vfs, procs, pid, &mut r)),
+        Op::FdFilestatSetSize => SyscallOutcome::ready(fd_filestat_set_size(vfs, procs, pid, &mut r)),
+        Op::FdFilestatSetTimes => SyscallOutcome::ready(fd_filestat_set_times(vfs, procs, pid, &mut r)),
+        Op::FdSync => SyscallOutcome::ready(fd_sync(procs, pid, &mut r)),
+        Op::PathLink => SyscallOutcome::ready(path_link(vfs, procs, pid, &mut r)),
+        Op::PathReadlink => SyscallOutcome::ready(path_readlink(vfs, procs, pid, &mut r)),
+        Op::PathSymlink => SyscallOutcome::ready(path_symlink(vfs, procs, pid, &mut r)),
+        Op::FdTell => SyscallOutcome::ready(fd_tell(procs, pid, &mut r)),
+        Op::PathFilestatSetTimes => SyscallOutcome::ready(path_filestat_set_times(vfs, procs, pid, &mut r)),
+        Op::FdFdstatSetRights => SyscallOutcome::ready(fd_fdstat_set_rights(procs, pid, &mut r)),
+        Op::FdRenumber => fd_renumber(procs, pipes, pid, &mut r),
+        Op::ProcRaise => SyscallOutcome::ready(proc_raise(procs, pid, &mut r)),
         // wasmos_kernel extension (guest process control).
         Op::KSpawn => k_spawn(vfs, procs, pipes, pid, &mut r),
         Op::KPipe => k_pipe(procs, pipes, pid, &mut r),
@@ -619,6 +678,9 @@ fn fd_read(
             }
         }
         DescKind::File { path } => {
+            if !desc.rights.read {
+                return SyscallOutcome::ready(err(errno::ACCES));
+            }
             // /dev devices return their bytes directly — no seek offset is applied, so
             // /dev/zero and /dev/urandom are endless and /dev/null reads as EOF.
             if crate::devfs::is_dev(&path) {
@@ -718,8 +780,8 @@ fn fd_close(
 }
 
 fn path_open(vfs: &mut Vfs, procs: &mut ProcTable, pid: u32, r: &mut Reader) -> Vec<u8> {
-    let (Some(dirfd), Some(path), Some(of), Some(_rights)) =
-        (r.u32(), r.string(), r.u16(), r.u64())
+    let (Some(dirfd), Some(_dirflags), Some(path), Some(of), Some(requested_rights), Some(_rights_inh), Some(fdflags)) =
+        (r.u32(), r.u32(), r.string(), r.u16(), r.u64(), r.u64(), r.u16())
     else {
         return Writer::new().u16(errno::INVAL).u32(0).build();
     };
@@ -734,7 +796,19 @@ fn path_open(vfs: &mut Vfs, procs: &mut ProcTable, pid: u32, r: &mut Reader) -> 
     let full = resolve_path(&dir_path, &path);
 
     let want_write = of & (oflags::CREAT | oflags::TRUNC) != 0;
-    let rights = if want_write { Rights::RW } else { Rights::R };
+    // Older wasmos_kernel callers omitted the Preview 1 rights word. Keep that
+    // wire-compatible form usable while honoring the rights requested by stock
+    // WASI libc when it supplies a non-zero mask.
+    let rights = if requested_rights == 0 {
+        if want_write { Rights::RW } else { Rights::R }
+    } else {
+        Rights {
+            read: requested_rights & (rights::FD_READ | rights::FD_PREAD | rights::FD_READDIR) != 0,
+            write: requested_rights & (rights::FD_WRITE | rights::FD_PWRITE) != 0,
+            exec: false,
+        }
+    };
+    let capability_rights = Rights { read: rights.read, write: rights.write || want_write, exec: false };
 
     // /proc is world-readable and read-only; /dev nodes are world-accessible. These
     // synthetic trees reflect kernel state (not the user's files), so they are not
@@ -747,7 +821,7 @@ fn path_open(vfs: &mut Vfs, procs: &mut ProcTable, pid: u32, r: &mut Reader) -> 
     // Capability enforcement (FR-31, default-deny) — skipped for the synthetic trees.
     if !is_procfs
         && !is_devfs
-        && !procs.has_cap(pid, &crate::types::Capability::FsPath { subtree: full.clone(), rights })
+        && !procs.has_cap(pid, &crate::types::Capability::FsPath { subtree: full.clone(), rights: capability_rights })
     {
         return resp(errno::NOTCAPABLE, 0);
     }
@@ -764,6 +838,9 @@ fn path_open(vfs: &mut Vfs, procs: &mut ProcTable, pid: u32, r: &mut Reader) -> 
         let fd = procs
             .open_fd(pid, Descriptor { kind: DescKind::Dir { path: full }, offset: 0, rights })
             .unwrap_or(0);
+        if fd != 0 {
+            procs.set_fd_flags(pid, fd, fdflags);
+        }
         return resp(errno::SUCCESS, fd);
     }
     if exists && of & oflags::EXCL != 0 {
@@ -784,6 +861,9 @@ fn path_open(vfs: &mut Vfs, procs: &mut ProcTable, pid: u32, r: &mut Reader) -> 
     let fd = procs
         .open_fd(pid, Descriptor { kind: DescKind::File { path: full }, offset: 0, rights })
         .unwrap_or(0);
+    if fd != 0 {
+        procs.set_fd_flags(pid, fd, fdflags);
+    }
     resp(errno::SUCCESS, fd)
 }
 
@@ -882,33 +962,64 @@ fn fd_fdstat_get(procs: &mut ProcTable, pid: u32, r: &mut Reader) -> Vec<u8> {
         DescKind::Dir { .. } => filetype::DIRECTORY,
         DescKind::File { .. } => filetype::REGULAR_FILE,
     };
-    // Report the fd-flags actually set on this fd (e.g. O_APPEND); rights are the
-    // full set (capabilities are enforced at path_open, not in fdstat).
+    // Report the flags and rights actually attached to this descriptor. Returning
+    // u64::MAX here makes libc believe it can call operations the kernel will
+    // reject, which is especially damaging for runtimes that probe rights first.
     let flags = procs.fd_flags(pid, fd);
+    let rights_base = descriptor_rights(desc);
     Writer::new()
         .u16(errno::SUCCESS)
         .u8(ft)
         .u16(flags)
-        .u64(u64::MAX)
-        .u64(u64::MAX)
+        .u64(rights_base)
+        .u64(0)
         .build()
 }
 
-/// `fd_filestat_get(fd)` — real type + size for an open fd (FR-18). Reply:
-/// `[errno u16][filetype u8][size u64]`; the shim scatters it into the 64-byte
-/// WASI `filestat`. Regular files report their true VFS byte length.
+fn descriptor_rights(desc: &Descriptor) -> u64 {
+    let mut bits = rights::FD_FDSTAT_SET_FLAGS
+        | rights::FD_FDSTAT_SET_RIGHTS
+        | rights::FD_FILESTAT_GET;
+    let file = matches!(desc.kind, DescKind::File { .. });
+    if desc.rights.read {
+        bits |= rights::FD_READ;
+        if file {
+            bits |= rights::FD_PREAD | rights::FD_TELL;
+        }
+    }
+    if desc.rights.write {
+        bits |= rights::FD_WRITE;
+        if file {
+            bits |= rights::FD_PWRITE
+                | rights::FD_SYNC
+                | rights::FD_FILESTAT_SET_SIZE
+                | rights::FD_FILESTAT_SET_TIMES;
+        }
+    }
+    if matches!(desc.kind, DescKind::Dir { .. }) && desc.rights.read {
+        bits |= rights::FD_READDIR;
+    }
+    bits
+}
+
+/// `fd_filestat_get(fd)` — real type, size, and timestamps for an open fd
+/// (FR-18). Reply: `[errno u16][filetype u8][size u64][atim u64][mtim u64][ctim
+/// u64]`; the shim scatters it into the 64-byte WASI `filestat`. Regular files
+/// report their true VFS byte length.
 fn fd_filestat_get(vfs: &Vfs, procs: &ProcTable, pid: u32, r: &mut Reader) -> Vec<u8> {
-    let out = |e: u16, ft: u8, size: u64| Writer::new().u16(e).u8(ft).u64(size).build();
-    let Some(fd) = r.u32() else { return out(errno::INVAL, 0, 0) };
-    let Some(desc) = procs.fd(pid, fd) else { return out(errno::BADF, 0, 0) };
+    let out = |e: u16, ft: u8, size: u64, times: [u64; 3]| {
+        Writer::new().u16(e).u8(ft).u64(size).u64(times[0]).u64(times[1]).u64(times[2]).build()
+    };
+    let Some(fd) = r.u32() else { return out(errno::INVAL, 0, 0, [0; 3]) };
+    let Some(desc) = procs.fd(pid, fd) else { return out(errno::BADF, 0, 0, [0; 3]) };
     match &desc.kind {
-        DescKind::Dir { .. } => out(errno::SUCCESS, filetype::DIRECTORY, 0),
+        DescKind::Dir { path } => out(errno::SUCCESS, filetype::DIRECTORY, 0, vfs.times(path)),
         DescKind::File { path } => {
             let size = vfs.read(path).map(|c| c.len() as u64).unwrap_or(0);
-            out(errno::SUCCESS, filetype::REGULAR_FILE, size)
+            out(errno::SUCCESS, filetype::REGULAR_FILE, size, vfs.times(path))
         }
         // stdin/stdout/stderr/terminal/pipes are streams, not sized files.
-        _ => out(errno::SUCCESS, filetype::CHARACTER_DEVICE, 0),
+        _ => out(errno::SUCCESS, filetype::CHARACTER_DEVICE, 0, [0; 3]),
     }
 }
 
@@ -922,6 +1033,96 @@ fn fd_fdstat_set_flags(procs: &mut ProcTable, pid: u32, r: &mut Reader) -> Vec<u
         err_only(errno::SUCCESS)
     } else {
         err_only(errno::BADF)
+    }
+}
+
+/// Restrict the rights on an open descriptor. Rights can only be removed; the
+/// process's path capability remains the authority used when opening new fds.
+fn fd_fdstat_set_rights(procs: &mut ProcTable, pid: u32, r: &mut Reader) -> Vec<u8> {
+    let (Some(fd), Some(requested), Some(_inheriting)) = (r.u32(), r.u64(), r.u64()) else {
+        return err_only(errno::INVAL);
+    };
+    let Some(desc) = procs.fd(pid, fd).cloned() else {
+        return err_only(errno::BADF);
+    };
+    if requested & !descriptor_rights(&desc) != 0 {
+        return err_only(errno::NOTCAPABLE);
+    }
+    let read = requested & (rights::FD_READ | rights::FD_PREAD | rights::FD_READDIR) != 0;
+    let write = requested & (rights::FD_WRITE | rights::FD_PWRITE) != 0;
+    if let Some(updated) = procs.fd_mut(pid, fd) {
+        updated.rights.read = read;
+        updated.rights.write = write;
+    }
+    err_only(errno::SUCCESS)
+}
+
+/// Move one descriptor to another descriptor number, closing the destination
+/// first as required by WASI. Pipe reference counts are updated so renumbering
+/// a pipeline endpoint cannot keep a peer alive accidentally.
+fn fd_renumber(
+    procs: &mut ProcTable,
+    pipes: &mut PipeTable,
+    pid: u32,
+    r: &mut Reader,
+) -> SyscallOutcome {
+    let (Some(old_fd), Some(new_fd)) = (r.u32(), r.u32()) else {
+        return SyscallOutcome::ready(err_only(errno::INVAL));
+    };
+    if old_fd == new_fd {
+        return if procs.fd(pid, old_fd).is_some() {
+            SyscallOutcome::ready(err_only(errno::SUCCESS))
+        } else {
+            SyscallOutcome::ready(err_only(errno::BADF))
+        };
+    }
+    let Some(source) = procs.fd(pid, old_fd).cloned() else {
+        return SyscallOutcome::ready(err_only(errno::BADF));
+    };
+    let source_flags = procs.fd_flags(pid, old_fd);
+    let mut wakeups = Vec::new();
+    if let Some(destination) = procs.fd(pid, new_fd).map(|d| d.kind.clone()) {
+        match destination {
+            DescKind::PipeWrite { id } => {
+                pipes.close_writer(id);
+                wakeups.extend(procs.take_blocked_on(&WaitReason::PipeRead(id)));
+            }
+            DescKind::PipeRead { id } => {
+                pipes.close_reader(id);
+                wakeups.extend(procs.take_blocked_on(&WaitReason::PipeWrite(id)));
+            }
+            _ => {}
+        }
+        procs.close_fd(pid, new_fd);
+    }
+    let _ = procs.take_fd(pid, old_fd);
+    procs.install_fd(pid, new_fd, source);
+    if source_flags != 0 {
+        procs.set_fd_flags(pid, new_fd, source_flags);
+    }
+    SyscallOutcome {
+        reply: Some(err_only(errno::SUCCESS)),
+        wakeups,
+        term_output: Vec::new(),
+        spawn: None,
+        reap: Vec::new(),
+        net: None,
+        term_mode: None,
+    }
+}
+
+/// Queue a signal for the calling process. The existing signal waiter consumes
+/// the queue, so this is useful to stock runtimes that implement `raise()` in
+/// terms of `proc_raise` rather than the WASMOS-specific kill syscall.
+fn proc_raise(procs: &mut ProcTable, pid: u32, r: &mut Reader) -> Vec<u8> {
+    let Some(sig) = r.u8() else { return err_only(errno::INVAL) };
+    if sig == 0 || sig > 31 {
+        return err_only(errno::INVAL);
+    }
+    if procs.push_signal(pid, sig) {
+        err_only(errno::SUCCESS)
+    } else {
+        err_only(errno::SRCH)
     }
 }
 
@@ -958,6 +1159,215 @@ fn fd_ready(vfs: &Vfs, procs: &ProcTable, pipes: &PipeTable, pid: u32, r: &mut R
         DescKind::PipeWrite { id } => (writable && (pipes.space(*id) > 0 || !pipes.read_open(*id)), 0),
     };
     out(errno::SUCCESS, ready, nbytes)
+}
+
+/// `fd_pread` reads a regular file at an explicit offset without changing the
+/// descriptor cursor. The host-side WASI runtime uses this for libc and Zig
+/// runtimes that use positional I/O during file operations.
+fn fd_pread(vfs: &mut Vfs, procs: &ProcTable, pid: u32, r: &mut Reader) -> Vec<u8> {
+    let (Some(fd), Some(offset), Some(len)) = (r.u32(), r.u64(), r.u32()) else {
+        return Writer::new().u16(errno::INVAL).bytes(&[]).build();
+    };
+    let Some(desc) = procs.fd(pid, fd) else {
+        return Writer::new().u16(errno::BADF).bytes(&[]).build();
+    };
+    let DescKind::File { path } = desc.kind.clone() else {
+        return Writer::new().u16(errno::INVAL).bytes(&[]).build();
+    };
+    if !desc.rights.read {
+        return Writer::new().u16(errno::ACCES).bytes(&[]).build();
+    }
+    let content = if crate::procfs::is_proc(&path) {
+        crate::procfs::read(procs, &vfs.mount_list(), pid, &path).unwrap_or_default()
+    } else {
+        match vfs.read(&path) {
+            Ok(bytes) => bytes,
+            Err(_) => return Writer::new().u16(errno::NOENT).bytes(&[]).build(),
+        }
+    };
+    let start = usize::try_from(offset).unwrap_or(usize::MAX).min(content.len());
+    let end = start.saturating_add(len as usize).min(content.len());
+    Writer::new().u16(errno::SUCCESS).bytes(&content[start..end]).build()
+}
+
+/// `fd_pwrite` writes a regular file at an explicit offset without changing the
+/// descriptor cursor. The same size guard as ordinary `fd_write` prevents a
+/// hostile guest from turning a sparse write into an unbounded allocation.
+fn fd_pwrite(vfs: &mut Vfs, procs: &ProcTable, pid: u32, r: &mut Reader) -> Vec<u8> {
+    let (Some(fd), Some(offset), Some(data)) = (r.u32(), r.u64(), r.bytes()) else {
+        return Writer::new().u16(errno::INVAL).u32(0).build();
+    };
+    let Some(desc) = procs.fd(pid, fd) else {
+        return Writer::new().u16(errno::BADF).u32(0).build();
+    };
+    let DescKind::File { path } = desc.kind.clone() else {
+        return Writer::new().u16(errno::INVAL).u32(0).build();
+    };
+    if !desc.rights.write || crate::procfs::is_proc(&path) || crate::devfs::is_dev(&path) {
+        return Writer::new().u16(errno::ACCES).u32(0).build();
+    }
+    let Ok(start) = usize::try_from(offset) else {
+        return Writer::new().u16(errno::INVAL).u32(0).build();
+    };
+    let end = match start.checked_add(data.len()) {
+        Some(end) if end <= MAX_FILE_SIZE => end,
+        _ => return Writer::new().u16(errno::NOSPC).u32(0).build(),
+    };
+    let mut content = match vfs.read(&path) {
+        Ok(bytes) => bytes,
+        Err(_) => return Writer::new().u16(errno::NOENT).u32(0).build(),
+    };
+    if content.len() < end {
+        content.resize(end, 0);
+    }
+    content[start..end].copy_from_slice(data);
+    if vfs.write(&path, content).is_err() {
+        return Writer::new().u16(errno::IO).u32(0).build();
+    }
+    Writer::new().u16(errno::SUCCESS).u32(data.len() as u32).build()
+}
+
+/// Resize a regular file while preserving its existing bytes.
+fn fd_filestat_set_size(vfs: &mut Vfs, procs: &ProcTable, pid: u32, r: &mut Reader) -> Vec<u8> {
+    let (Some(fd), Some(size)) = (r.u32(), r.u64()) else { return err_only(errno::INVAL) };
+    let Some(desc) = procs.fd(pid, fd) else { return err_only(errno::BADF) };
+    let DescKind::File { path } = desc.kind.clone() else { return err_only(errno::INVAL) };
+    if !desc.rights.write || crate::procfs::is_proc(&path) || crate::devfs::is_dev(&path) {
+        return err_only(errno::ACCES);
+    }
+    let Ok(size) = usize::try_from(size) else { return err_only(errno::NOSPC) };
+    if size > MAX_FILE_SIZE {
+        return err_only(errno::NOSPC);
+    }
+    let mut content = match vfs.read(&path) {
+        Ok(bytes) => bytes,
+        Err(_) => return err_only(errno::NOENT),
+    };
+    content.resize(size, 0);
+    match vfs.write(&path, content) {
+        Ok(()) => err_only(errno::SUCCESS),
+        Err(_) => err_only(errno::IO),
+    }
+}
+
+/// Set the timestamp fields exposed by WASI filestat. The host resolves the
+/// *_NOW flags before crossing the deterministic kernel boundary.
+fn fd_filestat_set_times(vfs: &mut Vfs, procs: &ProcTable, pid: u32, r: &mut Reader) -> Vec<u8> {
+    let (Some(fd), Some(atim), Some(mtim), Some(flags)) = (r.u32(), r.u64(), r.u64(), r.u16()) else {
+        return err_only(errno::INVAL);
+    };
+    let Some(desc) = procs.fd(pid, fd) else { return err_only(errno::BADF) };
+    let DescKind::File { path } = desc.kind.clone() else { return err_only(errno::INVAL) };
+    if !desc.rights.write {
+        return err_only(errno::ACCES);
+    }
+    let mut times = vfs.times(&path);
+    if flags & 1 != 0 {
+        times[0] = atim;
+    }
+    if flags & 2 != 0 {
+        times[1] = mtim;
+    }
+    times[2] = times[1];
+    match vfs.set_times(&path, times) {
+        Ok(()) => err_only(errno::SUCCESS),
+        Err(_) => err_only(errno::NOENT),
+    }
+}
+
+fn fd_sync(procs: &ProcTable, pid: u32, r: &mut Reader) -> Vec<u8> {
+    let Some(fd) = r.u32() else { return err_only(errno::INVAL) };
+    match procs.fd(pid, fd) {
+        Some(desc) if matches!(desc.kind, DescKind::File { .. } | DescKind::Dir { .. }) => err_only(errno::SUCCESS),
+        Some(_) => err_only(errno::INVAL),
+        None => err_only(errno::BADF),
+    }
+}
+
+fn path_link(vfs: &mut Vfs, procs: &ProcTable, pid: u32, r: &mut Reader) -> Vec<u8> {
+    let (Some(old_dirfd), Some(old_path), Some(new_dirfd), Some(new_path)) =
+        (r.u32(), r.string(), r.u32(), r.string())
+    else {
+        return err_only(errno::INVAL);
+    };
+    let source = match resolve_for(procs, pid, old_dirfd, &old_path, Rights::R) {
+        Ok(path) => path,
+        Err(e) => return err_only(e),
+    };
+    let target = match resolve_for(procs, pid, new_dirfd, &new_path, Rights::RW) {
+        Ok(path) => path,
+        Err(e) => return err_only(e),
+    };
+    match vfs.link(&source, &target) {
+        Ok(()) => err_only(errno::SUCCESS),
+        Err(crate::vfs::FsError::Exists) => err_only(errno::EXIST),
+        Err(crate::vfs::FsError::IsDir) => err_only(errno::ISDIR),
+        Err(_) => err_only(errno::NOENT),
+    }
+}
+
+fn path_readlink(vfs: &Vfs, procs: &ProcTable, pid: u32, r: &mut Reader) -> Vec<u8> {
+    let (Some(dirfd), Some(path), Some(buf_len)) = (r.u32(), r.string(), r.u32()) else {
+        return Writer::new().u16(errno::INVAL).bytes(&[]).build();
+    };
+    let full = match resolve_for(procs, pid, dirfd, &path, Rights::R) {
+        Ok(path) => path,
+        Err(e) => return Writer::new().u16(e).bytes(&[]).build(),
+    };
+    match vfs.readlink(&full) {
+        Ok(target) => Writer::new().u16(errno::SUCCESS).bytes(&target.as_bytes()[..target.len().min(buf_len as usize)]).build(),
+        Err(_) => Writer::new().u16(errno::INVAL).bytes(&[]).build(),
+    }
+}
+
+fn path_symlink(vfs: &mut Vfs, procs: &ProcTable, pid: u32, r: &mut Reader) -> Vec<u8> {
+    let (Some(target), Some(dirfd), Some(link)) = (r.string(), r.u32(), r.string()) else {
+        return err_only(errno::INVAL);
+    };
+    let full = match resolve_for(procs, pid, dirfd, &link, Rights::RW) {
+        Ok(path) => path,
+        Err(e) => return err_only(e),
+    };
+    match vfs.symlink(&target, &full) {
+        Ok(()) => err_only(errno::SUCCESS),
+        Err(crate::vfs::FsError::Exists) => err_only(errno::EXIST),
+        Err(_) => err_only(errno::IO),
+    }
+}
+
+fn fd_tell(procs: &ProcTable, pid: u32, r: &mut Reader) -> Vec<u8> {
+    let Some(fd) = r.u32() else { return Writer::new().u16(errno::INVAL).u64(0).build() };
+    match procs.fd(pid, fd) {
+        Some(desc) if matches!(desc.kind, DescKind::File { .. }) => {
+            Writer::new().u16(errno::SUCCESS).u64(desc.offset).build()
+        }
+        Some(_) => Writer::new().u16(errno::INVAL).u64(0).build(),
+        None => Writer::new().u16(errno::BADF).u64(0).build(),
+    }
+}
+
+fn path_filestat_set_times(vfs: &mut Vfs, procs: &ProcTable, pid: u32, r: &mut Reader) -> Vec<u8> {
+    let (Some(dirfd), Some(path), Some(atim), Some(mtim), Some(flags)) =
+        (r.u32(), r.string(), r.u64(), r.u64(), r.u16())
+    else {
+        return err_only(errno::INVAL);
+    };
+    let full = match resolve_for(procs, pid, dirfd, &path, Rights::RW) {
+        Ok(path) => path,
+        Err(e) => return err_only(e),
+    };
+    let mut times = vfs.times(&full);
+    if flags & 1 != 0 {
+        times[0] = atim;
+    }
+    if flags & 2 != 0 {
+        times[1] = mtim;
+    }
+    times[2] = times[1];
+    match vfs.set_times(&full, times) {
+        Ok(()) => err_only(errno::SUCCESS),
+        Err(_) => err_only(errno::NOENT),
+    }
 }
 
 fn proc_exit(procs: &mut ProcTable, pipes: &mut PipeTable, pid: u32, r: &mut Reader) -> SyscallOutcome {
@@ -1070,20 +1480,22 @@ fn path_remove_directory(vfs: &mut Vfs, procs: &mut ProcTable, pid: u32, r: &mut
 }
 
 /// `path_filestat_get` — stat a path (used by `read_dir` to type each entry).
-/// Returns `errno, filetype:u8, size:u64`.
+/// Returns `errno, filetype:u8, size:u64, atim:u64, mtim:u64, ctim:u64`.
 fn path_filestat_get(vfs: &mut Vfs, procs: &mut ProcTable, pid: u32, r: &mut Reader) -> Vec<u8> {
-    let out = |e: u16, ft: u8, size: u64| Writer::new().u16(e).u8(ft).u64(size).build();
-    let (Some(dirfd), Some(path)) = (r.u32(), r.string()) else { return out(errno::INVAL, 0, 0) };
+    let out = |e: u16, ft: u8, size: u64, times: [u64; 3]| {
+        Writer::new().u16(e).u8(ft).u64(size).u64(times[0]).u64(times[1]).u64(times[2]).build()
+    };
+    let (Some(dirfd), Some(path)) = (r.u32(), r.string()) else { return out(errno::INVAL, 0, 0, [0; 3]) };
     let full = match resolve_for(procs, pid, dirfd, &path, Rights::R) {
         Ok(f) => f,
-        Err(e) => return out(e, 0, 0),
+        Err(e) => return out(e, 0, 0, [0; 3]),
     };
     if vfs.is_dir(&full) {
-        out(errno::SUCCESS, filetype::DIRECTORY, 0)
+        out(errno::SUCCESS, filetype::DIRECTORY, 0, vfs.times(&full))
     } else if let Ok(content) = vfs.read(&full) {
-        out(errno::SUCCESS, filetype::REGULAR_FILE, content.len() as u64)
+        out(errno::SUCCESS, filetype::REGULAR_FILE, content.len() as u64, vfs.times(&full))
     } else {
-        out(errno::NOENT, 0, 0)
+        out(errno::NOENT, 0, 0, [0; 3])
     }
 }
 
@@ -1435,9 +1847,12 @@ mod tests {
         Writer::new()
             .u8(Op::PathOpen as u8)
             .u32(dirfd)
+            .u32(0) // dirflags
             .bytes(path.as_bytes())
             .u16(of)
             .u64(0)
+            .u64(0)
+            .u16(0)
             .build()
     }
     fn req_simple(op: Op) -> Vec<u8> {

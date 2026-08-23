@@ -2,9 +2,9 @@
 
 > A guest/userland Rust library that stores a document **as a WebAssembly module**: a fixed-size byte window inside the `.wasm` binary is pre-filled with placeholder ASCII, an app edits it, and on save the content is written over the placeholder and persisted as a new `.wasm` file (with an optional plain-text export) — a document that is a live, rewritable, self-executing wasm module.
 
-**Date:** 2026-06-03
-**Author:** LayerDynamics + Claude
-**Status:** Draft
+**Date:** 2026-08-22
+**Author:** LayerDynamics
+**Status:** Implemented for the core format, guest I/O, and editor integration; CLI/export extensions remain optional
 **Version:** 1.0
 **Crate:** `crates/wasmobj` (Rust, `wasm32-wasi`)
 **Relates to:** [SPEC-1: WASM_OS](SPEC-1-wasm-os.md) (L1 WASI process ABI, L2 userland, L3 editor app)
@@ -23,14 +23,23 @@ The core trick the whole design rests on: **a fixed-size active data segment is 
 
 ### 1.1 Problem Statement
 
-WASM_OS is built on one idea taken to its limit: *everything is a WebAssembly module* — the kernel, the guests, the apps. One thing is **not** wasm: the documents users create. A text file saved by the editor is just bytes in the VFS, indistinguishable from any other blob and inert on its own. `wasmobj` closes that gap by making a **document itself a wasm module** — a self-describing, self-executing, single-file container whose payload region can be rewritten in place. The README states the mechanism precisely: create a wasm object pre-filled with spaces/ASCII; when it is loaded in the OS and the user presses save, overwrite the placeholder region with the saved content, emitting the result as a new file.
+WASM_OS treats the document as a wasm object as well as a file. A plain text
+file is still supported, but a `.wasm` document can carry its payload in a
+fixed data window, be rewritten without changing the rest of the module, and
+run as a process. `wasmobj` owns that format and the guest-side I/O needed by
+the editor applications.
 
 ### 1.2 Current State
 
-- The editor and `nano` (L2/L3) read and write **plain byte files** through the kernel VFS (`path_open` + `fd_read`/`fd_write`). There is no document container format.
-- The host `Blockstore` persists VFS blocks to OPFS/IndexedDB (`packages/host/src/blockstore/`), bridged to the kernel’s synchronous imports by a write-back cache (`cached.ts`). It stores opaque bytes; it has no notion of a document being a module.
-- Nothing in the tree mints, validates, or rewrites `.wasm` modules from *inside* a guest. `tools/binder` transpiles the kernel ABI at build time on the host — a different concern.
-- `crates/wasmobj` exists today only as a one-line `README.md`; it is **not** a workspace member yet.
+- `crates/wasmobj` is a workspace crate with format, mint, read, in-place save,
+  repack, validation, guest-I/O, and self-execution support.
+- Canvas Editor and nano both use `wasmobj::wasi::{load_editable, save_editable}`;
+  plain files continue through the ordinary VFS path.
+- The file manager identifies valid wasmobj documents and opens them in Editor;
+  nano provides the shell-driven create/edit/save/reload path covered by the
+  browser workflow.
+- The host `Blockstore` remains below this layer. It persists opaque VFS bytes
+  to OPFS/IndexedDB; `wasmobj` reaches those files only through WASI syscalls.
 
 ### 1.3 Target Users
 
@@ -40,7 +49,7 @@ WASM_OS is built on one idea taken to its limit: *everything is a WebAssembly mo
 
 ### 1.4 Motivation
 
-The user selected four reasons, all of which shape scope:
+The format has four concrete uses:
 
 1. **Uniformity** — `kernel.wasm`, `editor.wasm`, `mydoc.wasm`: documents become first-class citizens of a wasm-native OS.
 2. **Self-executing docs** — a document can also be *run*; executing it renders its own content (FR-9), so the container is live, not inert.
@@ -57,17 +66,16 @@ The user selected four reasons, all of which shape scope:
 
 ### 1.6 The Save Model (the resolved design decision)
 
-A real conflict surfaced during discovery: an early answer had **save** extracting content to a plain `mydoc.txt`. That choice quietly gutted the project — it made the durable artifact a plain file, so the in-place-overwrite / re-pack machinery (FR-5/FR-6) and the self-executing property (FR-9) became dead code in the primary flow, and three of the four stated purposes (§1.4: uniformity, self-executing, portable) no longer held for anything a user keeps. The conflict was surfaced and the design was resolved the way that *doesn't* conflict with the README or the purposes (Decision Log D-3):
+### 1.6 Save model
 
-> **Save writes the content into a new, content-bearing wasm object** (`mydoc.wasm`). This is the literal README reading — “writes over the space or ascii with the saved content **in a new file**”, where the new file is itself a wasm object. The flow is: load template → overwrite the placeholder window with content (in place if it fits, else re-pack) → persist the filled object as the new file.
+Saving a `.wasm` document writes a new content-bearing wasm object. The app
+loads the template or existing object, updates the fixed window in place when
+the content fits, repacks to the next tier when it does not, and writes the
+result to the destination path. The source template is not mutated.
 
-Every design goal now holds without contradiction:
-- **In-place / re-pack machinery is load-bearing** — the filled object is what gets persisted, so FR-5/FR-6 do real work on the durable artifact.
-- **Self-executing (FR-9) is real and durable** — the saved `mydoc.wasm` can be run and renders its own content; not just an in-session trick.
-- **Uniformity & portability hold** — saved documents *are* wasm modules, uniform with `kernel.wasm`/`editor.wasm`, and travel as one self-describing file.
-- **Proof / demonstrability** — the observable act of rewriting a wasm data segment and running the result is exactly the demonstration the README is after.
-
-**Secondary, non-conflicting convenience:** because WASM_OS is Unix-flavoured (`cat`, `grep`, pipes), the library *also* offers an **extract-to-plain-file** path (FR-7b) so content can be exported as ordinary bytes for interop. This is additive — it does not replace the wasm-object save, so it introduces no conflict. The reusable blank template is never mutated by either path (save-as semantics).
+`extract` remains available as a library operation for plain-file
+interoperability. A shell command or dedicated export UI is not part of the
+current implementation.
 
 ---
 
@@ -334,24 +342,24 @@ Covered in §2.2 Security. Summary: no new capabilities; header validation befor
 
 ## 4. Implementation Plan
 
-### 4.1 Build Phases
+### 4.1 Implementation tasks
 
-#### Phase 1: Format + library core
+#### Task: format and library core
 - **Goal:** A working, tested `wasmobj` crate.
 - **Scope:** `Cargo.toml` + workspace registration; `format` (header + tiers); `mint`; `io` (`read`/`write_in_place`/`repack`/`save`/`extract`/`verify`); unit + property tests.
 - **Exit criteria:** All FR-1…FR-6, FR-10, FR-11 met; 100% of minted/re-packed objects pass `wasm-tools validate`; round-trip + in-place-invariant property tests green.
 
-#### Phase 2: WASI glue + self-execution
+#### Task: WASI glue and self-execution
 - **Goal:** The library works from inside a real guest and an object can render itself.
 - **Scope:** `wasi` module; the `render` export (FR-9, MUST); a tiny guest test binary that mints→writes→reads via the VFS.
 - **Exit criteria:** FR-8, FR-9 met; a guest can mint an object to `/home`, reload it, and read back identical content; running the object prints its content.
 
-#### Phase 3: Editor integration + E2E (V1 editor task)
+#### Task: editor integration and browser workflow
 - **Goal:** The full create→edit→save→reload flow works in the OS.
 - **Scope:** Editor open/save branch for wasm objects (FR-12, FR-7); run-the-document action (FR-9); preserve plain-file behavior (Constraint 5).
 - **Exit criteria:** FR-7, FR-9, FR-12 met; a real-browser E2E opens a template object, types, saves a new `.wasm` object, reloads the tab, re-opens it to identical content, **and runs it to render its own content** — no regression to plain-file open/save.
 
-#### Phase 4 (optional, post-V1): CLI + richer content types
+#### Optional follow-up: CLI and richer content types
 - **Scope:** `wobj` command (FR-13), plain-text export polish (FR-7b), document metadata in `wob0` (FR-14), richer content-type tag (FR-15).
 - **Exit criteria:** `wobj new/info/cat/extract` work in the shell; round-trips a binary payload.
 
@@ -361,12 +369,12 @@ Covered in §2.2 Security. Summary: no new capabilities; header validation befor
 - **Property:** for random `(tier, content_len ≤ capacity)`, `read(write(mint, c)) == c`; for `content_len > capacity`, `save` re-packs and round-trips; in-place save leaves all non-window bytes byte-identical.
 - **Validity:** every minted/re-packed object → `wasm-tools validate` (invoked in-test or in CI).
 - **Fuzz/negative:** random/corrupted bytes into `verify`/`read` never panic; always `Err`.
-- **E2E (Phase 3):** Playwright flow in `e2e/` — open template → type → save a new `.wasm` object → reload tab → re-open and assert content → **run the saved object and assert it prints its own content** (matches the project’s existing boot-persist probes, e.g. `probe-boot-persist.mjs`). This is a **real** E2E: browser → host → kernel VFS → OPFS/IndexedDB → reload → read back + spawn, no mocks.
+- **E2E (editor integration):** Playwright opens a template, edits it, saves a new `.wasm` object, reloads the tab, reopens it, and runs the saved object. This is a **real** E2E: browser → host → kernel VFS → OPFS/IndexedDB → reload → read back + spawn, with no mocked kernel.
 
 ### 4.3 Rollout Strategy
 
 - Additive: new crate + an editor code path behind a content sniff (header present). Plain files untouched.
-- Land Phase 1–2 (library, no UI surface) first; Phase 3 flips the editor on. Easy to revert the editor branch alone if needed (per global rule: surgical `Edit`, not nuclear checkout).
+- The format and guest-I/O layers are reusable independently. The live Editor and nano paths both consume the shared document helper; plain-file behavior remains the fallback.
 
 ### 4.4 Operational Readiness
 
@@ -379,18 +387,18 @@ Covered in §2.2 Security. Summary: no new capabilities; header validation befor
 
 | Task | Goal | Exit Criteria | Target | Owner |
 |-----------|------|---------------|--------|-------|
-| M-BBS-1 | Library core | FR-1..6,10,11; validate + round-trip + invariant tests green | — | LayerDynamics |
-| M-BBS-2 | Guest + self-exec | FR-8,9; mint→VFS→reload→read identical; object renders itself | — | LayerDynamics |
-| M-BBS-3 (V1) | Editor E2E | FR-7,9,12; browser E2E create→edit→save-`.wasm`→reload→re-open→run; no plain-file regression | — | LayerDynamics |
-| M-BBS-4 (opt) | CLI + export + types | FR-7b,13,14,15; `wobj` round-trips text + binary; plain-text export | — | LayerDynamics |
+| Format and library core | Header, tiers, mint/save/repack/validation | FR-1..6,10,11; format and invariant tests green | Implemented | LayerDynamics |
+| Guest I/O and self-execution | WASI file path plus runnable object | FR-8,9; object reloads and renders its content | Implemented | LayerDynamics |
+| Editor and nano integration | Open/edit/save/reload without plain-file regression | FR-7,9,12; browser workflow passes | Implemented | LayerDynamics |
+| CLI, export, and richer types | Shell command, explicit export, metadata/content types | FR-7b,13,14,15 | Optional follow-up | LayerDynamics |
 
 ### Dependency Graph
 
 ```text
-M-BBS-1 (format + io + tests)
-   └─▶ M-BBS-2 (wasi glue + render export)
-          └─▶ M-BBS-3  V1: editor integration + E2E
-                 └─▶ M-BBS-4 (optional: wobj CLI, plain-text export, metadata/content types)
+format and library core
+   └─▶ guest I/O and self-execution
+          └─▶ editor and nano integration
+                 └─▶ optional CLI, export, metadata, and content types
 ```
 
 ---
@@ -404,8 +412,8 @@ M-BBS-1 (format + io + tests)
 | Object validity | 100% generated objects valid | `wasm-tools validate` over the property-test corpus |
 | Round-trip fidelity | 100% for `content ≤ tier` | Property test `read(write(mint,c)) == c` |
 | In-place save = no re-encode | true for all fitting saves | Test asserts re-pack path not taken + non-window bytes unchanged |
-| Create→edit→save-`.wasm`→reload→re-open | passes in real browser | Phase-3 Playwright E2E |
-| Saved object self-executes | running `mydoc.wasm` prints its content | Phase-3 E2E spawns the saved object (FR-9) |
+| Create→edit→save-`.wasm`→reload→re-open | passes in real browser | Editor integration Playwright workflow |
+| Saved object self-executes | running `mydoc.wasm` prints its content | Browser workflow spawns the saved object (FR-9) |
 | Plain-file regression | zero | Existing editor open/save E2E still green |
 
 ### 6.2 Ongoing Monitoring
@@ -426,7 +434,7 @@ M-BBS-1 (format + io + tests)
 |----|------|--------|-----------|------------|-------------|
 | R-1 | LEB128 length prefix of the data segment changes if capacity is chosen such that its encoded length differs across edits, breaking the in-place invariant | High (corruption) | Low | Capacity is fixed per object and never changes on in-place save (Constraint 2); only re-pack changes it, and re-pack re-encodes fully | Property test asserts non-window bytes identical; fail closed |
 | R-2 | Hand-emitting the wasm binary produces a subtly invalid module on some tier | High | Medium | `wasm-tools validate` every minted/re-packed object in tests + CI; keep the emitted skeleton minimal and deterministic | Fall back to a vetted wasm-builder crate for `mint` if hand-emit proves fragile |
-| R-3 | Host does not flush the VFS after save → saved object lost on reload (FR-7 durability) | High | Medium | Reuse the host’s existing flush-before-reload path (as the boot-persist E2E does); assert in the Phase-3 E2E | Have the editor call an explicit flush; document the requirement |
+| R-3 | Host does not flush the VFS after save → saved object lost on reload (FR-7 durability) | High | Medium | The editor save path writes through the kernel VFS; the browser workflow asserts reload durability | Have the editor call an explicit flush; document the requirement |
 | R-4 | Editor integration regresses plain-file open/save | Medium | Medium | Branch only when a valid `wob0` header is detected; keep a plain-file regression E2E (Constraint 5) | Gate the wasm-object path behind a setting until proven |
 | R-5 | Content > 64 KiB top tier has no path in V1 (FR-NG-4) | Low–Med | Medium | Documented non-goal; `for_len` returns `None` → typed `Err(TooLarge)` surfaced to the user | Add chained blocks / larger tiers (OQ-3) post-V1 |
 | R-6 | “blockstore” name collision with the host `Blockstore` confuses contributors | Low | High | §0 + Constraint 4 state the separation explicitly; consider a clearer crate description in its README | Rename crate if confusion persists (OQ-2) |
@@ -438,13 +446,13 @@ M-BBS-1 (format + io + tests)
 
 | # | Question | Owner | Due |
 |---|----------|-------|-----|
-| OQ-1 | Confirm the [PROPOSED] performance/footprint targets in §2.2 (or mark them advisory). | LayerDynamics | Before M-BBS-1 close |
+| OQ-1 | Confirm the [PROPOSED] performance/footprint targets in §2.2 (or mark them advisory). | LayerDynamics | Before format-core close |
 | OQ-2 | ✅ **RESOLVED** — renamed `byteblockstorage` → **`wasmobj`** to stop colliding with the host `Blockstore` and to name what it is (a wasm-object container). The on-disk section magic was renamed `bbs0` → `wob0` for consistency (no persisted objects existed, so zero migration cost). Crate dir, deps, call sites, tests, the E2E spec, this spec, and the plan were all renamed; `npm run verify` green. | LayerDynamics | Resolved 2026-06-04 |
 | OQ-3 | Post-V1: support payloads > 64 KiB via larger tiers or chained blocks (FR-NG-4)? Which? | LayerDynamics | Post-V1 |
-| OQ-4 | Default destination on save-as — same dir as template, or a user-chosen path each time? Affects FR-7 UX. | LayerDynamics | Before M-BBS-3 |
+| OQ-4 | Default destination on save-as — same dir as template, or a user-chosen path each time? Affects FR-7 UX. | LayerDynamics | Before editor integration close |
 | OQ-5 | ✅ **RESOLVED** — padding byte is ASCII space `0x20` (matches the README's "spaces or ascii" seed; keeps the reserved window human-readable). The one downside (content→padding boundary is ambiguous in a raw hex dump when text content ends in spaces) is inert: `read`/`extract`/`_start` all use `content_len`, never the padding, so nothing infers the boundary from bytes. Eyeball-debugging is served by `wobj info` (FR-13) printing the header. | LayerDynamics | Resolved 2026-06-04 |
-| OQ-6 | Does the `render` export (FR-9) write to stdout, or also draw to a compositor surface for non-text content? | LayerDynamics | Before M-BBS-2 |
-| OQ-7 | Should opening an existing `mydoc.wasm` and re-saving overwrite the same file in place (true in-place FR-5 on the persisted file) or always write a new file? Affects whether FR-5’s no-re-encode win is realized on disk or only in memory. | LayerDynamics | Before M-BBS-3 |
+| OQ-6 | Does the `render` export (FR-9) write to stdout, or also draw to a compositor surface for non-text content? | LayerDynamics | Before guest self-execution close |
+| OQ-7 | Should opening an existing `mydoc.wasm` and re-saving overwrite the same file in place or always write a new file? | LayerDynamics | Before editor integration close |
 
 ---
 
@@ -484,13 +492,13 @@ offset  size  field          notes
 |---|----------|-----------|
 | D-1 | A document is a real `.wasm` module, content in its data segment | User selection; uniformity + self-executing + portable + proof (§1.4) |
 | D-2 | Fixed-size pre-allocated window, in-place overwrite | User selection “load-bearing pre-allocation”; enables no-re-encode save (Constraint 2) |
-| D-3 | Save = write a new **content-bearing wasm object** (`mydoc.wasm`); plain-text extract is a secondary interop export (FR-7b) | An early answer (“raw extracted content” → `.txt`) made the saved artifact a plain file, which left FR-5/FR-6/FR-9 as dead code and broke 3 of 4 purposes (§1.6). The conflict was surfaced; the author then authorized resolving it the non-conflicting way. This matches the README literally (“the saved content **in a new file**”) and makes the in-place/re-pack machinery load-bearing on the durable artifact. Plain-text extract retained as additive convenience for Unix-tool interop. |
+| D-3 | Save = write a new **content-bearing wasm object** (`mydoc.wasm`); plain-text extract is a secondary interop export (FR-7b) | The durable artifact keeps the fixed window, metadata, and self-executing behavior. Plain extraction remains an additive library operation. |
 | D-4 | Overflow → re-pack to next tier (not error/truncate/chain) | User selection; tiers bound re-pack frequency (FR-6/FR-10) |
 | D-5 | Guest/userland Rust library, not a kernel VFS backend or host module | User selection; reaches VFS via WASI only (Constraint 1, 4) |
 | D-6 | Metadata in a `wob0` custom section | Only spec-blessed place for non-executable metadata; keeps module valid (Constraint 3) |
-| D-7 | V1 editor integration (FR-12) shipped in **nano**, not the canvas editor | During implementation the canvas editor proved unreachable as a document opener: the shell cannot launch GUI apps (no `Gpu`/`Input` caps to delegate) and the host spawn API cannot pass an argv path, so nothing could open the editor on a `.wasm`. nano is a terminal editor — shell-launchable with argv, no GPU caps — and is within the author's chosen "editor/nano" scope. nano carries the FR-7/FR-12 flow end-to-end (browser E2E); the canvas editor keeps the same (guarded) branch as forward-looking code for when a GUI argv-launch path exists. Both apps guard against mint-overwriting an existing non-document `.wasm`. |
+| D-7 | Both Editor and nano use the shared document lifecycle | The file manager can open a wasmobj in the canvas Editor, while nano supplies the shell-driven create/edit/save/reload workflow. Both preserve plain-file behavior and refuse to treat an existing non-document `.wasm` as a template. |
 
-### Appendix D — Validation Checklist (Phase 4 of authoring)
+### Appendix D — Validation checklist
 
 - [x] Every section has real content (no empty/TBD-without-owner sections)
 - [x] All functional requirements are testable statements with MoSCoW priority

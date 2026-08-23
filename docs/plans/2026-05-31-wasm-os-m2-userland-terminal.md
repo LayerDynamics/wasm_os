@@ -1,12 +1,12 @@
 # WASM_OS — shell and userland (Userland & Terminal — V1) — Implementation Plan
 
-> **For Claude:** REQUIRED SUB-SKILL: use `lore:execute` to implement this plan task-by-task.
-> **Scope guard:** Do ONLY what is listed here. This plan delivers the SPEC-1 **shell and userland = V1** task (the "terminal runs real WASI binaries" marquee). It STOPS at the shell and userland exit criteria. Do NOT start desktop compositor (the windowed compositor/desktop), process control and IPC (IPC channels/shm at scale, snapshot, signals beyond crash-kill), or Linux guest integration (the emulator). If you discover adjacent issues, note them under **TODO / deferred** and continue.
+> **Status:** Implemented. This is the historical implementation record for the shell and userland terminal.
+> **Historical scope guard:** At the time this plan stopped after the shell and userland task. The desktop compositor, process control/IPC, and Linux integration were implemented in later tasks; their current behavior is recorded in the status reports.
 > **Builds on:** WASI process runtime (first WASI process) — 100% complete and merged (`docs/M1-STATUS.md`). shell and userland extends the WASI process runtime kworker + SAB syscall ring + WASI p1 router; it does **not** rebuild them.
 
-**Goal:** A real interactive terminal (xterm) bound to a **guest shell process** that runs WASI coreutils with pipelines and I/O redirection. From the terminal a user runs `ls`, `cat f`, `cat f | grep x`, and `... > out` with correct output and exit codes; a deliberately-crashing binary terminates without taking down the shell — the SPEC-1 **shell and userland** task (Phase 2, §4.1).
+**Goal:** A real interactive terminal (xterm) bound to a **guest shell process** that runs WASI coreutils with pipelines and I/O redirection. From the terminal a user runs `ls`, `cat f`, `cat f | grep x`, and `... > out` with correct output and exit codes; a deliberately-crashing binary terminates without taking down the shell — the SPEC-1 **shell and userland** task.
 
-**Traces:** FR-9..12 (run WASI modules), **FR-14** (polyglot: ≥1 Rust + ≥1 Zig coreutil, identical observable behavior), FR-15 (xterm bound to a shell process), FR-16 (`$PATH`, built-ins + on-disk binaries, exit codes), FR-17 (pipelines `a|b|c` + redirection `>`/`>>`/`<` via kernel pipes/fds), **FR-18** (the 13 coreutils), FR-34 (crash contained — terminal survives), FR-36 (the `wasmos:kernel` guest bindings come from the Binder).
+**Traces:** FR-9..12 (run WASI modules), **FR-14** (polyglot: ≥1 Rust + ≥1 Zig coreutil, identical observable behavior), FR-15 (xterm bound to a shell process), FR-16 (`$PATH`, built-ins + on-disk binaries, exit codes), FR-17 (pipelines `a|b|c` + redirection `>`/`>>`/`<` via kernel pipes/fds), **FR-18** (the current shipped set is 21 coreutils), FR-34 (crash contained — terminal survives), FR-36 (the `wasmos:kernel` guest bindings come from the Binder).
 
 ---
 
@@ -14,7 +14,7 @@
 
 1. **Guest shell process** (spec-faithful, §3.4 + Workflow A). The shell is a real Rust `wasm32-wasip1` process that drives pipelines via a **new `wasmos_kernel` guest syscall extension** (`spawn`/`pipe`/`wait`/`dup2`). Cost is concentrated in this extension + the guest-spawn choreography + the Binder guest stubs — accepted.
 2. **Zig** is the FR-14 second toolchain (`zig build-exe -target wasm32-wasi`; single self-contained toolchain, trivial in CI).
-3. **Full FR-18 set** — all 13 coreutils (`ls cat echo cp mv rm mkdir pwd grep head tail wc env`), Rust, with ≥1 also built in Zig for the polyglot proof.
+3. **Full FR-18 set** — the current 21 coreutils (`ls cat echo cp mv rm mkdir pwd grep head tail wc env kill renice ps top fetch mount touch whoami`), Rust, with `echo` also built in Zig for the polyglot proof.
 
 ### Decided substrate (NOT user questions — load-bearing plan content)
 
@@ -232,6 +232,7 @@ All five shell and userland exit criteria hold; the kernel/VFS bootstrap/WASI pr
 - **process control and IPC:** IPC channels/shm at scale (≥32 procs), session snapshot/restore, full signals (`SIGTERM`/`SIGKILL` semantics beyond crash-kill), live `ps`/`top` UI (FR-33).
 - AssemblyScript (FR-11) + hand-authored WAT (FR-12) guests — SHOULD-tier polyglot, beyond the Rust+Zig FR-14 proof.
 - Job control (`&`, `jobs`, fg/bg — FR-19), package mechanism (FR-20). **Consequence (documented shell and userland limitation):** interactive stdin routes only to the shell, so a bare foreground `cat` (no file arg) reading stdin hangs — routing stdin to the foreground child needs job control.
-- Real capability-gated clock/entropy brokers (still deterministic stubs from WASI process runtime; §3.6).
+- Real clock/entropy handling is now live in the WASI shim and kernel devices;
+  this historical task did not own that path.
 - `Atomics.waitAsync` `postMessage`-wakeup fallback (still single-path); Tier B (Asyncify/JSPI).
 - OPFS sync access handles to retire the `CachedStore` bridge.

@@ -37,8 +37,8 @@ mod component {
 
     use bindings::exports::wasmos::abi::control::{
         Backend as WBackend, BootStatus, FeatureReport, FsError as WFsError, Guest,
-        NetRequest as WNetRequest, ProcInfo as WProcInfo, SpawnRequest as WSpawnRequest, SpawnSpec,
-        SyscallOutcome as WSyscallOutcome,
+        InputDelivery as WInputDelivery, NetRequest as WNetRequest, ProcInfo as WProcInfo,
+        SpawnRequest as WSpawnRequest, SpawnSpec, SyscallOutcome as WSyscallOutcome,
     };
     use bindings::wasmos::abi::{home_store, mnt_store, sys_store};
 
@@ -217,8 +217,9 @@ mod component {
             KERNEL.with(|k| k.borrow_mut().deliver_stdin(pid, &bytes))
         }
 
-        fn deliver_input(pid: u32, bytes: Vec<u8>) -> Vec<u32> {
-            KERNEL.with(|k| k.borrow_mut().deliver_input(pid, &bytes))
+        fn deliver_input(pid: u32, bytes: Vec<u8>) -> WInputDelivery {
+            let out = KERNEL.with(|k| k.borrow_mut().deliver_input(pid, &bytes));
+            WInputDelivery { accepted: out.accepted, wakeups: out.wakeups }
         }
 
         fn bind_terminal(pid: u32) {

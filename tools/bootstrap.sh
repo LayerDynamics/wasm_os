@@ -16,7 +16,7 @@ command -v wit-bindgen >/dev/null 2>&1 || cargo install wit-bindgen-cli --locked
 echo "== binaryen (wasm-opt) =="
 command -v wasm-opt >/dev/null 2>&1 || brew install binaryen
 
-echo "== wabt (wat2wasm, for hand-written WAT later) =="
+echo "== wabt (wat2wasm, for the hand-written WAT guest) =="
 command -v wat2wasm >/dev/null 2>&1 || brew install wabt
 
 echo "== zig (FR-14 polyglot guest: wasm32-wasi coreutil) =="

@@ -6,9 +6,10 @@
 //! is the file manager's `.txt` association target.
 
 use wasmgfx::{rgb, Color, Framebuffer};
+use wasmobj::wasi::{load_editable, save_editable, EditableDocument};
 use wasmos_sys::{
     win_present, win_read_input, win_surface, EV_KEY_DOWN, KEY_BACKSPACE, KEY_DELETE, KEY_DOWN,
-    KEY_ENTER, KEY_LEFT, KEY_RIGHT, KEY_UP,
+    KEY_END, KEY_ENTER, KEY_HOME, KEY_LEFT, KEY_RIGHT, KEY_TAB, KEY_UP,
 };
 
 const W: u32 = 540;
@@ -40,20 +41,13 @@ impl Editor {
         // existing non-document .wasm (e.g. an executable guest): only a .wasm path
         // that DOES NOT EXIST yet becomes a new mintable document. An existing .wasm
         // that does not verify is treated as a plain file (obj=None → no mint on save).
-        let read = std::fs::read(&path);
-        let (text, obj) = if path.ends_with(".wasm") {
-            match &read {
-                Ok(bytes) if wasmobj::verify(bytes).is_ok() => {
-                    let content = wasmobj::read(bytes).unwrap_or_default();
-                    (String::from_utf8_lossy(&content).into_owned(), Some(bytes.clone()))
-                }
-                Ok(bytes) => (String::from_utf8_lossy(bytes).into_owned(), None),
-                Err(_) => (String::new(), Some(Vec::new())), // new doc → save mints
-            }
-        } else {
-            let bytes = read.unwrap_or_default();
-            (String::from_utf8_lossy(&bytes).into_owned(), None)
-        };
+        let document = load_editable(&path).unwrap_or(EditableDocument {
+            content: Vec::new(),
+            object: None,
+            is_new: true,
+        });
+        let text = String::from_utf8_lossy(&document.content).into_owned();
+        let obj = document.object;
         let mut lines: Vec<String> = text
             .split('\n')
             .map(|s| s.chars().filter(|c| (' '..='~').contains(c)).collect())
@@ -61,24 +55,20 @@ impl Editor {
         if lines.is_empty() {
             lines.push(String::new());
         }
-        Editor { path, lines, row: 0, col: 0, scroll: 0, modified: false, obj }
+        Editor {
+            path,
+            lines,
+            row: 0,
+            col: 0,
+            scroll: 0,
+            modified: false,
+            obj,
+        }
     }
 
     fn save(&mut self) {
         let text = self.lines.join("\n");
-        let ok = match &mut self.obj {
-            Some(obj) => {
-                // Ensure we have a live object to write into; mint one sized to content.
-                if wasmobj::verify(obj).is_err() {
-                    let tier = wasmobj::Tier::for_len(text.len() as u32 + 4)
-                        .unwrap_or(wasmobj::Tier::K64);
-                    *obj = wasmobj::mint(tier, 0);
-                }
-                wasmobj::save(obj, text.as_bytes()).is_ok()
-                    && std::fs::write(&self.path, &obj[..]).is_ok()
-            }
-            None => std::fs::write(&self.path, text.as_bytes()).is_ok(),
-        };
+        let ok = save_editable(&self.path, &mut self.obj, text.as_bytes()).is_ok();
         if ok {
             self.modified = false;
         }
@@ -195,7 +185,9 @@ impl Editor {
 }
 
 fn main() {
-    let path = std::env::args().nth(1).unwrap_or_else(|| "/home/untitled.txt".to_string());
+    let path = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "/home/untitled.txt".to_string());
     let surface = match win_surface(W, H) {
         Ok(id) => id,
         Err(_) => std::process::exit(1),
@@ -224,6 +216,13 @@ fn main() {
                 KEY_BACKSPACE => ed.backspace(),
                 KEY_DELETE => ed.delete_forward(),
                 KEY_LEFT | KEY_RIGHT | KEY_UP | KEY_DOWN => ed.move_cursor(ev.key),
+                KEY_HOME => ed.col = 0,
+                KEY_END => ed.col = ed.lines[ed.row].len(),
+                KEY_TAB => {
+                    for _ in 0..4 {
+                        ed.insert(' ');
+                    }
+                }
                 k if k < 0x100 => {
                     if let Some(c) = char::from_u32(k) {
                         ed.insert(c);

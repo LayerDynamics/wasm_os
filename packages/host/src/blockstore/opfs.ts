@@ -6,12 +6,12 @@ function enc(key: string): string {
 }
 
 export class OpfsBlockstore implements Blockstore {
-  constructor(private root: FileSystemDirectoryHandle, private ns: string) {}
+  constructor(private root: FileSystemDirectoryHandle) {}
 
   static async create(namespace: string): Promise<OpfsBlockstore> {
     const root = await navigator.storage.getDirectory();
     const dir = await root.getDirectoryHandle(namespace, { create: true });
-    return new OpfsBlockstore(dir, namespace);
+    return new OpfsBlockstore(dir);
   }
 
   async get(key: string): Promise<Uint8Array | undefined> {

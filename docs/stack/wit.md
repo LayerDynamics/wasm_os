@@ -20,7 +20,9 @@ WASM_OS, WIT describes two transports under the same `wit/` source tree:
 
 The transports differ, but the contracts do not live in separate source trees. The
 guest extension remains WIT so Binder can validate its core-module wire shim
-without pretending that `jco` can emit that transport.
+without pretending that `jco` can emit that transport. There is no separate
+`wasmos:brokers` package: clocks and entropy are host-side WASI handlers, while
+input and GPU are capability-gated kernel operations.
 
 ---
 
@@ -52,7 +54,8 @@ Three files form one package:
   declares the data types (`proc-info`, `feature-report`, `spawn-spec`,
   `syscall-outcome`, the `fs-error` variant, the `backend` enum) and the functions:
   `boot`, `mount`, `fs-write/read/list/delete/mkdirp`, `seed-entropy`, `spawn`,
-  `spawn-emulator`, `service-syscall`, `deliver-stdin`, `deliver-input`,
+  `spawn-emulator`, `service-syscall`, `deliver-stdin`, `deliver-input` and its
+  `input-delivery` result,
   `deliver-net`, `bind-terminal`, `set-priority`, `exit-code`, `take-capture`,
   `list-procs`, …
 
@@ -133,6 +136,13 @@ wait:  func(pid: u32) -> result<s32, u16>;           // child exit code
 These WIT records mirror the binary wire layout the router decodes — they document
 intent and gate drift, while the actual transport is the ring, not Component-Model
 calls.
+
+`deliver-input` returns both an `accepted` flag and the `wakeups` list. The flag
+distinguishes a real delivery from a default-deny drop when the target is gone or
+lacks `Input`; the host uses it for delivery-rate and drop-rate evidence. A
+canvas sample completes when the owning surface is actually blitted, so the
+reported p50/p95 values measure browser keydown to visible guest frame rather
+than only the control call's round trip.
 
 ---
 

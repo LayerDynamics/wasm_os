@@ -1,6 +1,6 @@
 # process control and IPC Status — Multi-process, IPC & Persistence
 
-**Status:** ✅ Complete — all eight exit criteria met (verified 2026-06-01 via `npm run verify`, exit 0).
+**Status:** ✅ Complete — current repository verification passed on 2026-08-22 via `npm run verify` (exit 0).
 
 WASM_OS is now a **multi-process OS you can observe and control**. It sustains
 **≥32 concurrent processes** within the main-thread budget; processes talk to each
@@ -27,24 +27,21 @@ manifest, on top of the already-persistent VFS (FR-35).
 | 7 | **Session survives reload** — open apps re-open at saved geometry; `/home` persists (FR-35) | `e2e/session.spec.ts` | ✅ PASS |
 | 8 | `npm run verify` green **including** the kernel/VFS bootstrap–desktop compositor regression suite under the new kernel | local `npm run verify` (exit 0) | ✅ PASS |
 
-## Verify gate breakdown (latest local run — 2026-06-01)
+## Verify gate breakdown (latest local run — 2026-08-22)
 
 ```text
 build         : kernel component (wasm32-unknown-unknown) + jco bindings regenerated
-build:guests  : 30 Rust wasm32-wasip1 guests (adds chandemo/shmdemo/sigdemo/spinner +
-                kill/renice/ps/top coreutils + the sysmon app) + 2 Zig wasm32-wasi guests
+build:guests  : all shipped Rust wasm32-wasip1 guests, Zig guests, and the hand-authored WAT utility
 binder        : kernel-check — wasmos-sys signatures conform to wit/kernel/kernel.wit, 18 verbs: spawn, pipe,
                 wait, proc-list, set-priority, chan-open/send/recv, shm-create/map/read/
                 write/grant, kill, sig-wait, win-surface/present/read-input (FR-36)
 lint          : clippy clean (-D warnings) on the whole workspace + kernel wasm target
 typecheck     : tsc -p packages/host/tsconfig.json --noEmit — clean
-cargo test    : 92 passed; 0 failed  (kernel 89 — incl. proc_list metrics + priority cap,
-                channel open/send/recv/park/EOF, shm create/grant/isolation/free, signal
-                cap-gating + SIGTERM sig_wait wake + SIGKILL reap, chan.rs 4 + shm.rs 4;
-                wasmgfx 3)
-vitest        : 14 passed (4 files) — features, polyglot-echo, IdbBlockstore, ring
-playwright    : 52 passed — kernel/VFS bootstrap–desktop compositor regression + process control and IPC: concurrency(32), channel, shm, signals(3),
-                renice, ps/top, sysmon, session restore
+cargo test    : workspace passed, including 110 kernel tests, process-control tests,
+                graphics SDK tests, and wasmobj tests
+vitest        : 32 passed (8 files)
+playwright    : 89 passed in the fast browser suite, including concurrency, channels,
+                shared memory, signals, priorities, System Monitor, and session restore
 ```
 
 ## Architecture deltas introduced by process control and IPC
@@ -106,14 +103,15 @@ playwright    : 52 passed — kernel/VFS bootstrap–desktop compositor regressi
 
 ## CI
 
-`.github/workflows/ci.yml` builds the Rust + Zig guests (`build:guests`) before the
+`.github/workflows/ci.yml` builds the Rust, Zig, and WAT guests (`build:guests`) before the
 host tests, so the new guest crates (`chandemo`, `shmdemo`, `sigdemo`, `sysmon`,
 the `kill`/`renice`/`ps`/`top` coreutils) are covered with no workflow change — they
 are workspace members picked up by clippy and `build:guests`, and their wasms are
 copied into `packages/host/guests/` for the e2e server. `test:rust` runs the expanded
 kernel suite (channels, shm, signals).
 
-## Deferred to Linux guest integration and later work (per spec)
+## Current boundaries
 
-Networking broker (OQ-2 / `net_request`), Tier B (cooperative/Asyncify/JSPI), full
-running-process-memory snapshot, WASI p2 components (FR-13), and the Linux guest integration.
+The network broker and Linux guest are implemented in the M5 runtime. The active
+runtime still has no Tier B Asyncify/JSPI transport, no full running-process-memory
+snapshot, and no WASI Preview 2 component execution path.

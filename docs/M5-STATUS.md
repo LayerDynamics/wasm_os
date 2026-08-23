@@ -1,7 +1,7 @@
 # Linux guest status — TinyEMU as a privileged process
 
-**Status:** Complete — all nine exit criteria were reported green on 2026-06-01
-by the fast verification gate and the separate slow Linux-boot lane.
+**Status:** Complete — the fast gate passed on 2026-08-22 and the separate slow Linux
+lane passed all eight workflows serially on 2026-08-22.
 
 WASM_OS boots a real RISC-V Linux guest. Launch **Linux** from the taskbar and
 TinyEMU runs the BusyBox/Buildroot image in a dedicated worker. The guest is
@@ -24,17 +24,20 @@ capability-gated `net_request` broker and a `fetch` utility to WASI guests.
 | 8 | Reopen Linux after reload and preserve the shared folder | `e2e/emulator-session.spec.ts` | ✅ PASS |
 | 9 | Keep the earlier kernel, process, shell, desktop, IPC, and persistence checks green | `npm run verify` plus the slow lane | ✅ PASS |
 
-## Verification record
+## Verification record (2026-08-22)
 
 ```text
 build         : kernel component and generated bindings
-build:guests  : Rust wasm32-wasip1 guests plus the Zig guests
+build:guests  : Rust wasm32-wasip1 guests plus the Zig guests (the current command
+                also builds the hand-authored WAT utility)
 binder        : wasmos-sys signatures conform to wit/kernel/kernel.wit, including net_request
 lint          : clippy clean on the workspace and kernel WASM target
 typecheck     : host TypeScript clean
 cargo test    : kernel, graphics SDK, and emulator/network lifecycle tests passed
 vitest        : host tests passed
-playwright    : fast browser suite plus the slow Linux boot suite passed
+playwright    : 89 fast workflows passed; 8 slow Linux workflows passed with one
+                worker (the TinyEMU lane is intentionally serialized to avoid
+                starting several multi-megabyte emulators at once)
 ```
 
 ## Implementation details

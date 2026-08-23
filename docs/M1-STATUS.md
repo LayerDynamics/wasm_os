@@ -1,6 +1,6 @@
 # WASI process runtime Status — First WASI Process
 
-**Status:** ✅ Complete — all exit criteria met (verified 2026-05-31 via `npm run verify`, exit 0).
+**Status:** ✅ Complete — the current repository gate passed on 2026-08-22 via `npm run verify`.
 
 A real Rust `wasm32-wasip1` binary runs as a scheduled process in its own Web
 Worker, makes **blocking WASI Preview 1 syscalls over a SharedArrayBuffer ring**
@@ -18,18 +18,15 @@ containment, and a guest reads a host-written file through `path_open`/`fd_read`
 | 4 | `path_open`/`fd_read`/`fd_seek`/`fd_close` reach the VFS | `e2e/process.spec.ts` test 4 (catfile); `syscall::path_open_then_fd_read_returns_vfs_bytes` + 11 router tests | ✅ PASS (guest read `payload-from-host` from `/mnt/in.txt`) |
 | 5 | `npm run verify` green incl. kernel/VFS bootstrap tri-backend persistence regression through the async proxy | local `npm run verify` (exit 0); `e2e/boot.spec.ts` | ✅ PASS |
 
-## Verify gate breakdown (latest local run)
+## Verify gate breakdown (latest local run — 2026-08-22)
 
 ```text
 build        : kernel component (wasm32-unknown-unknown) + jco bindings regenerated
 typecheck    : tsc -p packages/host/tsconfig.json --noEmit — clean
-cargo test   : 42 passed; 0 failed
-               (vfs ×6, types+fd-table ×12, scheduler ×5, kcore ×7, syscall ×12)
-vitest       : 7 passed (3 files) — features ×2, IdbBlockstore ×3, SAB ring ×2
-playwright   : 9 passed — boot<1.5s+tierA+init-proc, tri-backend persist, fsDelete,
-               OpfsBlockstore real-OPFS, IdbBlockstore real-IDB (kernel/VFS bootstrap regression);
-               hello spawn/stdout/exit0, two-proc isolation, crash containment,
-               catfile path_open+fd_read (WASI process runtime)
+cargo test   : workspace passed, including 110 kernel tests and the wasmobj tests
+vitest       : 32 passed (8 files)
+playwright   : 89 passed in the fast browser suite, including boot/persistence,
+               WASI process execution, filesystem paths, desktop, and input
 clippy       : clean (-D warnings) on wasm32-unknown-unknown + host targets
 ```
 
@@ -41,7 +38,7 @@ clippy       : clean (-D warnings) on wasm32-unknown-unknown + host targets
   process's SAB syscall ring, services them with `Atomics.waitAsync` (never
   blocking), and orchestrates spawn end-to-end (allocate PID/fd-table/caps via
   `control.spawn`, then create the nested process worker). The main thread talks
-  to the kernel only through an **async postMessage proxy** (`boot.ts`).
+  to the kernel only through an **async postMessage proxy**.
 - **SAB syscall ring** (`packages/host/src/ring/`): two monotonic doorbell
   counters (REQ_SEQ/RESP_SEQ) — race-free, no lost wakeups. The process worker
   blocks on `Atomics.wait` (true Tier-A syscall semantics); the kworker
@@ -68,23 +65,27 @@ clippy       : clean (-D warnings) on wasm32-unknown-unknown + host targets
 3. **Preopen at fd 3 = `/` (a `Dir` descriptor), `next_fd` starts at 4** (plan
    said `next_fd=3`) — keeps `fd_prestat_get` self-consistent (fd 3 success, fd≥4
    `BADF` to terminate the libc preopen scan) and lets `path_open` resolve paths.
-4. **`fd_readdir` synthesized from the flat-key VFS listing** — provisional until
-   shell and userland introduces a real hierarchical directory tree.
-5. **`clock_time_get` returns a deterministic constant**; **`random_get`** uses a
-   deterministic LCG. Real capability-gated clock/entropy brokers (§3.6) are
-   deferred; deterministic stubs keep tests reproducible.
-6. **Ring multiplexing uses `Atomics.waitAsync`** (Chrome + Firefox evergreen);
-   the `postMessage`-wakeup fallback is documented but not implemented (single
-   code path).
+4. **`fd_readdir` now reads the hierarchical VFS** — the directory tree and explicit
+   directory markers are implemented by the shell and userland layer.
+5. **`clock_time_get` and `random_get` are host-side WASI handlers.** The clock
+   reads the worker's real time source and random bytes come from the browser
+   CSPRNG; kernel `/dev/random` and `/dev/urandom` receive their seed through
+   the explicit boot entropy call.
+6. **Ring multiplexing uses `Atomics.waitAsync`** in the kernel worker and
+   `Atomics.wait` in each process worker. The runtime is Tier A only: a
+   non-isolated page is rejected before boot rather than silently taking a
+   partial `postMessage` path.
 7. **Worker bundling:** esbuild emits `dist/index.js` + `dist/worker/{kernel,process}-worker.js`
    (structure-preserving); workers are constructed from those built URLs. Guests
    are served from `/packages/host/guests/`.
 
-## Deferred to shell and userland and later work (genuinely out of WASI process runtime scope; tracked)
+## Current boundaries
 
-- Shell + xterm.js, `$PATH`, pipelines/redirection, polyglot C/Zig coreutils
-  (FR-14), the `wasmos:kernel` guest syscall world + `wit-bindgen` guest stubs.
-- Hierarchical VFS dirs + real `fd_readdir`; OPFS sync access handles to retire
-  the `CachedStore` bridge inside the kworker.
-- `Atomics.waitAsync` `postMessage`-wakeup fallback; Tier B (Asyncify/JSPI).
-- Real clock/entropy device brokers; control `kill`/signals (FR-7); live `ps`/`top` UI (FR-33).
+- Shell, xterm, pipelines, coreutils, the compositor, process control, IPC,
+  signals, and the checked `wasmos:kernel` transport are live later layers;
+  their current paths are recorded in the shell/userland, desktop, process-control,
+  and Linux integration status files.
+- The kworker still uses the `CachedStore` bridge because the generated component
+  store imports are synchronous while OPFS/IndexedDB are asynchronous.
+- Tier B (Asyncify/JSPI or a `postMessage` syscall transport) and WASI Preview 2
+  components remain design targets, not active execution paths.

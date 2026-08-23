@@ -467,6 +467,25 @@ impl ProcTable {
         })
     }
 
+    /// Remove an open descriptor while retaining its descriptor value for a
+    /// `fd_renumber` operation. The fd's flags move separately because WASI
+    /// associates them with the descriptor number, not with the underlying file.
+    pub fn take_fd(&mut self, pid: u32, fd: u32) -> Option<Descriptor> {
+        self.get_mut(pid).and_then(|p| {
+            p.fd_flags.remove(&fd);
+            p.fds.remove(&fd)
+        })
+    }
+
+    /// Install a descriptor at an exact number. This is used only by
+    /// `fd_renumber`; normal opens continue allocating from `next_fd`.
+    pub fn install_fd(&mut self, pid: u32, fd: u32, desc: Descriptor) -> bool {
+        self.get_mut(pid).map(|p| {
+            p.next_fd = p.next_fd.max(fd.saturating_add(1));
+            p.fds.insert(fd, desc);
+        }).is_some()
+    }
+
     /// WASI fd-flags currently set on `fd` (0 if none / unknown), for `fd_fdstat_get`.
     pub fn fd_flags(&self, pid: u32, fd: u32) -> u16 {
         self.get(pid).and_then(|p| p.fd_flags.get(&fd).copied()).unwrap_or(0)

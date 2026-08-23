@@ -1,6 +1,6 @@
 # desktop compositor Status — Compositor & Desktop (webtop)
 
-**Status:** ✅ Complete — all eight exit criteria met (verified 2026-05-31 via `npm run verify`, exit 0).
+**Status:** ✅ Complete — current repository verification passed on 2026-08-22 via `npm run verify` (exit 0).
 
 WASM_OS now boots to a **windowed desktop**. A host-side compositor manages real
 windows (move / resize / focus / minimize / maximize + z-order) with a taskbar
@@ -8,10 +8,12 @@ windows (move / resize / focus / minimize / maximize + z-order) with a taskbar
 **process-owned graphical windows**: a WASI process requests a surface
 (`win_surface`, Gpu-gated), draws into a shared framebuffer, and the compositor
 blits it to a `<canvas>`; the focused window's keyboard/mouse are **brokered to
-the owning process** (`win_read_input`, Input-gated). Five process windows ship —
-a **file manager** + three sophisticated apps (**Paint**, **Editor**, **Mandelbrot**)
-— launchable from the taskbar or each other. One app (Mandelbrot) is authored in
-**Zig** (FR-14). Theme + wallpaper persist to `/home`.
+the owning process** (`win_read_input`, Input-gated). Seven process windows ship —
+**Files**, **Paint**, **Editor**, **Mandelbrot**, **Monitor**, **Lisp**, and
+**Welcome** — launchable from the taskbar or each other. One app (Mandelbrot) is authored in
+**Zig** (FR-14). Mandelbrot starts from browser CSPRNG-seeded coordinates, pans with a
+drag, zooms with `+`/`-`, and generates another seeded view with `N`/Space (`R`
+reseeds). Theme + wallpaper persist to `/home`.
 
 ## Exit criteria
 
@@ -26,7 +28,7 @@ a **file manager** + three sophisticated apps (**Paint**, **Editor**, **Mandelbr
 | 7 | **Wallpaper + theme persist to `/home`** and survive reload (FR-26) | `e2e/theme.spec.ts`, `e2e/m3-marquee.spec.ts` | ✅ PASS |
 | 8 | `npm run verify` green **including** the kernel, process, and shell regression suite under the compositor | local `npm run verify` (exit 0) | ✅ PASS |
 
-## Verify gate breakdown (latest local run — 2026-05-31)
+## Verify gate breakdown (latest local run — 2026-08-22)
 
 ```text
 build         : kernel component (wasm32-unknown-unknown) + jco bindings regenerated
@@ -36,15 +38,18 @@ binder        : kernel-check — wasmos-sys signatures conform to wit/kernel/ker
                 win-surface, win-present, win-read-input (FR-36)
 lint          : clippy clean (-D warnings) on the whole workspace + kernel wasm target
 typecheck     : tsc -p packages/host/tsconfig.json --noEmit — clean
-cargo test    : 80 passed; 0 failed  (kernel 77 — incl. win_surface caps/dims/gc,
-                win_read_input + deliver_input park/resume + caps, spawn delegation;
-                wasmgfx 3 — framebuffer primitives + font render)
-vitest        : 14 passed (4 files) — features, polyglot-echo (node:wasi), IdbBlockstore, ring
-playwright    : 41 passed — kernel/VFS bootstrap (boot/persist/fsDelete/OPFS/IDB), WASI process runtime (spawn/isolation/
-                crash/path_open), shell and userland (terminal+Zig util, shell pipeline/redirect/$?,
-                coreutils, crash containment), desktop compositor (desktop window ops, surface/input,
-                file manager, paint, editor, mandelbrot, launcher concurrency +
-                crash containment, theming, marquee)
+cargo test    : workspace passed, including kernel, graphics SDK, and wasmobj tests
+vitest        : 32 passed (8 files)
+playwright    : 89 passed in the fast browser suite, including desktop windows,
+                brokered input, the seven launcher apps, and terminal recovery
+
+Input evidence: the real Chromium matrix sent all 32 named keys to each of the
+seven launcher canvas guests (224 keydown events). All 224 were accepted by the
+kernel and followed by a guest frame; 0 were dropped or missed. The matrix
+records p50/p95/max input-to-paint latency from the browser keydown through the
+surface blit, and requires p95 below 100 ms. The default-deny case separately
+records one generated event, zero deliveries, and one drop for a process without
+the `Input` capability.
 ```
 
 ## Architecture deltas introduced by desktop compositor
@@ -77,28 +82,29 @@ playwright    : 41 passed — kernel/VFS bootstrap (boot/persist/fsDelete/OPFS/I
   requests/responses at 64 KB. `fd_write`/`fd_read` now cap each call to one ring
   payload and report a **short** read/write; libc loops for the remainder (correct
   WASI semantics). Without it a large write silently wrote 0 bytes.
-- **Single-click-to-open in the file manager** (not double-click): the WASI process runtime kernel
-  clock is a fixed constant, so a guest cannot time a double-click. Clicking a
-  folder navigates; clicking a file launches it.
+- **Single-click-to-open in the file manager** (not double-click): the app uses
+  explicit click handling rather than timing a double-click. Clicking a folder
+  navigates; clicking a file launches it.
 - **Compositor focus blurs the terminal's xterm** when a canvas window is focused,
   so keystrokes route to the focused app via the input broker, not the shell.
-- **`kill` = terminate the worker + record the exit** (host-initiated). Full
-  POSIX-style signals (FR-7) remain process control and IPC; this is enough for "close window → reap app".
-- **Apps are not session-restored on reload** — only the wallpaper/theme persist.
-  Session snapshot/restore (FR-35) is process control and IPC.
+- **`kill` = terminate the worker + record the exit** (host-initiated). The
+  process-control layer also provides capability-gated SIGTERM/SIGKILL.
+- **Apps are session-restored on reload** — the compositor persists window
+  geometry and launcher identity in `/home/.session.json`.
 - **Tier A only** (SAB); the framebuffer + input paths use the existing SAB
   substrate. Tier B is out of scope for desktop compositor.
 
 ## CI
 
 `.github/workflows/ci.yml` already installs **Zig 0.14.1** (official archive,
-sha256-pinned) and builds the Rust + Zig guests before host tests; both Zig guests
+sha256-pinned) and builds the Rust, Zig, and WAT guests before host tests; both Zig guests
 (`echo.zig`, `mandelbrot.zig`) were verified to compile on 0.14.1. The new app
 crates are workspace members, so clippy/`build:guests` cover them with no workflow
 change. `test:rust` now also runs the `wasmgfx` unit tests.
 
-## Deferred to process control and IPC and later work (per spec)
+## Current boundaries
 
-`ps`/`top` live view (FR-33), IPC channels/shm at scale + 32 concurrent (FR-3),
-signals (FR-7), session snapshot (FR-35), networking broker (OQ-2), WebGL-accelerated
-present, and the Linux guest integration.
+Process control, IPC, signals, session restore, the network broker, and the Linux
+guest are implemented in the later runtime layers. The compositor still presents
+software RGBA framebuffers; WebGL acceleration and Tier B input/presentation are
+not active paths.

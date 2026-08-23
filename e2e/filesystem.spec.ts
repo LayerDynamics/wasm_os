@@ -107,7 +107,7 @@ test("the boot registry installs every shipped guest under /usr/bin", async ({ p
     "env", "fetch", "filemanager", "gfxspike", "grep", "head", "hello", "kill",
     "lisp", "ls", "mandelbrot", "mkdir", "mount", "mv", "nano", "paint", "ps",
     "pwd", "renice", "rm", "sh", "shmdemo", "sigdemo", "spinner", "sysmon", "tail",
-    "touch", "top", "wc", "welcome", "whoami",
+    "touch", "top", "watinfo", "wc", "welcome", "whoami",
   ].map((name) => `/usr/bin/${name}`)));
 });
 

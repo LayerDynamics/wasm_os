@@ -73,10 +73,10 @@ export function App() {
           <ul className="wasmos-bootsplash-help">
             <li>
               Opened from inside another app (a link in a messenger, X, Instagram…)? Tap the
-              ••• or share menu and choose <b>Open in Safari</b> / <b>Open in Chrome</b>.
+              ••• or share menu and choose <b>Open in a supported browser</b>.
             </li>
             <li>Or paste the link straight into your browser’s address bar.</li>
-            <li>Make sure your browser and OS are up to date (iOS 16+, a recent Chrome).</li>
+            <li>Use a current, cross-origin-isolated Chromium or Firefox page.</li>
           </ul>
         </div>
       )}

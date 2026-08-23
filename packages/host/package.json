@@ -2,5 +2,9 @@
   "name": "@wasmos/host",
   "version": "0.0.0",
   "type": "module",
-  "main": "src/index.ts"
+  "main": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./wasi": "./src/wasi.ts"
+  }
 }

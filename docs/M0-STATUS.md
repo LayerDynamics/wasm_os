@@ -1,25 +1,29 @@
 # kernel/VFS bootstrap Status — Kernel & VFS Skeleton + Centralized Binder
 
-**Status:** ✅ Complete — all exit criteria met (verified 2026-05-31 via `npm run verify`).
+This report names the original bootstrap task. It is not a claim that the
+later runtime layers are absent; the current implementation also includes the
+WASI process, shell, desktop, IPC, and Linux paths described in the other
+status reports.
+
+**Status:** ✅ Complete — the current repository gate passed on 2026-08-22 via `npm run verify`.
 
 | Exit criterion | Verified by | Result |
 |----------------|-------------|--------|
 | Boots to `ready` < 1500 ms | `e2e/boot.spec.ts` test 1 (`bootMillis < 1500`) | ✅ PASS (boot well under budget; `bootMillis` measures kernel init from `boot()`, excludes script/wasm download) |
 | Cross-origin isolation (COOP/COEP) effective → tier A | `e2e/boot.spec.ts` test 1 (`crossOriginIsolated === true`, `tier === "A"`) | ✅ PASS |
-| Tri-backend VFS read/write/list (tmpfs `/`, OPFS `/home`, IDB `/mnt`) | `kernel` `vfs::tests` (4) + E2E test 2 | ✅ PASS |
+| VFS read/write/list across tmpfs `/`, OPFS `/home`, IDB `/mnt`, and system `/etc` | `kernel` VFS tests + E2E filesystem workflows | ✅ PASS |
 | `/home` (OPFS) + `/mnt` (IndexedDB) persist across reload; tmpfs volatile | `e2e/boot.spec.ts` test 2 (real Chromium, real OPFS/IDB) | ✅ PASS |
 | `npm run verify` all green | local (this machine) | ✅ PASS |
 
-## Verify gate breakdown (latest local run)
+## Verify gate breakdown (latest local run — 2026-08-22)
 
 ```text
 build        : kernel (wasm32) builds; binder gen regenerates bindings from wit/ (build artifact)
 typecheck    : tsc --noEmit on host passes against fresh bindings
-cargo test   : 22 passed; 0 failed  (vfs ×6, types/capabilities ×7, scheduler ×5, kcore ×4)
-vitest       : 5 passed (2 files)   (features detection ×2, IdbBlockstore ×3)
-playwright   : 5 passed             (boot<1.5s+tierA+init-proc; tri-backend persist;
-                                      fs-delete unlink+persist across reload;
-                                      OpfsBlockstore real-OPFS; IdbBlockstore real-IDB)
+cargo test   : workspace passed, including 110 kernel tests
+vitest       : 32 passed (8 files)
+playwright   : 89 passed in the fast browser suite, including boot, persistence,
+                                      filesystem hierarchy, process, desktop, and input workflows
 clippy       : clean (-D warnings) on both wasm32 + host targets
 CI (GitHub)  : runs the full pipeline on Linux x86_64 every push (real Actions)
 ```
@@ -29,7 +33,7 @@ CI (GitHub)  : runs the full pipeline on Linux x86_64 every push (real Actions)
 > fresh `jco` run, then checks the guest syscall signatures; `npm run verify` also
 > type-checks and exercises the fresh bindings in a real browser.
 
-## Post-review gap closure (FR-2, FR-3, sub-gaps)
+## Review record (FR-2, FR-3, and storage follow-ups)
 
 After a completeness audit, the following spec-kernel/VFS bootstrap gaps were closed (each with tests):
 
@@ -45,7 +49,7 @@ After a completeness audit, the following spec-kernel/VFS bootstrap gaps were cl
 
 ## Architecture as built
 
-- **Kernel:** Rust → WASM **component** built for `wasm32-unknown-unknown` (pure component — imports only `home-store`/`mnt-store`, exports `control`; avoids std's phantom WASI imports that `wasm32-wasip1` would link).
+- **Kernel:** Rust → WASM **component** built for `wasm32-unknown-unknown` (pure component — imports `home-store`, `mnt-store`, and `sys-store`, exports `control`; avoids std's phantom WASI imports that `wasm32-wasip1` would link).
 - **Binder:** contracts under `wit/` are the source of truth. `tools/binder gen`
   runs `jco transpile --instantiation async` for the component, while
   `binder kernel-check` checks every guest stub's full signature against
@@ -63,23 +67,28 @@ After a completeness audit, the following spec-kernel/VFS bootstrap gaps were cl
 
 ## Post-kernel/VFS bootstrap follow-up closure (2026-05-31)
 
-Five review follow-ups were actioned. Three were completed; two were explicitly
-kept deferred by product decision (they require architecture that spans multiple subsystem tasks).
+Five review follow-ups were actioned. The two items that required later runtime
+layers were completed by those later tasks; their current boundaries are listed
+below.
 
 | # | Item | Disposition | Evidence |
 |---|------|-------------|----------|
 | 1 | `fs-delete` control verb (was the lone `#[allow(dead_code)]`) | **Done** — added to `wit/control.wit`; `Vfs::delete`/`KernelCore::delete`/component `fs_delete`; host `KernelControl.fsDelete`; bindings regenerated. `Blockstore::delete` now has a real caller (dead_code removed). | `vfs::tests::delete_*` (2) + `e2e/boot.spec.ts` "fsDelete unlinks across backends and the deletion persists across reload" |
-| 2 | Actually **use** SAB/JSPI (not just report) | **Deferred (decision)** — requires WASI process runtime worker-per-process execution + SharedArrayBuffer syscall ring; no honest kernel/VFS bootstrap-scoped partial. | tracked below |
-| 3 | Hierarchical VFS dirs | **Deferred (decision)** — real directory tree + `fd_readdir` is shell and userland. | tracked below |
+| 2 | Actually **use** SAB/JSPI (not just report) | **Implemented by the WASI process runtime** — worker-per-process execution uses the SharedArrayBuffer syscall ring; JSPI remains optional. | `e2e/process.spec.ts`, ring tests |
+| 3 | Hierarchical VFS dirs | **Implemented by shell and userland** — real directory tree and `fd_readdir` are live. | filesystem E2E and kernel VFS tests |
 | 4 | Cross-platform binding determinism on CI's arch | **Corrected by real CI** — the first assumption (byte-identical glue cross-arch) was **false**: GitHub CI x86_64 emitted different jco identifier de-dup (`get$1` vs `get`) than mac arm64 because `cargo-component`'s component import ordering differs per arch. Earlier local "determinism" checks missed this (`verify-linux-determinism.sh` ran jco against the *mac-built* wasm; `ci-linux-determinism.sh` ran on the *pre-fs-delete* kernel). **Resolution:** textual bindings are tracked for review and checked by Binder; split-out core wasm payloads remain ignored. | real GitHub Actions finding → root-caused → gate redesigned; `npm run binder:check` green |
 | 5 | clippy `should_implement_trait` on `Scheduler::next` | **Done** — renamed `next` → `pick_next` (a non-`Iterator` `next` was misleading); all call sites updated. | `cargo clippy -D warnings` clean on wasm32 + host |
 
-## Deferred to process-runtime and shell work (genuinely out of kernel/VFS bootstrap scope; tracked)
+## Current boundaries
 
-- `wasmos:kernel` guest syscall world + `wit-bindgen` Rust/C guest stubs; Asyncify/JSPI Tier-B path.
-- **(item 2)** Worker-per-process execution + SharedArrayBuffer ring transport; actual WASM process *execution* and real *use* of SAB/JSPI (the table/scheduler/caps scaffolding is in place and tier detection *reports* SAB/JSPI; WASI process runtime attaches real instances and consumes them).
-- Control `spawn`/`kill` exposed over WIT (the `ProcTable` methods exist and are tested, awaiting their WIT callers). `fs-delete` is now exposed (see follow-up #1 above).
-- **(item 3)** Hierarchical VFS dirs (kernel/VFS bootstrap uses flat keys); revisit with `fd_readdir` in shell and userland.
+- `wasmos:kernel` is a checked WIT contract for the hand-written Rust guest
+  transport in `crates/wasmos-sys`; the active process guests use that ring path.
+- Worker-per-process execution, the SharedArrayBuffer transport, process control,
+  signals, live metrics, hierarchical directories, `/proc`, and `/dev` are active
+  in the later runtime layers.
+- Tier B (Asyncify/JSPI or a `postMessage` syscall transport) is not shipped.
+  `startDesktop` requires cross-origin isolation and fails clearly when SAB is
+  unavailable; the feature report still records the browser capability.
 
 > Watch-item resolution: cross-platform binding determinism is **not** assumed — it
 > was disproven by real CI (jco glue differs by arch). Textual bindings are tracked

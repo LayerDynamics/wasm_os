@@ -33,6 +33,19 @@ export const OP = {
   FD_FILESTAT_GET: 0x16,
   FD_FDSTAT_SET_FLAGS: 0x17,
   FD_READY: 0x18,
+  FD_PREAD: 0x19,
+  FD_PWRITE: 0x1a,
+  FD_FILESTAT_SET_SIZE: 0x1b,
+  FD_FILESTAT_SET_TIMES: 0x1c,
+  FD_SYNC: 0x1d,
+  PATH_LINK: 0x1e,
+  PATH_READLINK: 0x1f,
+  PATH_SYMLINK: 0x27,
+  FD_TELL: 0x28,
+  PATH_FILESTAT_SET_TIMES: 0x29,
+  FD_FDSTAT_SET_RIGHTS: 0x2a,
+  FD_RENUMBER: 0x2b,
+  PROC_RAISE: 0x2c,
 } as const;
 
 /** WASI Preview 1 errno values (subset) — must match `syscall::errno`. */
@@ -45,6 +58,11 @@ export const ERRNO = {
   NOSYS: 52,
   NOTDIR: 54,
   NOTCAPABLE: 76,
+  EXIST: 20,
+  IO: 29,
+  ISDIR: 31,
+  NOTEMPTY: 55,
+  NOSPC: 51,
 } as const;
 
 /** Builds a little-endian request buffer (mirrors the Rust `Writer`). */

@@ -80,7 +80,30 @@ export function makeWasiImports(getMemory: () => WebAssembly.Memory, ring: RingC
     return BigInt(whole) * 1_000_000n + BigInt(Math.round((ms - whole) * 1e6));
   };
 
+  /** Resolve WASI filestat timestamp flags while the runtime still has a real clock. */
+  const resolveFileTimes = (atim: bigint, mtim: bigint, flags: number): [bigint, bigint, number] | undefined => {
+    const ATIM = 1;
+    const MTIM = 2;
+    const ATIM_NOW = 4;
+    const MTIM_NOW = 8;
+    if ((flags & ATIM) !== 0 && (flags & ATIM_NOW) !== 0) return undefined;
+    if ((flags & MTIM) !== 0 && (flags & MTIM_NOW) !== 0) return undefined;
+    const now = clockNowNs(1);
+    const a = flags & ATIM_NOW ? now : atim;
+    const m = flags & MTIM_NOW ? now : mtim;
+    return [a, m, (flags & ATIM_NOW ? ATIM : 0) | (flags & MTIM_NOW ? MTIM : 0) | (flags & (ATIM | MTIM))];
+  };
+
   const handlers: Wasi = {
+    clock_res_get(clockId: number, resolutionPtr: number): number {
+      // Browser clocks are monotonic at the host boundary. Report nanosecond
+      // resolution, which is the unit WASI requires; clock_time_get still
+      // returns the actual value from the browser clock.
+      if (clockId > 3) return ERRNO.INVAL;
+      dv().setBigUint64(resolutionPtr, 1n, true);
+      return ERRNO.SUCCESS;
+    },
+
     fd_write(fd: number, iovsPtr: number, iovsLen: number, nwrittenPtr: number): number {
       const iovs = readIovs(iovsPtr, iovsLen);
       const mem = u8();
@@ -100,6 +123,68 @@ export function makeWasiImports(getMemory: () => WebAssembly.Memory, ring: RingC
       const nwritten = resp.u32();
       dv().setUint32(nwrittenPtr, nwritten, true);
       return errno;
+    },
+
+    fd_pread(fd: number, iovsPtr: number, iovsLen: number, offset: bigint, nreadPtr: number): number {
+      const iovs = readIovs(iovsPtr, iovsLen);
+      const want = Math.min(iovs.reduce((n, v) => n + v.len, 0), MAX_IO_BYTES);
+      const resp = new Reader(
+        ring.call(new Writer().u8(OP.FD_PREAD).u32(fd).u64(offset).u32(want).build()),
+      );
+      const errno = resp.u16();
+      const data = resp.bytes();
+      const mem = u8();
+      let off = 0;
+      for (const iov of iovs) {
+        const n = Math.min(iov.len, data.length - off);
+        if (n <= 0) break;
+        mem.set(data.subarray(off, off + n), iov.buf);
+        off += n;
+      }
+      dv().setUint32(nreadPtr, off, true);
+      return errno;
+    },
+
+    fd_pwrite(fd: number, iovsPtr: number, iovsLen: number, offset: bigint, nwrittenPtr: number): number {
+      const iovs = readIovs(iovsPtr, iovsLen);
+      const cap = Math.min(iovs.reduce((n, v) => n + v.len, 0), MAX_IO_BYTES);
+      const data = new Uint8Array(cap);
+      const mem = u8();
+      let off = 0;
+      for (const iov of iovs) {
+        if (off >= cap) break;
+        const n = Math.min(iov.len, cap - off);
+        data.set(mem.subarray(iov.buf, iov.buf + n), off);
+        off += n;
+      }
+      const resp = new Reader(
+        ring.call(new Writer().u8(OP.FD_PWRITE).u32(fd).u64(offset).bytes(data).build()),
+      );
+      const errno = resp.u16();
+      dv().setUint32(nwrittenPtr, resp.u32(), true);
+      return errno;
+    },
+
+    fd_advise(fd: number, _offset: bigint, _len: bigint, _advice: number): number {
+      // The browser-backed VFS has no page cache hint to tune. Validate the fd
+      // through the kernel so callers still get EBADF/other descriptor errors.
+      return new Reader(ring.call(new Writer().u8(OP.FD_FDSTAT_GET).u32(fd).build())).u16();
+    },
+
+    fd_allocate(fd: number, offset: bigint, len: bigint): number {
+      // Allocation is meaningful here as guaranteeing the requested file range
+      // exists. The kernel's bounded resize path supplies the same sparse-file
+      // semantics without pretending the browser exposes block allocation.
+      const stat = new Reader(ring.call(new Writer().u8(OP.FD_FILESTAT_GET).u32(fd).build()));
+      const statErrno = stat.u16();
+      if (statErrno !== ERRNO.SUCCESS) return statErrno;
+      stat.u8();
+      const size = stat.u64();
+      const end = offset + len;
+      if (end <= size) return ERRNO.SUCCESS;
+      return new Reader(
+        ring.call(new Writer().u8(OP.FD_FILESTAT_SET_SIZE).u32(fd).u64(end).build()),
+      ).u16();
     },
 
     fd_read(fd: number, iovsPtr: number, iovsLen: number, nreadPtr: number): number {
@@ -152,11 +237,17 @@ export function makeWasiImports(getMemory: () => WebAssembly.Memory, ring: RingC
       const errno = resp.u16();
       const filetype = resp.u8();
       const size = resp.u64();
+      const atim = resp.u64();
+      const mtim = resp.u64();
+      const ctim = resp.u64();
       const view = dv();
       for (let i = 0; i < 64; i++) view.setUint8(bufPtr + i, 0);
       view.setUint8(bufPtr + 16, filetype); // fs_filetype
       view.setBigUint64(bufPtr + 24, 1n, true); // fs_nlink
       view.setBigUint64(bufPtr + 32, size, true); // fs_size
+      view.setBigUint64(bufPtr + 40, atim, true);
+      view.setBigUint64(bufPtr + 48, mtim, true);
+      view.setBigUint64(bufPtr + 56, ctim, true);
       return errno;
     },
 
@@ -173,6 +264,48 @@ export function makeWasiImports(getMemory: () => WebAssembly.Memory, ring: RingC
       view.setBigUint64(statPtr + 8, rightsBase, true);
       view.setBigUint64(statPtr + 16, rightsInh, true);
       return errno;
+    },
+
+    fd_tell(fd: number, offsetPtr: number): number {
+      const resp = new Reader(ring.call(new Writer().u8(OP.FD_TELL).u32(fd).build()));
+      const errno = resp.u16();
+      dv().setBigUint64(offsetPtr, resp.u64(), true);
+      return errno;
+    },
+
+    fd_filestat_set_size(fd: number, size: bigint): number {
+      return new Reader(ring.call(new Writer().u8(OP.FD_FILESTAT_SET_SIZE).u32(fd).u64(size).build())).u16();
+    },
+
+    fd_filestat_set_times(fd: number, atim: bigint, mtim: bigint, flags: number): number {
+      const resolved = resolveFileTimes(atim, mtim, flags);
+      if (resolved === undefined) return ERRNO.INVAL;
+      const [a, m, f] = resolved;
+      return new Reader(
+        ring.call(new Writer().u8(OP.FD_FILESTAT_SET_TIMES).u32(fd).u64(a).u64(m).u16(f).build()),
+      ).u16();
+    },
+
+    fd_sync(fd: number): number {
+      return new Reader(ring.call(new Writer().u8(OP.FD_SYNC).u32(fd).build())).u16();
+    },
+
+    fd_datasync(fd: number): number {
+      // The backing stores commit each kernel mutation synchronously. Reuse the
+      // same descriptor validation and completion boundary as fd_sync.
+      return new Reader(ring.call(new Writer().u8(OP.FD_SYNC).u32(fd).build())).u16();
+    },
+
+    fd_fdstat_set_rights(fd: number, rightsBase: bigint, rightsInheriting: bigint): number {
+      return new Reader(
+        ring.call(
+          new Writer().u8(OP.FD_FDSTAT_SET_RIGHTS).u32(fd).u64(rightsBase).u64(rightsInheriting).build(),
+        ),
+      ).u16();
+    },
+
+    fd_renumber(from: number, to: number): number {
+      return new Reader(ring.call(new Writer().u8(OP.FD_RENUMBER).u32(from).u32(to).build())).u16();
     },
 
     fd_prestat_get(fd: number, prestatPtr: number): number {
@@ -199,13 +332,13 @@ export function makeWasiImports(getMemory: () => WebAssembly.Memory, ring: RingC
 
     path_open(
       dirfd: number,
-      _dirflags: number,
+      dirflags: number,
       pathPtr: number,
       pathLen: number,
       oflags: number,
       rightsBase: bigint,
-      _rightsInh: bigint,
-      _fdflags: number,
+      rightsInh: bigint,
+      fdflags: number,
       openedFdPtr: number,
     ): number {
       const path = td.decode(u8().subarray(pathPtr, pathPtr + pathLen));
@@ -214,9 +347,12 @@ export function makeWasiImports(getMemory: () => WebAssembly.Memory, ring: RingC
           new Writer()
             .u8(OP.PATH_OPEN)
             .u32(dirfd)
+            .u32(dirflags)
             .bytes(te.encode(path))
             .u16(oflags)
             .u64(rightsBase)
+            .u64(rightsInh)
+            .u16(fdflags)
             .build(),
         ),
       );
@@ -240,12 +376,18 @@ export function makeWasiImports(getMemory: () => WebAssembly.Memory, ring: RingC
       const errno = resp.u16();
       const filetype = resp.u8();
       const size = resp.u64();
+      const atim = resp.u64();
+      const mtim = resp.u64();
+      const ctim = resp.u64();
       if (errno === ERRNO.SUCCESS) {
         const view = dv();
         for (let i = 0; i < 64; i++) view.setUint8(bufPtr + i, 0); // filestat is 64 bytes
         view.setUint8(bufPtr + 16, filetype); // fs_filetype
         view.setBigUint64(bufPtr + 24, 1n, true); // fs_nlink
         view.setBigUint64(bufPtr + 32, size, true); // fs_size
+        view.setBigUint64(bufPtr + 40, atim, true);
+        view.setBigUint64(bufPtr + 48, mtim, true);
+        view.setBigUint64(bufPtr + 56, ctim, true);
       }
       return errno;
     },
@@ -287,6 +429,67 @@ export function makeWasiImports(getMemory: () => WebAssembly.Memory, ring: RingC
         .bytes(te.encode(newPath))
         .build();
       return new Reader(ring.call(req)).u16();
+    },
+
+    path_link(
+      oldDirfd: number,
+      _oldFlags: number,
+      oldPathPtr: number,
+      oldPathLen: number,
+      newDirfd: number,
+      newPathPtr: number,
+      newPathLen: number,
+    ): number {
+      const mem = u8();
+      const oldPath = td.decode(mem.subarray(oldPathPtr, oldPathPtr + oldPathLen));
+      const newPath = td.decode(mem.subarray(newPathPtr, newPathPtr + newPathLen));
+      return new Reader(
+        ring.call(new Writer().u8(OP.PATH_LINK).u32(oldDirfd).bytes(te.encode(oldPath)).u32(newDirfd).bytes(te.encode(newPath)).build()),
+      ).u16();
+    },
+
+    path_readlink(dirfd: number, pathPtr: number, pathLen: number, bufPtr: number, bufLen: number, bufusedPtr: number): number {
+      const path = td.decode(u8().subarray(pathPtr, pathPtr + pathLen));
+      const resp = new Reader(
+        ring.call(new Writer().u8(OP.PATH_READLINK).u32(dirfd).bytes(te.encode(path)).u32(bufLen).build()),
+      );
+      const errno = resp.u16();
+      const target = resp.bytes();
+      const n = Math.min(target.length, bufLen);
+      u8().set(target.subarray(0, n), bufPtr);
+      dv().setUint32(bufusedPtr, n, true);
+      return errno;
+    },
+
+    path_symlink(oldPathPtr: number, oldPathLen: number, dirfd: number, newPathPtr: number, newPathLen: number): number {
+      const mem = u8();
+      const target = td.decode(mem.subarray(oldPathPtr, oldPathPtr + oldPathLen));
+      const link = td.decode(mem.subarray(newPathPtr, newPathPtr + newPathLen));
+      return new Reader(
+        ring.call(new Writer().u8(OP.PATH_SYMLINK).bytes(te.encode(target)).u32(dirfd).bytes(te.encode(link)).build()),
+      ).u16();
+    },
+
+    path_filestat_set_times(
+      dirfd: number,
+      _flags: number,
+      pathPtr: number,
+      pathLen: number,
+      atim: bigint,
+      mtim: bigint,
+      fstFlags: number,
+    ): number {
+      const resolved = resolveFileTimes(atim, mtim, fstFlags);
+      if (resolved === undefined) return ERRNO.INVAL;
+      const path = td.decode(u8().subarray(pathPtr, pathPtr + pathLen));
+      const [a, m, f] = resolved;
+      return new Reader(
+        ring.call(new Writer().u8(OP.PATH_FILESTAT_SET_TIMES).u32(dirfd).bytes(te.encode(path)).u64(a).u64(m).u16(f).build()),
+      ).u16();
+    },
+
+    proc_raise(signal: number): number {
+      return new Reader(ring.call(new Writer().u8(OP.PROC_RAISE).u8(signal).build())).u16();
     },
 
     fd_readdir(fd: number, buf: number, bufLen: number, cookie: bigint, bufusedPtr: number): number {
@@ -469,19 +672,32 @@ export function makeWasiImports(getMemory: () => WebAssembly.Memory, ring: RingC
       view.setUint32(neventsPtr, events.length, true);
       return ERRNO.SUCCESS;
     },
-  };
 
-  // Any WASI Preview 1 import we do not model resolves to ENOSYS — the correct,
-  // spec-defined answer for an unimplemented syscall (a guest gets a real errno it
-  // can handle) rather than a hard LinkError at instantiation. This is not a
-  // placeholder for the modeled calls above; every call a guest actually uses is
-  // implemented for real.
-  return new Proxy(handlers, {
-    get(target, prop: string) {
-      if (prop in target) return target[prop];
-      return (..._args: never[]): number => ERRNO.NOSYS;
+    // WASI Preview 1 exposes socket-shaped imports even when a host chooses not
+    // to provide sockets. Keep these names explicit so module linking is stable
+    // and unsupported networking is observable as the standard NOSYS errno,
+    // rather than being hidden by a catch-all import proxy.
+    sock_accept(_fd: number, _flags: number, _roFd: number): number {
+      return ERRNO.NOSYS;
     },
-  }) as Wasi;
+    sock_recv(
+      _fd: number,
+      _riData: number,
+      _riDataLen: number,
+      _riFlags: number,
+      _roDataLen: number,
+      _roFlags: number,
+    ): number {
+      return ERRNO.NOSYS;
+    },
+    sock_send(_fd: number, _siData: number, _siDataLen: number, _siFlags: number, _soDataLen: number): number {
+      return ERRNO.NOSYS;
+    },
+    sock_shutdown(_fd: number, _how: number): number {
+      return ERRNO.NOSYS;
+    },
+  };
+  return handlers;
 }
 
 const OP_WIN_SURFACE = 0x23;

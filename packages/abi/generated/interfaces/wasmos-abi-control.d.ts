@@ -13,7 +13,7 @@ export function accountEmulator(pid: number, ticks: bigint): void;
 export function deliverNet(pid: number, ok: boolean, body: Uint8Array): Uint32Array;
 export function serviceSyscall(pid: number, request: Uint8Array): SyscallOutcome;
 export function deliverStdin(pid: number, bytes: Uint8Array): Uint32Array;
-export function deliverInput(pid: number, bytes: Uint8Array): Uint32Array;
+export function deliverInput(pid: number, bytes: Uint8Array): InputDelivery;
 export function bindTerminal(pid: number): void;
 export function setProcMem(pid: number, bytes: number): void;
 export function setPriority(pid: number, priority: number): void;
@@ -89,4 +89,8 @@ export interface SyscallOutcome {
   reap: Uint32Array,
   net?: NetRequest,
   termMode?: number,
+}
+export interface InputDelivery {
+  accepted: boolean,
+  wakeups: Uint32Array,
 }

@@ -66,6 +66,72 @@ test("terminal runs `echo` end-to-end through the real shell process", async ({ 
   expect((log.match(/wasmos:/g) || []).length).toBeGreaterThanOrEqual(2); // prompt returned
 });
 
+test("terminal input records keystroke-to-echo latency and delivery outcomes", async ({ page }) => {
+  const errors = captureErrors(page);
+  await page.goto("/");
+  await waitReady(page, errors);
+  await page.waitForFunction(
+    () => ((window as unknown as { __wasmos: { term: { log(): string } } }).__wasmos.term.log()).includes("wasmos:"),
+    null,
+    { timeout: 10_000 },
+  );
+
+  await page.evaluate(() => {
+    (window as unknown as { __wasmos: { inputMetrics: { reset(): void } } }).__wasmos.inputMetrics.reset();
+  });
+  await page.locator("#terminal").click();
+  await page.keyboard.type("echo latency");
+  await page.keyboard.press("Enter");
+
+  await expect
+    .poll(
+      () => page.evaluate(() => (window as unknown as { __wasmos: { term: { log(): string } } }).__wasmos.term.log()),
+      { timeout: 10_000 },
+    )
+    .toContain("latency");
+  await expect
+    .poll(
+      () => page.evaluate(() => (window as unknown as { __wasmos: { inputMetrics: { snapshot(): { pending: number } } } }).__wasmos.inputMetrics.snapshot().pending),
+      { timeout: 10_000 },
+    )
+    .toBe(0);
+
+  const metrics = await page.evaluate(() =>
+    (window as unknown as {
+      __wasmos: {
+        inputMetrics: {
+          snapshot(): {
+            generated: number;
+            delivered: number;
+            rendered: number;
+            dropped: number;
+            missed: number;
+            pending: number;
+            p50Millis: number | null;
+            p95Millis: number | null;
+            maxMillis: number | null;
+          };
+        };
+      };
+    }).__wasmos.inputMetrics.snapshot(),
+  );
+  console.info(
+    `[terminal input metrics] samples=${metrics.rendered} p50=${metrics.p50Millis}ms ` +
+      `p95=${metrics.p95Millis}ms max=${metrics.maxMillis}ms dropped=${metrics.dropped} missed=${metrics.missed}`,
+  );
+  expect(metrics.generated).toBeGreaterThan(0);
+  expect(metrics.delivered).toBe(metrics.generated);
+  expect(metrics.rendered).toBe(metrics.generated);
+  expect(metrics.dropped).toBe(0);
+  expect(metrics.missed).toBe(0);
+  expect(metrics.pending).toBe(0);
+  expect(metrics.p50Millis).not.toBeNull();
+  expect(metrics.p95Millis).not.toBeNull();
+  expect(metrics.maxMillis).not.toBeNull();
+  expect(metrics.p95Millis!).toBeLessThan(100);
+  expect(errors.join("\n")).not.toMatch(/ring pump|ComponentError/);
+});
+
 test("a non-existent command reports `command not found` without crashing the kernel", async ({ page }) => {
   // Regression: typing a typo used to make k_spawn allocate a child and emit a
   // SpawnRequest, after which the host's fsRead(image) threw ("ring pump error")
@@ -107,10 +173,11 @@ test("a non-existent command reports `command not found` without crashing the ke
   expect(errors.join("\n")).not.toMatch(/ring pump|ComponentError/);
 });
 
-test("arrow / navigation keys do not corrupt the xterm parser", async ({ page }) => {
-  // Regression: the terminal used to echo raw key input straight back into xterm,
-  // so an arrow key's escape sequence (ESC[A) fed xterm's own parser and produced
-  // "Parsing error" spam. Escape-prefixed input is now dropped, not echoed.
+test("cooked input edits a command with navigation and history", async ({ page }) => {
+  // Regression: cooked input used to forward printable bytes immediately and drop
+  // navigation sequences. That made arrows look harmless but left no way to edit
+  // a command or recall it. The host now owns the line until Enter and sends the
+  // edited result to the real shell.
   const errors = captureErrors(page);
   await page.goto("/");
   await waitReady(page, errors);
@@ -121,11 +188,12 @@ test("arrow / navigation keys do not corrupt the xterm parser", async ({ page })
   );
 
   await page.locator("#terminal").click();
-  for (const key of ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "ArrowUp"]) {
-    await page.keyboard.press(key);
-  }
-  // A normal command typed afterwards must still run cleanly.
-  await page.keyboard.type("echo afterarrows");
+  // Insert the missing E before the final D: `echo EDITD` → `echo EDITED`.
+  await page.keyboard.type("echo EDITD");
+  await page.keyboard.press("ArrowLeft");
+  await page.keyboard.type("E");
+  await page.keyboard.press("Home");
+  await page.keyboard.press("End");
   await page.keyboard.press("Enter");
 
   const readLog = () =>
@@ -133,10 +201,21 @@ test("arrow / navigation keys do not corrupt the xterm parser", async ({ page })
   let log = "";
   for (let i = 0; i < 40; i++) {
     log = await readLog();
-    if ((log.match(/afterarrows/g) || []).length >= 2) break;
+    if (/\r?\nEDITED/.test(log)) break;
     await page.waitForTimeout(150);
   }
-  expect((log.match(/afterarrows/g) || []).length).toBeGreaterThanOrEqual(2);
+  expect(log).toContain("echo EDITED");
+  expect(log).toMatch(/\r?\nEDITED/);
+
+  // Up recalls the command from the host-side history and Enter runs it again.
+  await page.keyboard.press("ArrowUp");
+  await page.keyboard.press("Enter");
+  for (let i = 0; i < 40; i++) {
+    log = await readLog();
+    if ((log.match(/\r?\nEDITED/g) || []).length >= 2) break;
+    await page.waitForTimeout(150);
+  }
+  expect((log.match(/\r?\nEDITED/g) || []).length).toBeGreaterThanOrEqual(2);
   expect(errors.join("\n")).not.toMatch(/Parsing error/i);
 });
 
@@ -371,6 +450,32 @@ test("the Zig coreutil (echo.zig) runs end-to-end through the terminal (FR-14)",
   // Output line distinct from the echoed input → the Zig binary actually ran.
   expect((log.match(/zig-polyglot-OK/g) || []).length).toBeGreaterThanOrEqual(2);
   expect((log.match(/wasmos:/g) || []).length).toBeGreaterThanOrEqual(2); // prompt returned
+});
+
+test("the hand-authored WAT utility reads live /proc/uptime through WASI", async ({ page }) => {
+  const errors = captureErrors(page);
+  await page.goto("/");
+  await waitReady(page, errors);
+  await page.waitForFunction(
+    () => ((window as unknown as { __wasmos: { term: { log(): string } } }).__wasmos.term.log()).includes("wasmos:"),
+    null,
+    { timeout: 10_000 },
+  );
+
+  await page.locator("#terminal").click();
+  await page.keyboard.type("watinfo");
+  await page.keyboard.press("Enter");
+
+  const readLog = () =>
+    page.evaluate(() => (window as unknown as { __wasmos: { term: { log(): string } } }).__wasmos.term.log());
+  let log = "";
+  for (let i = 0; i < 60; i++) {
+    log = await readLog();
+    if ((log.match(/WAT uptime:/g) || []).length >= 1) break;
+    await page.waitForTimeout(200);
+  }
+  expect((log.match(/WAT uptime:/g) || []).length).toBeGreaterThanOrEqual(1);
+  expect((log.match(/wasmos:/g) || []).length).toBeGreaterThanOrEqual(2);
 });
 
 test("the terminal opens in the home directory (/home)", async ({ page }) => {

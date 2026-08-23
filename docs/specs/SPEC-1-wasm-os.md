@@ -3,7 +3,7 @@
 > A layered operating system that runs entirely inside a browser tab — a WASM microkernel that schedules WASI processes, a Unix-style userland and terminal, a windowed desktop compositor, and an emulator capable of booting a real Linux, all composed as layers of one system.
 
 **Date:** 2026-05-30
-**Author:** Ryan O'Boyle (<layerdynamics@proton.me>) + Claude
+**Author:** Ryan O'Boyle (<layerdynamics@proton.me>)
 **Status:** Draft
 **Version:** 1.0
 
@@ -23,7 +23,7 @@ This spec describes an intentionally ambitious system. To keep "do all of it" fr
 | A webtop / desktop environment | **Layer 3** — the windowing compositor and desktop |
 | Run a real Linux (emulator) | **Layer 4** — an x86/RISC-V emulator running *as a single privileged process* |
 
-Where this spec records a decision the author confirmed during discovery, it states so. Where it proposes a value the author has not yet fixed (NFR numbers, timeline, exact WASI version, networking model), the value is marked **[PROPOSED]** and the underlying decision is tracked in §8 Open Questions with an owner. This is deliberate (see §1.5).
+Where this spec records a decision the author confirmed, it states so. Where it proposes a value that is not fixed yet (NFR numbers, exact WASI version, or networking model), the value is marked **[PROPOSED]** and the underlying decision is tracked in §8 Open Questions.
 
 ---
 
@@ -67,18 +67,20 @@ The project intentionally serves four overlapping audiences (all four were chose
 
 ### 1.5 Assumptions
 
-> Author-confirmed decisions are unmarked. **[PROPOSED]** values are Claude's defaults pending an owner decision in §8.
+> Author-confirmed decisions are unmarked. **[PROPOSED]** values remain open until the project owner fixes them in §8.
 
 1. **Confirmed — Layered architecture.** All four requested archetypes are delivered as the five layers in §0, not as separate products.
 2. **Confirmed — Polyglot via WASI.** The process ABI is WASI; any language compiling to `wasm32-wasi` (Rust, C, Zig, AssemblyScript, hand-written WAT) yields a runnable process. *Caveat (see §2.3): the polyglot guarantee is not uniform across all five languages at the same fidelity — Rust/C/Zig are first-class; AssemblyScript and hand-written WAT require more manual ABI work.*
 3. **Confirmed — Core language.** Polyglot, with **Rust → WASM as the primary kernel/runtime language** (the `crates/` tree) and **TypeScript as the host** (the `packages/` tree). WAT, AssemblyScript, and C/Zig are first-class *process* languages and may supply individual kernel-adjacent modules.
-4. **Confirmed — Execution model.** Worker-per-process with **SharedArrayBuffer + Atomics** as the primary tier; a **constrained cooperative single-thread tier** as fallback (see §3.1, §2.3 — this fallback is *not* transparent).
-5. **Confirmed — Persistence.** Layered VFS: in-memory tmpfs at `/`, **OPFS** for `/home`, **IndexedDB** fallback for `/mnt` and for browsers without OPFS.
+4. **Confirmed — Execution model.** Worker-per-process with **SharedArrayBuffer + Atomics** as the shipped tier. The loader rejects non-isolated contexts; no cooperative single-thread fallback is shipped.
+5. **Confirmed — Persistence.** Layered VFS: in-memory tmpfs at `/`, **OPFS** for `/home`, **IndexedDB** for `/mnt`, and IndexedDB fallback for `/home` when OPFS is unavailable.
 6. **Confirmed — GUI.** Hybrid compositor: DOM-framed windows whose content surface is either a DOM node *or* a `<canvas>`/WebGL framebuffer.
 7. **Confirmed — Timeline.** Sequenced by dependency, not calendar; owners/dates are TBD (§5, §8).
-8. **[PROPOSED] — WASI baseline.** **WASI Preview 1** is the process-ABI baseline (maximizes language breadth today); **WASI Preview 2 / the Component Model** is the capability + security layer and the forward target (see §8 OQ-1).
-9. **[PROPOSED] — Networking.** No raw sockets initially; network access is a brokered host capability (`fetch`/WebSocket/WebTransport) exposed to processes through a capability-gated syscall, with a WASI-sockets shim as a later target (§8 OQ-2).
-10. **[PROPOSED] — Target browsers.** Evergreen Chromium and Firefox with cross-origin isolation enabled; Safari supported on the cooperative tier where SAB/OPFS constraints apply (§8 OQ-3).
+8. **Confirmed — WASI baseline.** **WASI Preview 1** is the shipped process ABI; **WASI Preview 2 / the Component Model** remains the capability + security forward target (see §8 OQ-1).
+9. **Confirmed — Networking.** Network access is a brokered `fetch` capability exposed through `net_request`; raw sockets and a WASI-sockets shim are not part of the current runtime (§8 OQ-2).
+10. **Confirmed — Target browsers.** The shipped runtime requires cross-origin-isolated
+   Chromium or Firefox for Tier A. Safari and other non-isolated contexts receive a
+   clear unsupported-context error; the cooperative Tier B path is not shipped.
 11. **Confirmed — Distribution channel.** The OS is served as static assets (it is "just a web page") behind COOP/COEP headers; no server is required to *run* it. A server is optional and only for app registry/remote sync features.
 
 ---
@@ -109,7 +111,7 @@ Requirements are grouped by layer and traced to architecture (§3) and the concr
 | FR-9 | MUST | The system MUST run unmodified `wasm32-wasi` (Preview 1) modules produced by the Rust toolchain as processes. |
 | FR-10 | MUST | The system MUST run `wasm32-wasi` modules produced by the C/Zig (wasi-sdk) toolchains. |
 | FR-11 | SHOULD | The system SHOULD run AssemblyScript-produced modules that conform to the documented WASI subset. |
-| FR-12 | SHOULD | The system SHOULD run hand-authored `.wat` modules that import the documented kernel syscall interface. |
+| FR-12 | SHOULD | The system SHOULD run hand-authored `.wat` modules through the documented WASI Preview 1 process ABI. |
 | FR-13 | SHOULD | The system SHOULD load and instantiate **WASI Preview 2 components**, mapping their imported interfaces to kernel-provided capabilities. |
 | FR-14 | MUST | The build tooling MUST produce, from at least one Rust source and one C/Zig source, a `.wasm` artifact that runs as a process with identical observable behavior. |
 
@@ -255,17 +257,16 @@ Tier A — PRIMARY (cross-origin isolated):
    worker-per-process · SAB+Atomics syscall ring · Atomics.wait blocks the
    guest synchronously · true parallelism across workers.
 
-Tier B — COMPAT (no SAB, e.g. Safari/non-isolated):
-   guest must be Asyncify-instrumented OR use JSPI · syscalls are async ·
-   cooperative scheduling on fewer/one worker · reduced concurrency,
-   higher latency, narrower guest compatibility. NOT transparent.
+Tier B — NOT SHIPPED (no SAB, e.g. Safari/non-isolated):
+   the current loader rejects the page before starting workers. Asyncify/JSPI and
+   a structured-clone syscall transport remain design work, not a live fallback.
 ```
 
 ### 3.2 Component Design
 
 #### Component: Boot / Loader (host)
 
-- **Responsibility:** Bring the OS from a cold page load to a kernel-ready state; detect capabilities (SAB/COOP-COEP, OPFS, JSPI) and select execution tier.
+- **Responsibility:** Bring the OS from a cold page load to a kernel-ready state; detect capabilities (SAB/COOP-COEP, OPFS, JSPI) and reject unsupported non-isolated execution before workers start.
 - **Technology:** TypeScript, main thread; `WebAssembly.instantiateStreaming`.
 - **Interfaces:** `boot()`, emits `ready`/`panic`; exposes tier + feature report.
 - **Dependencies:** static asset hosting with COOP/COEP; the kernel `.wasm`.
@@ -301,7 +302,7 @@ Tier B — COMPAT (no SAB, e.g. Safari/non-isolated):
 #### Component: IPC
 
 - **Responsibility:** Pipes, message channels, and explicit shared-memory regions between processes (the only inter-process memory path, FR-6).
-- **Technology:** Rust; SAB-backed ring buffers (Tier A) or message ports (Tier B).
+- **Technology:** Rust; SAB-backed ring buffers in the shipped Tier-A runtime. A message-port Tier-B transport is not implemented.
 - **Interfaces:** `pipe()`, `chan_open()`, `shm_map(cap)`.
 - **Dependencies:** capability store, scheduler (wake on data).
 
@@ -336,7 +337,7 @@ Tier B — COMPAT (no SAB, e.g. Safari/non-isolated):
 #### Component: Build & Tooling (incl. the Binder)
 
 - **Responsibility:** Multi-toolchain build producing process `.wasm` artifacts and the kernel; **the centralized Binder** that generates all ABI bindings from the `wit/` source of truth (§3.4.1); benchmarks; image packaging.
-- **Technology:** `tools/` — `binder` (wrapping `wit-bindgen` + `jco` + custom AssemblyScript/WAT emitters), wasm-pack/cargo, wasi-sdk (C/Zig), AssemblyScript compiler, `wasm-tools`/`wat2wasm`, component tooling.
+- **Technology:** `tools/` — `binder` (component bindings and ABI drift checks), cargo, wasi-sdk (C/Zig), `wasm-tools`/`wat2wasm`, and component tooling.
 - **Interfaces:** `binder gen`, `binder check`, `build kernel`, `build app <lang>`, `pack image`, `bench`.
 - **Dependencies:** the `wit/` interface definitions; the respective language toolchains.
 
@@ -364,7 +365,7 @@ VNode (VFS)
   mount: enum{tmpfs, opfs, idb}
   size, mtime, rights         backendHandle
 
-Message/Pipe   buffer: SAB ring (Tier A) | MessagePort (Tier B)
+Message/Pipe   buffer: SAB-backed process rings (Tier A); no Tier-B transport is shipped
 ShmRegion      sab: SharedArrayBuffer, granted_to: Set<pid>, rights
 AuditEntry     ts, pid, cap, action: enum{grant,revoke,allow,deny}
 ```
@@ -400,19 +401,21 @@ wasmos_kernel.net_request(cap_id, req_ptr) -> handle   // brokered fetch/WS
 
 **Forward target (WASI p2 / Component Model):** the same capabilities expressed as typed imported interfaces (`wasi:filesystem`, `wasi:sockets`, `wasi:cli`, plus a custom `wasmos:kernel` world), so capability enforcement is carried by the component type system (FR-13, §3.7).
 
-**Transports:** Tier A — SAB ring buffer with an Atomics-signaled request/response protocol (binary, length-prefixed). Tier B — `postMessage` with structured clone, async.
+**Transport:** the shipped process path uses a Tier-A SAB ring buffer with an
+Atomics-signaled request/response protocol (binary, length-prefixed). A Tier-B
+`postMessage` transport is a design target only.
 
 #### 3.4.1 Binding Generation — the Centralized Binder
 
-A polyglot OS has many binding boundaries — guest processes in 5 languages (Rust, C, Zig, AssemblyScript, WAT), the Rust→WASM kernel, the TS host, and two transports (SAB ring / postMessage). Hand-writing the glue is an `N languages × M interfaces × 2 transports` explosion that *will* drift out of sync (change a syscall, forget to update the Zig stubs, guest silently misaligns the ABI). WASM_OS therefore treats binding glue as **generated from a single source of truth**, never hand-authored per boundary.
+A polyglot OS has many binding boundaries — guest processes in Rust, Zig, and WAT, the Rust→WASM kernel, and the TypeScript host. Generated bindings are used where the Component Model owns the boundary. The WASI Preview 1 process ABI is standard, while the hand-authored WAT and Zig guests own their small import lists directly and are checked by compiling and running them through the same process runtime.
 
-**Single source of truth — `wit/`.** Every boundary is declared once in **WIT** (WebAssembly Interface Types, the Component-Model IDL). Upstream `wasi:*` WIT packages are reused, not redefined. WASM_OS defines three worlds:
+**Contract sources — `wit/` and the WASI specification.** The `wit/` tree is authoritative for the Component Model contracts and the `wasmos_kernel` extension. Stock WASI Preview 1 imports follow the standard function ABI; they are not regenerated into guest-specific bindings. WASM_OS has three live ABI contracts:
 
 | World | Boundary | Consumers |
 |-------|----------|-----------|
-| `wasmos:kernel` | guest process ⇄ kernel syscall surface (`wasmos_kernel` extension + curated `wasi:*` subset) | every process language + the kernel (export side) |
-| `wasmos:control` | host ⇄ kernel control API (`spawn/kill/wait/list/grant/revoke/mount`) | TS host + kernel |
-| `wasmos:brokers` | kernel ⇄ host device brokers (net/clock/entropy/input/gpu) | TS host + kernel |
+| `wasmos:abi` | host ⇄ kernel component contract: control operations and store imports | TypeScript host + Rust kernel |
+| `wasmos:kernel` | guest process ⇄ kernel syscall extension over the SAB ring | Rust guest transport + Rust kernel router |
+| `wasi_snapshot_preview1` | stock process ABI: files, clocks, entropy, polling, and exit | Rust/Zig/WAT guests + host shim |
 
 The `wit/` tree is authoritative. The component boundary uses generated lift/lower
 code; the guest extension uses a hand-written core-module transport because it runs
@@ -425,7 +428,8 @@ against the same WIT contract.
 | Target | Tooling | Generated output |
 |--------|---------|------------------|
 | Rust guest syscall transport | hand-written wire shim in `crates/wasmos-sys` | Binder checks names, parameter counts/types, and returns against `wit/kernel/kernel.wit` |
-| C / Zig guest syscall transport | no `wasmos:kernel` stubs in the current implementation | current C/Zig guests use the WASI Preview 1 surface |
+| C / Zig guest syscall transport | no C guest is shipped; `echo.zig` uses stock WASI and `mandelbrot.zig` uses the hand-written `wasmos_kernel` wire format | the live Zig guests are built and run through the same process worker |
+| WAT process | hand-authored `guests/wat/watinfo.wat` compiled by `wat2wasm` | `packages/host/guests/watinfo.wasm`, installed as `/usr/bin/watinfo` |
 | Kernel host side | `cargo-component` | generated component bindings in `crates/kernel/src/bindings.rs` |
 | TS host bindings | `jco` | tracked JS/TypeScript output in `packages/abi/generated` |
 
@@ -446,22 +450,22 @@ output. It then runs `kernel-check`, which compares every function declaration i
 `wit/kernel/kernel.wit` with the public Rust transport shim. A mismatch fails CI.
 
 ```text
-                 wit/  (wasmos:kernel · wasmos:control · wasmos:brokers + wasi:*)
+                 wit/  (wasmos:abi · wasmos:kernel + wasi_snapshot_preview1)
                    │  single source of truth
                    ▼
-         tools/binder gen  (wit-bindgen · jco · custom AS/WAT emitters)
-   ┌──────────┬──────────┬───────────┬───────────┬──────────┬──────────┐
-   ▼          ▼          ▼           ▼           ▼          ▼
- crates/    C/Zig      AS module   WAT import   crates/    packages/
- wasmos-sys headers    bindings    block+check  kernel     abi (TS host)
- (Rust gst) (gst)      (gst)       (gst)        (impl trait)(control+brokers)
-   └────────────── all lower/lift through one abstract Transport ──────────────┘
-                         │                              │
-                    SAB ring (Tier A)            postMessage (Tier B)
+         tools/binder gen (jco)                  wat2wasm
+   ┌──────────┬──────────┬───────────┬───────────┬──────────┐
+   ▼          ▼           ▼           ▼           ▼
+ crates/    C/Zig       crates/    guests/wat/  crates/    packages/
+   wasmos-sys  Zig/WAT     kernel     watinfo.wat  kernel     abi (TS host)
+   (Rust shim) guests      bindings   → guest wasm (impl trait)(control)
+   └────────────── Binder checks the two live ABI boundaries ──────────────────┘
+                         │
+                    SAB ring (Tier A)
                    ────────────── binder check (CI drift gate) ──────────────
 ```
 
-This component is owned by **Build & Tooling** (§3.2) and is a hard dependency of WASI process runtime (the first process needs generated guest + kernel bindings to exist).
+The Binder is owned by **Build & Tooling** (§3.2) and is required for the kernel component and its host bindings. Stock WASI guests, including the WAT utility, compile directly to core modules and do not need generated guest bindings to run.
 
 ### 3.5 Data Flow
 
@@ -521,7 +525,8 @@ This component is owned by **Build & Tooling** (§3.2) and is a hard dependency 
 
 - **Fault containment (FR-34):** a process trap is caught at the worker/instance boundary; the kernel marks it `zombie`, frees fds/caps/worker, emits an error event; kernel and peers continue.
 - **Kernel panic:** the loader supervises; on panic it reboots the kernel to ready (< 2 s) with the VFS intact (VFS state lives in OPFS/IndexedDB, not kernel memory).
-- **Backpressure:** IPC ring buffers are bounded; a full buffer blocks the writer (Tier A via Atomics, Tier B via async await) rather than growing unbounded.
+- **Backpressure:** IPC ring buffers are bounded; a full buffer blocks the writer
+  through Tier-A Atomics rather than growing unbounded.
 - **VFS durability:** writes to `/home` are flushed/committed before acknowledgment; an interrupted multi-step op is recoverable to a consistent state per-backend.
 - **Emulator isolation:** the privileged emulator gets CPU budget but no capability to other processes' memory; a runaway emulator is killable like any process.
 - **Caching:** kernel and core binaries are cache-first (service worker) for warm boot and offline (FR-32).
@@ -546,41 +551,42 @@ This component is owned by **Build & Tooling** (§3.2) and is a hard dependency 
 
 ## 4. Implementation Plan
 
-### 4.1 Build Phases
+### 4.1 Delivery tasks
 
-Phases map 1:1 to layers and to the delivery tasks in §5. **V1 = end of Phase 2 (the interactive terminal).** The remaining requested marquee moments are delivered in Phases 3–5.
+The implementation is sequenced by dependency. The first usable release is the
+interactive terminal; the desktop, process-control, and Linux tasks build on it.
 
-#### Phase 0 — Kernel & VFS skeleton (kernel/VFS bootstrap)
+#### Task: kernel and VFS bootstrap
 
 - **Goal:** A booting microkernel with a process table, scheduler, syscall router stub, and a working VFS (tmpfs + OPFS + IndexedDB), but no real processes yet.
 - **Scope:** FR-1, FR-2, FR-3 (scheduler scaffold), FR-30, FR-32; Tier-detection in the loader.
 - **Exit criteria:** Page boots to `ready` < 1.5 s; a host test can create/read/list files across all three VFS backends and they persist across reload.
 
-#### Phase 1 — First WASI process (WASI process runtime)
+#### Task: WASI process runtime
 
 - **Goal:** Run one real `wasm32-wasi` Rust binary as a process under the scheduler, via the SAB syscall ring.
 - **Scope:** FR-4, FR-5, FR-9, FR-6 (isolation), Tier-A transport; minimal `proc_exit`/`fd_write` to a captured stdout.
 - **Exit criteria:** `hello.wasm` (Rust) spawns, writes to stdout, exits with code 0; a second concurrent process proves isolation (cannot read peer memory).
 
-#### Phase 2 — Userland & terminal  →  **V1 / Marquee "terminal runs real WASI binaries"** (shell and userland)
+#### Task: shell and userland — V1 terminal
 
 - **Goal:** A real interactive shell running WASI coreutils with pipes and redirection.
 - **Scope:** FR-9..12, FR-14, FR-15..18, FR-34; coreutils built from ≥2 languages (Rust + C/Zig) to prove polyglot.
 - **Exit criteria:** From the terminal, a user runs `ls`, `cat`, a pipeline `cat f | grep x`, and a redirect `... > out`, with correct output and exit codes; a deliberately crashing binary terminates without taking down the shell.
 
-#### Phase 3 — Compositor & desktop  →  **Marquee "boot → desktop → run apps"** (desktop compositor)
+#### Task: desktop compositor and graphical apps
 
 - **Goal:** A windowed desktop where multiple WASM apps run in windows with a file manager.
 - **Scope:** FR-21..26, FR-23 (DOM + canvas surfaces), FR-25.
 - **Exit criteria:** Boot to desktop; open file manager + terminal + one graphical app concurrently in windows; move/resize/focus work; launch a `.wasm` from the file manager.
 
-#### Phase 4 — Multi-process, IPC, persistence  →  **Marquee "it's really an OS"** (process control and IPC)
+#### Task: process control, IPC, and persistence
 
 - **Goal:** Many processes scheduled concurrently, communicating via IPC, with state surviving reload; live `ps`/`top`.
 - **Scope:** FR-3 at scale (≥32), IPC channels/shm, FR-33, FR-35 (snapshot, COULD), FR-7 signals.
 - **Exit criteria:** 32 concurrent processes sustained within main-thread budget; two processes exchange messages via a channel; `/home` state + open session survive reload (snapshot if implemented); `top` shows live scheduler state.
 
-#### Phase 5 — Emulator as a privileged process  →  **Marquee "Linux in a tab"** (Linux guest integration)
+#### Task: Linux guest integration
 
 - **Goal:** Boot a real Linux/BusyBox in a window via a WASM emulator process without breaking isolation or the scheduler.
 - **Scope:** FR-27, FR-28, FR-29 (COULD).
@@ -598,7 +604,9 @@ Phases map 1:1 to layers and to the delivery tasks in §5. **V1 = end of Phase 2
 
 ### 4.3 Rollout Strategy
 
-- **Tier feature-flagging:** ship Tier A (SAB) and Tier B (cooperative/Asyncify/JSPI) behind runtime detection; allow forcing a tier via URL param for testing.
+- **Tier selection:** the shipped runtime requires Tier A (SAB + cross-origin
+  isolation). It reports the browser's JSPI capability but does not run a Tier B
+  guest when SAB is unavailable.
 - **Per-layer enablement:** the kernel/VFS bootstrap, WASI process runtime, and shell and userland can be released and dogfooded before the desktop compositor is complete.
 - **Static immutable deploys** with hashed assets; service-worker cache rollover; rollback = re-point to previous build.
 - **Canary:** preview deploys per branch; a "dev HUD" build exposes observability for internal testing before promoting to prod.
@@ -656,8 +664,8 @@ Linux guest integration (emulator as privileged process)   ──► (needs desk
 
 | Metric | Target [PROPOSED] | Measurement Method |
 |--------|--------|--------------------|
-| V1 (shell and userland) reachable in target browsers | Boot→terminal works in latest Chrome + Firefox (Tier A) and Safari (Tier B) | Playwright matrix run |
-| Polyglot proof | ≥ 2 source languages produce running coreutils | CI builds Rust + C/Zig binaries, both pass shell integration tests |
+| V1 (shell and userland) reachable in target browsers | Boot→terminal works in cross-origin-isolated Chromium and Firefox | Playwright matrix run |
+| Polyglot proof | Rust and Zig produce running guests | CI builds Rust/Zig/WAT guests; `echo.zig` runs through the terminal and `mandelbrot.zig` runs through the compositor |
 | Process isolation | 100% of cross-process memory-read attempts fail | Security suite |
 | Boot performance | Meets §2.2 cold/warm targets on reference machine | Bench harness in CI |
 | Crash containment | 0 kernel crashes from process traps over fault-injection suite | Fault-injection CI gate |
@@ -685,8 +693,8 @@ Linux guest integration (emulator as privileged process)   ──► (needs desk
 
 | ID | Risk | Impact | Likelihood | Mitigation | Contingency |
 |----|------|--------|-----------|------------|-------------|
-| R-1 | **Cooperative (Tier B) fallback is not transparent** — no SAB means async syscalls via Asyncify/JSPI, imposing guest build requirements | High | High | Treat Tier B as a distinct, documented compatibility tier; ship Asyncify-instrumented guest builds; detect & message clearly; target JSPI as it matures | Restrict V1 "full" experience to Tier A browsers; Tier B = reduced feature set |
-| R-2 | **Polyglot fidelity uneven** — AssemblyScript/WAT WASI support is thinner than Rust/C/Zig | Medium | High | Anchor the polyglot *proof* on Rust + C/Zig (FR-14); treat AS/WAT as SHOULD/COULD with documented ABI shims | Demote AS/WAT to "supported with caveats"; keep the ABI-level claim, scope the practical claim |
+| R-1 | **No cooperative (Tier B) fallback** — no SAB means the current runtime cannot start process workers | High | High | Require cross-origin isolation and fail with an actionable error; keep Asyncify/JSPI as a separate future implementation | Use a supported isolated Chromium/Firefox context |
+| R-2 | **Polyglot fidelity uneven** — AssemblyScript support is thinner, and WAT extension calls require hand-authored wire code | Medium | High | Keep WAT on the stock WASI Preview 1 surface unless an extension import has a documented wire layout and a live process path | Add each extension import only with its ABI documentation and an end-to-end guest |
 | R-3 | **Scope is enormous (5 layers).** Risk of half-finished layers and a non-shippable whole | High | High | Each layer is an independently demoable task with hard exit criteria; **V1 is defined as shell and userland**, not "everything" | Ship at shell and userland/desktop compositor as legitimate releases; process control and IPC/Linux guest integration are stretch |
 | R-4 | **Cross-origin isolation tax** — COOP/COEP (for SAB) breaks easy embedding of third-party content & complicates emulator image fetch | Medium | Medium | Serve all assets CORP-compliant or proxied; document hosting header requirement as a hard constraint | Provide a same-origin asset bundle; proxy external emulator images |
 | R-5 | **OPFS variance / sync-handle limits** across browsers (esp. Safari) | Medium | Medium | Layered VFS with IndexedDB fallback; abstract backend behind one interface; capability-detect at boot | Run Safari on IDB-only `/home` with a perf caveat |
@@ -700,13 +708,13 @@ Linux guest integration (emulator as privileged process)   ──► (needs desk
 
 | # | Question | Owner | Due Date |
 |---|----------|-------|----------|
-| OQ-1 | WASI baseline: confirm **Preview 1 as process ABI + Preview 2/Component Model as capability layer** (Assumption 8). Or go p2-first and accept narrower language support? | Ryan O'Boyle | Before WASI process runtime |
-| OQ-2 | Networking model for processes: brokered `fetch`/WS/WebTransport capability only (Assumption 9), or invest in a WASI-sockets shim? | Ryan O'Boyle | Before desktop compositor |
-| OQ-3 | Target browser matrix: confirm Chrome+Firefox (Tier A) + Safari (Tier B) (Assumption 10). Any mobile target? | Ryan O'Boyle | Before shell and userland |
-| OQ-4 | Confirm/replace the **[PROPOSED]** NFR numeric targets in §2.2 (boot, spawn p95, syscall overhead, concurrency, fps) with owned values | Ryan O'Boyle | Before shell and userland exit review |
+| OQ-1 | ✅ **RESOLVED** — Preview 1 is the shipped process ABI; Preview 2/Component Model remains the forward capability target. | LayerDynamics | Resolved 2026-08-22 |
+| OQ-2 | ✅ **RESOLVED** — processes use the capability-gated `net_request`/`fetch` broker; a WASI sockets shim is not part of the current runtime. | LayerDynamics | Resolved 2026-08-22 |
+| OQ-3 | ✅ **RESOLVED** — the shipped runtime targets cross-origin-isolated Chromium and Firefox; Safari/non-isolated contexts are rejected because Tier B is not implemented. | LayerDynamics | Resolved 2026-08-22 |
+| OQ-4 | Confirm/replace the **[PROPOSED]** NFR numeric targets in §2.2 (boot, spawn p95, syscall overhead, concurrency, fps) with owned values | LayerDynamics | Open |
 | OQ-5 | Is the optional app-registry / remote-sync server in scope at all, or strictly post-V1? (Affects FR-20, FR-35, compliance) | Ryan O'Boyle | Before process control and IPC |
-| OQ-6 | Which emulator core for L4 (v86-class x86 vs a RISC-V core) and which Linux/initrd image? Licensing of bundled image? | Ryan O'Boyle | Before Linux guest integration |
-| OQ-7 | Scheduler policy specifics: confirm priority round-robin + time accounting; is any determinism guarantee required for the research goal? | Ryan O'Boyle | Before WASI process runtime |
+| OQ-6 | ✅ **RESOLVED** — TinyEMU runs the pinned RISC-V Linux image; the emulator source is MIT licensed and the image recipe is documented under `assets/linux`. | LayerDynamics | Resolved 2026-08-22 |
+| OQ-7 | ✅ **RESOLVED** — the scheduler uses priority round-robin and accounts one tick per serviced syscall; kernel tests cover ordering and accounting. | LayerDynamics | Resolved 2026-08-22 |
 | OQ-8 | Timeline & ownership: solo vs. contributors; do tasks get target dates, or stay dependency-only? | Ryan O'Boyle | Open |
 
 ---
@@ -733,7 +741,12 @@ Linux guest integration (emulator as privileged process)   ──► (needs desk
 
 ### Appendix B — API Contracts (summary)
 
-See §3.4. Two surfaces: (1) **Kernel⇄Host control API** (TS) — `spawn/kill/wait/list/grant/revoke/mount/on`. (2) **Process⇄Kernel syscall surface** — WASI `wasi_snapshot_preview1` baseline + `wasmos_kernel` extension namespace (`spawn/chan_open/shm_map/win_surface/net_request`), with the WASI p2 `wasmos:kernel` world as the forward target. Full IDL/witx to be produced at WASI process runtime (tracked OQ-1).
+See §3.4. The live contracts are `wit/control.wit` and `wit/blockstore.wit`
+  (`wasmos:abi`) for host↔kernel control, `wit/kernel/kernel.wit` for the
+  `wasmos_kernel` extension, and `crates/wasmos-sys/src/lib.rs` for the checked
+  guest wire shim. Stock `wasi_snapshot_preview1` imports are implemented in
+  `packages/host/src/worker/wasi-shim.ts`; no future IDL is required for the
+  current process path.
 
 ### Appendix C — Data Migration Plan
 
@@ -771,7 +784,7 @@ Running cost is ~$0 in compute: the OS executes entirely on the user's device fr
 | D-1 | Deliver all four archetypes as **five layers of one system**, not separate apps | Only coherent way to honor "all of the above"; layers compose naturally | 2026-05-30 |
 | D-2 | Emulator is **one privileged process**, not the foundation | Keeps WASM_OS WASM-native; folds "Linux in a tab" in cleanly | 2026-05-30 |
 | D-3 | **Rust→WASM kernel + TS host**, polyglot WASI processes | Matches repo layout (`crates/`+`packages/`); safety + ecosystem | 2026-05-30 |
-| D-4 | **SAB+Atomics primary tier**, cooperative as constrained fallback | True multi-process behavior; fallback honestly scoped (R-1) | 2026-05-30 |
+| D-4 | **SAB+Atomics required tier**; non-isolated contexts fail clearly | True multi-process behavior without claiming an unshipped fallback | 2026-05-30 |
 | D-5 | **OPFS primary + IndexedDB fallback** layered VFS | Best perf where available, broad compatibility everywhere | 2026-05-30 |
 | D-6 | **Hybrid DOM + canvas** compositor surfaces | Serves both web-native apps and graphical/emulator framebuffers | 2026-05-30 |
 | D-7 | **V1 = shell and userland (terminal)**; other marquee moments → desktop compositor/process control and IPC/Linux guest integration | Makes "all of it" a sequenced deliverable, not a fantasy single release | 2026-05-30 |
@@ -782,8 +795,8 @@ Running cost is ~$0 in compute: the OS executes entirely on the user's device fr
 
 | Symptom | First checks | Resolution |
 |---------|--------------|------------|
-| Kernel won't boot | Console for instantiation error; tier-detection report | Verify COOP/COEP headers; fall back to Tier B; clear corrupt VFS superblock |
-| SAB unavailable | Confirm COOP/COEP present and honored; check browser | Serve correct headers; otherwise run Tier B (cooperative) |
+| Kernel won't boot | Console for instantiation error; tier-detection report | Verify COOP/COEP headers; clear a corrupt VFS superblock; use a supported isolated browser |
+| SAB unavailable | Confirm COOP/COEP present and honored; check browser | Serve the required headers or open the app in an isolated Chromium/Firefox context; the current runtime does not fall back to Tier B |
 | OPFS unavailable | Capability report at boot | VFS auto-falls back to IndexedDB for `/home`; warn user of perf impact |
 | Process won't spawn | Capability denial in audit log; image arch | Grant required caps; confirm `wasm32-wasi` target & ABI |
 | Emulator image fetch fails | Network broker log; CORP/CORS on image host | Use same-origin/proxied image bundle (R-4) |
@@ -791,7 +804,7 @@ Running cost is ~$0 in compute: the OS executes entirely on the user's device fr
 
 ---
 
-### Appendix I — Validation Checklist (Phase 4 of authoring)
+### Appendix I — Validation checklist
 
 - [x] Every section has real content (no empty sections)
 - [x] All functional requirements are testable statements with MoSCoW priority (FR-1..35, FR-NG-1..6)

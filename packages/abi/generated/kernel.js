@@ -4542,6 +4542,8 @@ let gen = (function* _initGenerator () {
   let postReturn9Async;
   let postReturn10;
   let postReturn10Async;
+  let postReturn11;
+  let postReturn11Async;
   let control010Boot;
   
   function boot(arg0) {
@@ -6155,21 +6157,28 @@ let gen = (function* _initGenerator () {
       
     }
     
-    var ptr1 = dataView(memory0).getUint32(ret + 0, true);
-    var len1 = dataView(memory0).getUint32(ret + 4, true);
-    var result1 = new Uint32Array(memory0.buffer.slice(ptr1, ptr1 + len1 * 4));
+    var bool1 = dataView(memory0).getUint8(ret + 0, true);
+    var ptr2 = dataView(memory0).getUint32(ret + 4, true);
+    var len2 = dataView(memory0).getUint32(ret + 8, true);
+    var result2 = new Uint32Array(memory0.buffer.slice(ptr2, ptr2 + len2 * 4));
     _debugLog('[iface="wasmos:abi/control@0.1.0", function="deliver-input"][Instruction::Return]', {
       funcName: 'deliver-input',
       paramCount: 1,
       async: false,
       postReturn: true
     });
-    task.resolve([result1]);
-    const retCopy = result1;
+    task.resolve([{
+      accepted: bool1 == 0 ? false : (bool1 == 1 ? true : throwInvalidBool()),
+      wakeups: result2,
+    }]);
+    const retCopy = {
+      accepted: bool1 == 0 ? false : (bool1 == 1 ? true : throwInvalidBool()),
+      wakeups: result2,
+    };
     
     let cstate = getOrCreateAsyncState(0);
     cstate.mayLeave = false;
-    postReturn7(ret);
+    postReturn9(ret);
     cstate.mayLeave = true;
     task.exit();
     return retCopy;
@@ -6478,7 +6487,7 @@ let gen = (function* _initGenerator () {
     
     let cstate = getOrCreateAsyncState(0);
     cstate.mayLeave = false;
-    postReturn9(ret);
+    postReturn10(ret);
     cstate.mayLeave = true;
     task.exit();
     return retCopy;
@@ -6563,7 +6572,7 @@ let gen = (function* _initGenerator () {
     
     let cstate = getOrCreateAsyncState(0);
     cstate.mayLeave = false;
-    postReturn10(ret);
+    postReturn11(ret);
     cstate.mayLeave = true;
     task.exit();
     return retCopy;
@@ -7267,12 +7276,12 @@ let gen = (function* _initGenerator () {
     postReturn6Async = exports1['cabi_post_wasmos:abi/control@0.1.0#fs-mkdirp'];
   }
   
-  postReturn7 = exports1['cabi_post_wasmos:abi/control@0.1.0#deliver-input'];
+  postReturn7 = exports1['cabi_post_wasmos:abi/control@0.1.0#deliver-net'];
   
   try {
-    postReturn7Async = WebAssembly.promising(exports1['cabi_post_wasmos:abi/control@0.1.0#deliver-input']);
+    postReturn7Async = WebAssembly.promising(exports1['cabi_post_wasmos:abi/control@0.1.0#deliver-net']);
   } catch(err) {
-    postReturn7Async = exports1['cabi_post_wasmos:abi/control@0.1.0#deliver-input'];
+    postReturn7Async = exports1['cabi_post_wasmos:abi/control@0.1.0#deliver-net'];
   }
   
   postReturn8 = exports1['cabi_post_wasmos:abi/control@0.1.0#service-syscall'];
@@ -7283,20 +7292,28 @@ let gen = (function* _initGenerator () {
     postReturn8Async = exports1['cabi_post_wasmos:abi/control@0.1.0#service-syscall'];
   }
   
-  postReturn9 = exports1['cabi_post_wasmos:abi/control@0.1.0#take-capture'];
+  postReturn9 = exports1['cabi_post_wasmos:abi/control@0.1.0#deliver-input'];
   
   try {
-    postReturn9Async = WebAssembly.promising(exports1['cabi_post_wasmos:abi/control@0.1.0#take-capture']);
+    postReturn9Async = WebAssembly.promising(exports1['cabi_post_wasmos:abi/control@0.1.0#deliver-input']);
   } catch(err) {
-    postReturn9Async = exports1['cabi_post_wasmos:abi/control@0.1.0#take-capture'];
+    postReturn9Async = exports1['cabi_post_wasmos:abi/control@0.1.0#deliver-input'];
   }
   
-  postReturn10 = exports1['cabi_post_wasmos:abi/control@0.1.0#list-procs'];
+  postReturn10 = exports1['cabi_post_wasmos:abi/control@0.1.0#take-capture'];
   
   try {
-    postReturn10Async = WebAssembly.promising(exports1['cabi_post_wasmos:abi/control@0.1.0#list-procs']);
+    postReturn10Async = WebAssembly.promising(exports1['cabi_post_wasmos:abi/control@0.1.0#take-capture']);
   } catch(err) {
-    postReturn10Async = exports1['cabi_post_wasmos:abi/control@0.1.0#list-procs'];
+    postReturn10Async = exports1['cabi_post_wasmos:abi/control@0.1.0#take-capture'];
+  }
+  
+  postReturn11 = exports1['cabi_post_wasmos:abi/control@0.1.0#list-procs'];
+  
+  try {
+    postReturn11Async = WebAssembly.promising(exports1['cabi_post_wasmos:abi/control@0.1.0#list-procs']);
+  } catch(err) {
+    postReturn11Async = exports1['cabi_post_wasmos:abi/control@0.1.0#list-procs'];
   }
   
   control010Boot = exports1['wasmos:abi/control@0.1.0#boot'];

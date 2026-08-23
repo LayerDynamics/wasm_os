@@ -2,8 +2,8 @@ import { test, expect, type Page, type Locator } from "@playwright/test";
 
 // Mandelbrot app — Mandelbrot explorer (Zig), the polyglot graphical app (FR-14 on the desktop compositor
 // graphics path). It speaks the same wasmos_kernel surface+input ABI as the Rust
-// apps. The test proves it renders a structured fractal and that real keyboard
-// zoom recomputes it — a different, interactive frame.
+// apps. The test proves it renders a structured fractal, zooms, and generates
+// another view on demand through real brokered keyboard input.
 
 type Win = {
   __wasmos: {
@@ -31,7 +31,7 @@ function fingerprint(canvas: Locator): Promise<number> {
   });
 }
 
-test("the Zig Mandelbrot renders and zooms on keyboard input (FR-14)", async ({ page }) => {
+test("the Zig Mandelbrot renders, zooms, and generates fresh views on keyboard input (FR-14)", async ({ page }) => {
   await ready(page);
   await page.evaluate(async () => {
     const w = window as unknown as Win;
@@ -66,4 +66,16 @@ test("the Zig Mandelbrot renders and zooms on keyboard input (FR-14)", async ({ 
 
   // Zooming produced a different frame.
   await expect.poll(() => fingerprint(canvas), { timeout: 8_000 }).not.toBe(before);
+
+  const zoomed = await fingerprint(canvas);
+  await page.keyboard.press("n");
+  await expect.poll(() => fingerprint(canvas), { timeout: 8_000 }).not.toBe(zoomed);
+
+  const generated = await fingerprint(canvas);
+  await page.keyboard.press("Space");
+  await expect.poll(() => fingerprint(canvas), { timeout: 8_000 }).not.toBe(generated);
+
+  const spaced = await fingerprint(canvas);
+  await page.keyboard.press("r");
+  await expect.poll(() => fingerprint(canvas), { timeout: 8_000 }).not.toBe(spaced);
 });

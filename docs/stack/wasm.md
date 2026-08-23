@@ -79,15 +79,20 @@ ordinary Rust (and Zig) programs that import standard
 npm run build:guests   # cargo build -p sh -p coreutils -p filemanager … \
                        #   --target wasm32-wasip1 --release
                        # + zig build-exe for the polyglot guests (echo.zig, mandelbrot.zig)
+                       # + wat2wasm for the hand-authored WAT utility (watinfo)
                        # → copied into packages/host/guests/
 ```
 
-This is what makes "any language that targets `wasm32-wasi` is a first-class
-process" literally true: the Zig `echo`/`mandelbrot` guests
-([`guests/zig`](../../guests/zig)) are the *same kind of module* as the Rust ones,
-instantiated and scheduled identically. There is **no Component Model and no
-generated bindings on the guest path** — a guest is just a module the host
-instantiates.
+The Zig `echo`/`mandelbrot` guests
+([`guests/zig`](../../guests/zig)) and the hand-authored
+WAT module ([`guests/wat/watinfo.wat`](../../guests/wat/watinfo.wat))
+are the same kind of core module as the Rust guests. `echo.zig` is a stock-WASI
+coreutil; `mandelbrot.zig` uses the hand-authored `wasmos_kernel` surface to
+render, pan, zoom, and generate fresh seeded views. `watinfo` opens
+`/proc/uptime` through WASI and is installed as
+`/usr/bin/watinfo` during boot. There is **no Component Model and no
+generated binding on this guest path**: each module is compiled to a core
+`.wasm` file and instantiated by the same process runtime.
 
 ### Instantiation, isolation, and crash containment
 
@@ -155,6 +160,7 @@ two dialects, one ring between them.
 | [`wit/`](../../wit) | the component's WIT contract (`wasmos:abi`) — see [wit.md](wit.md) |
 | [`crates/sh`](../../crates/sh), [`crates/coreutils`](../../crates/coreutils), [`crates/apps`](../../crates/apps) | guests — stock `wasm32-wasip1` **core modules** |
 | [`guests/zig`](../../guests/zig) | polyglot guests (Zig) — same module shape |
+| [`guests/wat/watinfo.wat`](../../guests/wat/watinfo.wat) | hand-authored WAT utility; compiled to `watinfo.wasm` |
 | [`crates/wasmobj`](../../crates/wasmobj) | documents emitted *as* `.wasm` modules ([SPEC-2](../specs/SPEC-2-wasmobj.md)) |
 | [`packages/host/src/worker/process-worker.ts`](../../packages/host/src/worker/process-worker.ts) | instantiates a guest module per process (isolation unit) |
 | [`tools/binder`](../../tools/binder) | `cargo component` + `jco transpile` driver ([wit.md](wit.md)) |

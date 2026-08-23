@@ -1,15 +1,14 @@
-# wasmobj Implementation Plan (V1: M-BBS-1..3)
+# wasmobj implementation record — format, guest I/O, and editor integration
 
-> **For Claude:** REQUIRED SUB-SKILL: Use lore:execute to implement this plan task-by-task.
-> **Scope guard:** Do ONLY what is listed here. If you discover adjacent issues, note them as a TODO and continue. Do NOT fix them.
+> **Status:** Implemented. This file is retained as a record of the original implementation sequence; the task names below describe the current code paths.
 
-**Goal:** Implement `crates/wasmobj` — a guest/userland Rust library that stores a document as a self-executing `wasm32-wasip1` module — and wire it into the editor, per [SPEC-2](../specs/SPEC-2-wasmobj.md) tasks M-BBS-1..3.
+**Goal:** Implement `crates/wasmobj` — a guest/userland Rust library that stores a document as a self-executing `wasm32-wasip1` module — and wire it into the editor, per [SPEC-2](../specs/SPEC-2-wasmobj.md).
 
 **Architecture:** A document is a hand-emitted, deterministic `wasm32-wasip1` module with one active data segment (the "window") pre-filled with `0x20`. The window's first 4 bytes are `content_len` (u32 LE), followed by content, padded with `0x20` to the tier capacity. The module's fixed `_start` reads `content_len` from its own linear memory and writes the content to stdout via `fd_write` (FR-9 self-execution) — so the code section never changes when content does. A `wob0` custom section records `{version, window_offset, capacity, content_len, content_type}` for external readers. Save (FR-5) overwrites the window in place (content fits) or re-packs to the next power-of-two tier (FR-6). The editor links the crate and branches on whether the opened file is a wasm object.
 
 **Tech Stack:** Rust 2021 (`wasm32-wasip1` target), `proptest` + `wasmparser` + `wasmtime`/`wasmtime-wasi` as dev-dependencies, cargo tests (native), Playwright E2E.
 
-**Practices:** Contract-first (freeze the byte layout before coding), Typed-first (define `Tier`/`Header`/`Error` + signatures before logic), TDD (failing test → minimal impl → passing test → commit), per-task.
+**Implementation shape:** The byte layout is fixed in the format module; typed errors guard malformed objects; unit, property, self-execution, and browser workflows cover the format and its live callers.
 
 **Required skills:** none (pure Rust + existing WASM_OS conventions).
 
@@ -728,7 +727,7 @@ fn filled_object_renders_its_content_to_stdout() {
 **Step 5: Commit**
 `git add crates/wasmobj/tests/self_exec.rs && git commit -m "test(wasmobj): wasmtime proof that objects self-execute (FR-9)"`
 
-**M-BBS-1 + M-BBS-2 (library core) exit criteria now met: FR-1..6,8,9,10,11 verified.**
+**Format and guest self-execution tasks are complete: FR-1..6,8,9,10,11 are verified.**
 
 ---
 
@@ -854,9 +853,9 @@ struct Editor {
 
 ---
 
-> **As-built deviation (Task 8 + Task 10):** the canvas **editor** is unreachable as a document opener — the shell can't launch GUI apps (no `Gpu`/`Input` caps) and host spawn can't pass an argv path. The reachable integration shipped in **nano** (terminal editor, shell-launchable with argv; in scope per "editor/nano"). The editor keeps the same guarded branch as forward-looking code. Both guard against mint-overwriting an existing non-document `.wasm` (only a non-existent `.wasm` path becomes a new document). The E2E below was implemented against nano (`e2e/wasmobj.spec.ts`) and additionally **runs the saved object in WASM_OS** (typing `/home/note.wasm` in the terminal) to prove FR-9 through the real kernel, not only under wasmtime.
+> **As built:** the canvas Editor is a registered desktop app and the file manager opens valid wasmobj documents in it. Nano supplies the shell-driven create/edit/save/reload workflow. Both applications use the shared `wasmobj::wasi` lifecycle, preserve plain-file behavior, and reject an existing non-document `.wasm` rather than overwriting it. The browser E2E also runs the saved object through the real kernel to prove FR-9.
 
-## Task 10: Real E2E — create → edit → save → reload → reopen → run (M-BBS-3)
+## Task: browser workflow — create, edit, save, reload, reopen, and run
 
 **Files:**
 - Create: `e2e/wasmobj.spec.ts`
@@ -899,11 +898,11 @@ test("a document is saved as a wasm object and survives reload", async ({ page }
 **Step 4: Run to verify it passes** — `npx playwright test e2e/wasmobj.spec.ts --project=fast` → Expected: PASS.
 
 **Step 5: Commit**
-`git add e2e/wasmobj.spec.ts && git commit -m "test(e2e): document saved as wasm object survives reload + reopens (M-BBS-3)"`
+`git add e2e/wasmobj.spec.ts && git commit -m "test(e2e): document saved as wasm object survives reload and reopens"`
 
 ---
 
-## Task 11: Crate README + full verify gate (M-BBS-3 close)
+## Task: crate README and verification gate
 
 **Files:**
 - Modify: `crates/wasmobj/README.md` (replace the one-line seed)
@@ -929,6 +928,6 @@ test("a document is saved as a wasm object and survives reload", async ({ page }
 | Plain-file no regression (Constraint 5) | Task 10 + existing editor specs still green under `npm run verify` |
 
 ## Out of scope (V1) — note as TODOs, do NOT implement
-- `wobj` CLI (FR-13), plain-text export wiring (FR-7b), `wob0` extra metadata (FR-14), richer content-type (FR-15) → M-BBS-4.
+- `wobj` CLI (FR-13), plain-text export wiring (FR-7b), `wob0` extra metadata (FR-14), and richer content types (FR-15) remain optional follow-up work.
 - Payloads > 64 KiB (FR-NG-4), compression/encryption (FR-NG-1), multi-writer (FR-NG-2).
 - Open questions OQ-2 (crate rename), OQ-4 (save-as destination UX), OQ-5 (`0x20` vs `0x00` padding) — leave as specified unless the user resolves them.

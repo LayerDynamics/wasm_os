@@ -7,16 +7,18 @@
  *
  * Terminal → kernel: keystrokes are delivered to the terminal's foreground job
  * via `control.terminalInput` (the kworker routes them to the running program,
- * else the shell). In COOKED mode (the default) we apply a minimal line
- * discipline — local echo, Backspace, line buffering — and drop escape/control
- * bytes a line-oriented shell can't use. A foreground program can switch the
- * terminal to RAW mode (`tty_set_raw`, e.g. nano): then we stop echoing and line
- * buffering and forward every byte verbatim — arrows, Ctrl-keys and all — so the
- * program reads keys one at a time and owns the screen.
+ * else the shell). In COOKED mode (the default) the host owns line editing:
+ * printable text is echoed immediately, cursor movement and history stay local,
+ * and the completed UTF-8 line is sent to the foreground job on Enter. A
+ * foreground program can switch the terminal to RAW mode (`tty_set_raw`, e.g.
+ * nano): then we stop echoing and line buffering and forward every byte
+ * verbatim — arrows, Ctrl-keys and all — so the program reads keys one at a
+ * time and owns the screen.
  */
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import type { AsyncKernelControl } from "../boot.js";
+import type { InputMetrics } from "../compositor/input.js";
 
 export interface TerminalSession {
   term: Terminal;
@@ -38,8 +40,16 @@ export function attachTerminal(
   element: HTMLElement,
   control: AsyncKernelControl,
   shellPid: number,
+  metrics?: InputMetrics,
 ): TerminalSession {
-  const term = new Terminal({ convertEol: true, cursorBlink: true, fontSize: 14, cols: 80, rows: 24 });
+  const term = new Terminal({
+    convertEol: true,
+    cursorBlink: true,
+    fontSize: 14,
+    scrollback: 2_000,
+    cols: 80,
+    rows: 24,
+  });
   term.open(element);
   term.focus();
 
@@ -53,25 +63,248 @@ export function attachTerminal(
 
   // Single sink: everything shown on the terminal is also accumulated in the log.
   const write = (text: string) => {
-    term.write(text);
+    term.write(text, () => metrics?.markTerminalEcho());
     logText += text;
   };
-
-  // Kernel → terminal.
-  control.onOutput((_pid, bytes) => write(dec.decode(bytes)));
 
   // Raw vs cooked line discipline. A foreground program (nano) flips this via
   // `tty_set_raw`; the kworker tells us. On any change we reset the cooked input
   // line so the two disciplines never share stale state. The kworker also forces
   // cooked mode back if the program exits while raw (so the terminal can't brick).
-  // `lineLen` tracks how many chars the user has typed on the CURRENT input line so
-  // Backspace erases only that, staying in lockstep with the shell's line buffer.
-  let lineLen = 0;
   let rawMode = false;
+  let inputLine = "";
+  let cursor = 0;
+  const history: string[] = [];
+  let historyIndex = -1;
+  let historyDraft = "";
+  let pendingEscape = "";
+
+  const moveCursorLeft = (count: number) => {
+    if (count > 0) write(`\x1b[${count}D`);
+  };
+
+  const moveCursorRight = (count: number) => {
+    if (count > 0) write(`\x1b[${count}C`);
+  };
+
+  // The shell has already printed the prompt. Redraw only the part after it by
+  // moving back from the current input cursor, erasing the old line, writing the
+  // new line, and moving back to the requested logical cursor position.
+  const redrawLine = (nextLine: string, nextCursor: number) => {
+    moveCursorLeft(cursor);
+    write("\x1b[K");
+    write(nextLine);
+    moveCursorLeft([...nextLine].length - nextCursor);
+    inputLine = nextLine;
+    cursor = nextCursor;
+  };
+
+  const clearLine = () => {
+    historyIndex = -1;
+    historyDraft = "";
+    redrawLine("", 0);
+  };
+
+  const insertText = (text: string) => {
+    if (historyIndex !== -1) {
+      historyIndex = -1;
+      historyDraft = "";
+    }
+    const next = [...inputLine];
+    const inserted = [...text];
+    next.splice(cursor, 0, ...inserted);
+    redrawLine(next.join(""), cursor + inserted.length);
+  };
+
+  const deletePrevious = () => {
+    if (cursor === 0) return;
+    if (historyIndex !== -1) {
+      historyIndex = -1;
+      historyDraft = "";
+    }
+    const next = [...inputLine];
+    next.splice(cursor - 1, 1);
+    redrawLine(next.join(""), cursor - 1);
+  };
+
+  const deleteAtCursor = () => {
+    const next = [...inputLine];
+    if (cursor >= next.length) return;
+    if (historyIndex !== -1) {
+      historyIndex = -1;
+      historyDraft = "";
+    }
+    next.splice(cursor, 1);
+    redrawLine(next.join(""), cursor);
+  };
+
+  const historyUp = () => {
+    if (history.length === 0) return;
+    if (historyIndex === -1) {
+      historyDraft = inputLine;
+      historyIndex = history.length - 1;
+    } else if (historyIndex > 0) {
+      historyIndex--;
+    }
+    const recalled = history[historyIndex];
+    if (recalled !== undefined) redrawLine(recalled, [...recalled].length);
+  };
+
+  const historyDown = () => {
+    if (historyIndex === -1) return;
+    if (historyIndex < history.length - 1) {
+      historyIndex++;
+      const recalled = history[historyIndex]!;
+      redrawLine(recalled, [...recalled].length);
+    } else {
+      historyIndex = -1;
+      redrawLine(historyDraft, [...historyDraft].length);
+      historyDraft = "";
+    }
+  };
+
+  const deleteWord = () => {
+    if (cursor === 0) return;
+    const chars = [...inputLine];
+    let start = cursor;
+    while (start > 0 && /\s/.test(chars[start - 1]!)) start--;
+    while (start > 0 && !/\s/.test(chars[start - 1]!)) start--;
+    if (start !== cursor) {
+      if (historyIndex !== -1) {
+        historyIndex = -1;
+        historyDraft = "";
+      }
+      chars.splice(start, cursor - start);
+      redrawLine(chars.join(""), start);
+    }
+  };
+
+  const submitLine = () => {
+    const line = inputLine;
+    if (line.length > 0 && history[history.length - 1] !== line) history.push(line);
+    historyIndex = -1;
+    historyDraft = "";
+    inputLine = "";
+    cursor = 0;
+    write("\r\n");
+    void control.terminalInput(enc.encode(`${line}\n`));
+  };
+
+  const handleEscapeSequence = (sequence: string) => {
+    const final = sequence[sequence.length - 1];
+    if (final === undefined) return;
+    if (sequence.startsWith("\x1bO")) {
+      if (final === "A") historyUp();
+      else if (final === "B") historyDown();
+      else if (final === "C") {
+        if (cursor < [...inputLine].length) {
+          cursor++;
+          moveCursorRight(1);
+        }
+      } else if (final === "D") {
+        if (cursor > 0) {
+          cursor--;
+          moveCursorLeft(1);
+        }
+      } else if (final === "H") redrawLine(inputLine, 0);
+      else if (final === "F") redrawLine(inputLine, [...inputLine].length);
+      return;
+    }
+
+    if (!sequence.startsWith("\x1b[")) return;
+    const body = sequence.slice(2, -1);
+    if (final === "A") historyUp();
+    else if (final === "B") historyDown();
+    else if (final === "C") {
+      if (cursor < [...inputLine].length) {
+        cursor++;
+        moveCursorRight(1);
+      }
+    } else if (final === "D") {
+      if (cursor > 0) {
+        cursor--;
+        moveCursorLeft(1);
+      }
+    } else if (final === "H" || (final === "~" && (body === "1" || body === "7"))) {
+      redrawLine(inputLine, 0);
+    } else if (final === "F" || (final === "~" && (body === "4" || body === "8"))) {
+      redrawLine(inputLine, [...inputLine].length);
+    } else if (final === "~" && body === "3") {
+      deleteAtCursor();
+    } else if (final === "~" && (body === "5" || body === "6")) {
+      if (body === "5") historyUp();
+      else historyDown();
+    }
+  };
+
+  const processCookedInput = (data: string) => {
+    const chars = [...pendingEscape, ...data];
+    pendingEscape = "";
+    let i = 0;
+    while (i < chars.length) {
+      const ch = chars[i]!;
+      if (ch === "\x1b") {
+        const next = chars[i + 1];
+        if (next === undefined) {
+          pendingEscape = ch;
+          break;
+        }
+        if (next === "[" || next === "O") {
+          let end = i + 2;
+          while (end < chars.length) {
+            const code = chars[end]!.charCodeAt(0);
+            if (code >= 0x40 && code <= 0x7e) break;
+            end++;
+          }
+          if (end >= chars.length) {
+            pendingEscape = chars.slice(i).join("");
+            break;
+          }
+          handleEscapeSequence(chars.slice(i, end + 1).join(""));
+          i = end + 1;
+          continue;
+        }
+        i += 2;
+        continue;
+      }
+      if (ch === "\r" || ch === "\n") {
+        submitLine();
+      } else if (ch === "\x7f" || ch === "\b") {
+        deletePrevious();
+      } else if (ch === "\x01") {
+        redrawLine(inputLine, 0);
+      } else if (ch === "\x05") {
+        redrawLine(inputLine, [...inputLine].length);
+      } else if (ch === "\x15") {
+        clearLine();
+      } else if (ch === "\x17") {
+        deleteWord();
+      } else if (ch === "\x03") {
+        clearLine();
+        write("^C\r\n");
+        void control.terminalInput(enc.encode("\n"));
+      } else if (ch === "\x04") {
+        deleteAtCursor();
+      } else if (ch === "\t") {
+        insertText("    ");
+      } else if (ch.charCodeAt(0) >= 0x20 && ch.charCodeAt(0) !== 0x7f) {
+        insertText(ch);
+      }
+      i++;
+    }
+  };
+
   control.onTermMode((raw) => {
     rawMode = raw;
-    lineLen = 0;
+    inputLine = "";
+    cursor = 0;
+    historyIndex = -1;
+    historyDraft = "";
+    pendingEscape = "";
   });
+
+  // Kernel → terminal.
+  control.onOutput((_pid, bytes) => write(dec.decode(bytes)));
 
   // Terminal → kernel: deliver keystrokes to the terminal's foreground job (the
   // kworker routes them to the running program, else the shell).
@@ -81,74 +314,25 @@ export function attachTerminal(
   // etc.) — with NO local echo and NO line buffering. The program reads keys one
   // at a time and repaints the screen itself.
   //
-  // COOKED mode (the default shell line discipline): a single `onData` chunk can
-  // carry many characters at once — most importantly a PASTE such as "ls\n" — so
-  // we process it character-by-character, batching runs of printable text and
-  // handling control characters individually:
-  //   • CR / LF          → flush pending text, echo CRLF, send "\n", reset the line.
-  //   • Backspace / DEL  → flush pending text, visually erase the last typed char
-  //                        (never into the prompt) and send DEL so the shell drops it.
-  //   • printable text    → batched, then echoed + forwarded verbatim.
-  //   • other control bytes (tab, Ctrl-keys, …) → dropped (a line-oriented shell has
-  //                        no use for them and they would corrupt the command).
-  // Escape sequences (arrow/F-keys) are skipped IN PLACE — only the sequence
-  // itself is dropped, so ordinary text typed or pasted in the same chunk still
-  // reaches the command line (and a sequence's "[A"/"[B" tail is never inserted).
+  // COOKED mode (the default shell line discipline): xterm can deliver ordinary
+  // typing, paste, and escape sequences in separate or combined chunks. Keep the
+  // editable line in the host, so the shell receives one complete UTF-8 command
+  // only when Enter is pressed. This is what lets arrows, Home/End, Delete,
+  // history, Ctrl editing keys, and paste behave like a normal terminal without
+  // making the Rust shell implement a second line editor.
   term.onData((data) => {
+    const sample = metrics?.beginTerminal(data);
     if (rawMode) {
       // Pass through unchanged; the foreground program owns echo + rendering.
-      void control.terminalInput(enc.encode(data));
+      void control.terminalInput(enc.encode(data)).then((accepted) => {
+        if (sample !== undefined) metrics?.deliveredByKernel(sample, accepted);
+      }).catch(() => {
+        if (sample !== undefined) metrics?.drop(sample);
+      });
       return;
     }
-    let pending = "";
-    const flush = () => {
-      if (pending.length === 0) return;
-      write(pending);
-      lineLen += [...pending].length;
-      void control.terminalInput(enc.encode(pending));
-      pending = "";
-    };
-    const chars = [...data];
-    let i = 0;
-    while (i < chars.length) {
-      const ch = chars[i]!; // in-bounds per the loop condition
-      if (ch === "\x1b") {
-        // Skip a terminal escape sequence in place rather than discarding the rest
-        // of the chunk. CSI: ESC [ params… final(0x40–0x7e). SS3: ESC O final.
-        i++;
-        if (chars[i] === "[") {
-          i++;
-          while (i < chars.length) {
-            const c = chars[i]!.charCodeAt(0); // in-bounds per the loop condition
-            i++;
-            if (c >= 0x40 && c <= 0x7e) break; // CSI final byte ends the sequence
-          }
-        } else if (chars[i] === "O") {
-          i += 2; // ESC O <final>
-        } else {
-          i++; // bare ESC or ESC <char>
-        }
-        continue;
-      }
-      if (ch === "\r" || ch === "\n") {
-        flush();
-        write("\r\n");
-        lineLen = 0;
-        void control.terminalInput(enc.encode("\n"));
-      } else if (ch === "\x7f" || ch === "\b") {
-        flush();
-        if (lineLen > 0) {
-          write("\b \b"); // cursor back, overwrite with space, cursor back
-          lineLen -= 1;
-          void control.terminalInput(enc.encode("\x7f"));
-        }
-      } else {
-        const code = ch.charCodeAt(0);
-        if (code >= 0x20 && code !== 0x7f) pending += ch; // printable; drop other control bytes
-      }
-      i++;
-    }
-    flush();
+    if (sample !== undefined) metrics?.deliveredByKernel(sample, true);
+    processCookedInput(data);
   });
 
   return {
@@ -158,7 +342,11 @@ export function attachTerminal(
     shellPid: () => currentShell,
     setShell: (pid: number) => {
       currentShell = pid;
-      lineLen = 0; // the fresh shell starts at a clean prompt
+      inputLine = "";
+      cursor = 0;
+      historyIndex = -1;
+      historyDraft = "";
+      pendingEscape = "";
     },
     notice: (text: string) => write(text),
   };

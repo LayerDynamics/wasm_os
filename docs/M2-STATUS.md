@@ -1,11 +1,11 @@
 # shell and userland Status — Userland & Terminal (V1)
 
-**Status:** ✅ Complete — all five exit criteria met (verified 2026-05-31 via `npm run verify`, exit 0).
+**Status:** ✅ Complete — current repository verification passed on 2026-08-22 via `npm run verify` (exit 0).
 
 WASM_OS now boots to an **interactive xterm terminal bound to a real Rust shell
-process**. The shell resolves programs from `/bin` over the hierarchical VFS,
+process**. The shell resolves programs from `/usr/bin:/bin:/sbin` over the hierarchical VFS,
 wires them together with **kernel pipes**, redirects I/O to files, reports exit
-codes, and survives crashes. Thirteen FR-18 coreutils run as isolated
+codes, and survives crashes. The shipped coreutils run as isolated
 `wasm32-wasip1` processes; **one (`echo`) is also built in Zig** and proven
 byte-for-byte identical to its Rust sibling (FR-14). Every layer is real —
 keystrokes → xterm → `control.stdin` → shell stdin (park/resume) → `wasmos_kernel`
@@ -17,28 +17,23 @@ spawn → child process → stdout streamed back to xterm. No mocks.
 |---|-----------|-------------|--------|
 | 1 | Boot reaches an **interactive terminal** bound to a running Rust **shell**; typed chars echo and reach the shell's stdin | `e2e/terminal.spec.ts` (real keystrokes → `echo` output); `e2e/boot.spec.ts` listProcs shows `sh` | ✅ PASS |
 | 2 | `ls`/`cat`; **`cat f \| grep x`** (real kernel pipe); **`echo hi > out`** then `cat out` (redirection); correct **exit codes** (`$?`) | `e2e/shell.spec.ts` (pipeline, redirect, `$?`=1); `e2e/coreutils.spec.ts` (mkdir+ls) | ✅ PASS |
-| 3 | The **13 FR-18 coreutils** run from the terminal via `$PATH`; **≥1 built in Zig** (FR-14), observably identical to its Rust sibling | `e2e/coreutils.spec.ts` (ls, cat, cp/mv/rm, wc/head, tail, env, pwd-binary); `e2e/shell.spec.ts` (cat\|grep, echo); `packages/host/test/polyglot-echo.test.ts` (node:wasi byte-diff, 6 cases); `e2e/terminal.spec.ts` (`echo.zig` live) | ✅ PASS |
+| 3 | The shipped coreutils run from the terminal via `$PATH`; **≥1 built in Zig** (FR-14), observably identical to its Rust sibling | `e2e/coreutils.spec.ts`, `e2e/shell.spec.ts`, `packages/host/test/polyglot-echo.test.ts`, and `e2e/terminal.spec.ts` | ✅ PASS |
 | 4 | A deliberately-crashing binary from the shell — standalone **and in a pipeline** — terminates without taking down the shell/terminal (FR-34); the prompt returns | `e2e/crash.spec.ts` (standalone, `crash\|wc`, `cat\|crash`, + normal-pipeline prompt-return); kernel `proc_exit_of_writer/reader_*` regressions | ✅ PASS |
 | 5 | `npm run verify` green **including** the kernel/VFS bootstrap/WASI process runtime regression suite, through the refactored VFS + streaming I/O | local `npm run verify` (exit 0) | ✅ PASS |
 
-## Verify gate breakdown (latest local run — 2026-05-31)
+## Verify gate breakdown (latest local run — 2026-08-22)
 
 ```text
 build         : kernel component (wasm32-unknown-unknown) + jco bindings regenerated
-build:guests  : 17 Rust wasm32-wasip1 guests + 1 Zig wasm32-wasi guest (echo.zig)
+build:guests  : all shipped Rust wasm32-wasip1 guests, Zig guests, and the hand-authored WAT utility
 binder        : kernel-check — wasmos-sys guest signatures match wit/kernel/kernel.wit (FR-36)
 lint          : clippy clean (-D warnings) on workspace + kernel wasm32-unknown-unknown
 typecheck     : tsc -p packages/host/tsconfig.json --noEmit — clean
-cargo test    : 69 passed; 0 failed
-                (vfs ×13, types+fd-table, scheduler, kcore, syscall router incl.
-                 pipes, park/resume, kspawn/kpipe/kwait, fs-mutation, crash-containment ×3)
-vitest        : 14 passed (4 files) — features ×2, polyglot-echo ×6 (node:wasi),
-                IdbBlockstore ×3, SAB ring ×3
-playwright    : 21 passed — kernel/VFS bootstrap (boot<1.5s, tri-backend persist across reload, fsDelete,
-                real OPFS, real IDB), WASI process runtime (hello spawn, two-proc isolation, crash
-                containment, catfile path_open+fd_read), shell and userland (terminal echo + Zig util,
-                shell pipeline/redirect/$?, coreutils mkdir+ls/cp-mv-rm/wc-head,
-                crash containment ×4)
+cargo test    : workspace passed, including 110 kernel tests and the wasmobj format,
+                round-trip, property, and self-execution tests
+vitest        : 32 passed (8 files), including the WASI runtime and production-server checks
+playwright    : 89 passed in the fast browser suite, covering the kernel/VFS bootstrap,
+                WASI processes, shell/userland, and terminal input paths
 ```
 
 ## Architecture as built (shell and userland deltas over WASI process runtime)
@@ -100,7 +95,8 @@ playwright    : 21 passed — kernel/VFS bootstrap (boot<1.5s, tri-backend persi
 ## CI
 
 `.github/workflows/ci.yml` installs **Zig 0.14.1** (`mlugg/setup-zig`), builds
-the Rust + Zig guests **before** host tests (so the polyglot byte-diff test has
+the Rust, Zig, and WAT guests **before** host tests (so the polyglot byte-diff test has
 its inputs), and keeps the clippy / typecheck / lint / rust-test / host-test /
-e2e gates. The kernel bindings remain a build artifact (regenerated, not
+e2e gates. The WAT utility is now part of the same `build:guests` command.
+The kernel bindings remain a build artifact (regenerated, not
 byte-diffed) per the WASI process runtime rationale.

@@ -21,6 +21,7 @@ const EV_POINTER_UP: u8 = 3;
 const EV_KEY_DOWN: u8 = 4;
 
 extern "wasmos_kernel" fn syscall(req_ptr: [*]const u8, req_len: usize, resp_ptr: [*]u8, resp_cap: usize) usize;
+extern "wasi_snapshot_preview1" fn random_get(buf: [*]u8, buf_len: usize) u16;
 
 var framebuffer: [WIDTH * HEIGHT * 4]u8 = undefined;
 var respbuf: [512]u8 = undefined;
@@ -117,12 +118,59 @@ fn render(cx: f64, cy: f64, scale: f64) void {
     }
 }
 
+const View = struct { cx: f64, cy: f64, scale: f64 };
+
+const VIEW_PRESETS = [_]View{
+    .{ .cx = -0.743643887, .cy = 0.131825904, .scale = 0.0042 }, // seahorse valley
+    .{ .cx = -0.101096, .cy = 0.956286, .scale = 0.0028 }, // double spiral
+    .{ .cx = 0.285, .cy = 0.01, .scale = 0.0065 }, // elephant valley
+    .{ .cx = -1.25066, .cy = 0.02012, .scale = 0.0038 }, // mini Mandelbrot
+    .{ .cx = -0.16, .cy = 1.0405, .scale = 0.0055 }, // dendrite
+    .{ .cx = -0.6, .cy = 0.0, .scale = 3.0 / @as(f64, WIDTH) }, // full set
+};
+
+fn mix(value: u64) u64 {
+    var x = value;
+    x ^= x >> 30;
+    x *%= 0xbf58476d1ce4e5b9;
+    x ^= x >> 27;
+    x *%= 0x94d049bb133111eb;
+    return x ^ (x >> 31);
+}
+
+fn unit(value: u64) f64 {
+    return @as(f64, @floatFromInt(value & 0xffff)) / 65535.0;
+}
+
+fn randomSeed() u64 {
+    var bytes: [8]u8 = undefined;
+    if (random_get(&bytes, bytes.len) != 0) return 0x6a09e667f3bcc909;
+    var seed: u64 = 0;
+    var i: usize = 0;
+    while (i < bytes.len) : (i += 1) seed |= @as(u64, bytes[i]) << @as(u6, @intCast(i * 8));
+    return if (seed == 0) 0x6a09e667f3bcc909 else seed;
+}
+
+fn nextView(seed: u64, generation: u32) View {
+    const r = mix(seed +% (@as(u64, generation) *% 0x9e3779b97f4a7c15));
+    var view = VIEW_PRESETS[@as(usize, @intCast(r % @as(u64, VIEW_PRESETS.len)))];
+    const x_jitter = (unit(r >> 16) - 0.5) * 2.0;
+    const y_jitter = (unit(r >> 32) - 0.5) * 2.0;
+    view.cx += x_jitter * view.scale * 12.0;
+    view.cy += y_jitter * view.scale * 12.0;
+    view.scale *= 0.72 + unit(r >> 48) * 0.48;
+    return view;
+}
+
 pub fn main() void {
     const surface = winSurface(WIDTH, HEIGHT);
 
-    var cx: f64 = -0.6;
-    var cy: f64 = 0.0;
-    var scale: f64 = 3.0 / @as(f64, WIDTH);
+    var seed = randomSeed();
+    var generation: u32 = 0;
+    var view = nextView(seed, generation);
+    var cx = view.cx;
+    var cy = view.cy;
+    var scale = view.scale;
 
     render(cx, cy, scale);
     winPresent(surface);
@@ -134,8 +182,9 @@ pub fn main() void {
     while (true) {
         var ok: bool = false;
         const n = winReadInput(&events, &ok);
-        if (!ok) return; // no Input capability — the static fractal is already shown
+        if (!ok) return; // no Input capability — the current fractal remains visible
         var changed = false;
+        var received_key = false;
         var k: usize = 0;
         while (k < n) : (k += 1) {
             const ev = events[k];
@@ -158,7 +207,23 @@ pub fn main() void {
                     }
                 },
                 EV_KEY_DOWN => {
-                    if (ev.key == '+' or ev.key == '=') {
+                    received_key = true;
+                    if (ev.key == 'n' or ev.key == 'N' or ev.key == ' ') {
+                        generation +%= 1;
+                        view = nextView(seed, generation);
+                        cx = view.cx;
+                        cy = view.cy;
+                        scale = view.scale;
+                        changed = true;
+                    } else if (ev.key == 'r' or ev.key == 'R') {
+                        seed = randomSeed();
+                        generation = 0;
+                        view = nextView(seed, generation);
+                        cx = view.cx;
+                        cy = view.cy;
+                        scale = view.scale;
+                        changed = true;
+                    } else if (ev.key == '+' or ev.key == '=') {
                         scale *= 0.7;
                         changed = true;
                     } else if (ev.key == '-' or ev.key == '_') {
@@ -169,7 +234,7 @@ pub fn main() void {
                 else => {},
             }
         }
-        if (changed) {
+        if (changed or received_key) {
             render(cx, cy, scale);
             winPresent(surface);
         }

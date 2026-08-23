@@ -12,6 +12,7 @@ import type { Win } from "./window.js";
 import type { SurfaceInfo } from "../boot.js";
 
 interface ManagedSurface {
+  ownerPid: number;
   win: Win;
   canvas: HTMLCanvasElement;
   ctx: CanvasRenderingContext2D;
@@ -34,6 +35,8 @@ export class SurfaceManager {
     private titleFor: (pid: number) => string = (pid) => `App (pid ${pid})`,
     /** Whether a process-owned window should open centered (e.g. the Welcome guide). */
     private centeredFor: (pid: number) => boolean = () => false,
+    /** Called after the shared framebuffer has been copied to the visible canvas. */
+    private onBlit: (pid: number) => void = () => {},
   ) {}
 
   /** A process created a surface: open its canvas window and bind the framebuffer. */
@@ -54,6 +57,7 @@ export class SurfaceManager {
     if (!ctx) throw new Error("2d canvas context unavailable");
     const image = ctx.createImageData(info.width, info.height);
     this.surfaces.set(info.surfaceId, {
+      ownerPid: info.pid,
       win,
       canvas,
       ctx,
@@ -101,6 +105,7 @@ export class SurfaceManager {
         // RGBA bytes from the shared framebuffer → the canvas backing store.
         s.image.data.set(s.view);
         s.ctx.putImageData(s.image, 0, 0);
+        this.onBlit(s.ownerPid);
       }
     });
   }

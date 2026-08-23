@@ -12,6 +12,8 @@ desktop.
 
 The desktop includes a shell, core utilities, a file manager, Paint, an editor,
 a Lisp REPL, a system monitor, a Welcome window, and a Zig Mandelbrot viewer.
+Mandelbrot pans with a drag, zooms with `+`/`-`, and generates a new seeded view
+with `N` or Space (`R` reseeds it).
 The taskbar can also start a RISC-V Linux guest in TinyEMU. The guest appears as
 one privileged process alongside the regular WASI processes.
 
@@ -73,7 +75,7 @@ work is easier to understand by its concrete result:
 | Area | What is implemented | Status report |
 |---|---|---|
 | Kernel and storage | Scheduler, capability-mediated syscalls, and a VFS over in-memory storage, OPFS, and IndexedDB | [`docs/M0-STATUS.md`](docs/M0-STATUS.md) |
-| WASI process runtime | Rust and Zig guests run in separate workers and use blocking WASI calls over the shared-memory ring | [`docs/M1-STATUS.md`](docs/M1-STATUS.md) |
+| WASI process runtime | Rust, Zig, and hand-authored WAT guests run in separate workers and use WASI calls over the shared-memory ring | [`docs/M1-STATUS.md`](docs/M1-STATUS.md) |
 | Shell and userland | Rust shell with `$PATH`, pipelines, redirection, builtins, kernel pipes, exit codes, and core utilities | [`docs/M2-STATUS.md`](docs/M2-STATUS.md) |
 | Desktop and graphical apps | Windows, taskbar, focus, z-order, canvas surfaces, brokered input, file manager, Paint, Editor, System Monitor, Lisp, Welcome, and Mandelbrot | [`docs/M3-STATUS.md`](docs/M3-STATUS.md) |
 | Process control and IPC | Concurrent processes, message channels, explicit shared memory, signals, priorities, live metrics, and session restore | [`docs/M4-STATUS.md`](docs/M4-STATUS.md) |
@@ -96,7 +98,7 @@ sets the required COOP/COEP headers. The supported local path is:
 # Build the kernel and its generated bindings.
 npm run build
 
-# Build the Rust and Zig wasm32-wasi guests.
+# Build the Rust, Zig, and hand-written WAT wasm32-wasi guests.
 npm run build:guests
 
 # Bundle the host workers and browser entrypoint.
@@ -130,7 +132,7 @@ Individual checks are available when iterating:
 | Command | Coverage |
 |---|---|
 | `npm run build` | Kernel component and generated host bindings |
-| `npm run build:guests` | Rust and Zig `wasm32-wasi` guest binaries |
+| `npm run build:guests` | Rust, Zig, and WAT `wasm32-wasi` guest binaries |
 | `npm run binder:kernel-check` | Guest syscall stubs against `wit/` |
 | `npm run lint` | Rust clippy for the workspace and kernel WASM target |
 | `npm run typecheck` | TypeScript host type-check |
@@ -155,7 +157,7 @@ crates/
   wasmgfx/         # software RGBA framebuffer and 8×8 font
   wasmobj/         # self-executing wasm-object document container
   sh/              # shell with PATH lookup, pipelines, redirection, and builtins
-  coreutils/       # ls, cat, grep, cp, mv, rm, wc, head, tail, env, ps, top, kill, …
+  coreutils/       # 21 standalone utilities, including ls, cat, grep, ps, top, and kill
   apps/            # file manager, Paint, Editor, System Monitor, Lisp, Welcome, nano
   hello, crash, catfile, spinner, gfxspike, chandemo, shmdemo, sigdemo
                    # process, fault, graphics, IPC, and signal fixtures
@@ -177,8 +179,8 @@ on Linux x86_64.
 ## Scope and limitations
 
 - The process model is cooperative rather than preemptive.
-- The page must be cross-origin isolated; the fallback browser tier is not part
-  of the current runtime path.
+- Only a cross-origin-isolated Chromium or Firefox page can boot the current
+  runtime; non-isolated contexts are rejected before worker startup.
 - The WIT ABI is still an implementation contract, not a compatibility promise.
 - The project has no threat model for mutually hostile third-party guests.
 - Files persist in the origin's OPFS and IndexedDB, but a running process and the

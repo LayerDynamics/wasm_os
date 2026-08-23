@@ -16,8 +16,8 @@
 //! unexpectedly, the host (kworker) restores the terminal's cooked discipline for
 //! the shell when this process exits, so the terminal can never be left unusable.
 
-use std::fs;
 use std::io::{self, Read, Write};
+use wasmobj::wasi::{load_editable, save_editable};
 use wasmos_sys::tty_set_raw;
 
 const CTRL_X: u8 = 0x18;
@@ -66,11 +66,15 @@ fn read_key(input: &mut impl Read) -> Option<Key> {
     match b {
         ESC => {
             // Could be a lone Esc or a CSI/SS3 sequence (ESC [ … / ESC O …).
-            let Some(b1) = read_byte(input) else { return Some(Key::Esc) };
+            let Some(b1) = read_byte(input) else {
+                return Some(Key::Esc);
+            };
             if b1 != b'[' && b1 != b'O' {
                 return Some(Key::Esc);
             }
-            let Some(b2) = read_byte(input) else { return Some(Key::Esc) };
+            let Some(b2) = read_byte(input) else {
+                return Some(Key::Esc);
+            };
             match b2 {
                 b'A' => Some(Key::Up),
                 b'B' => Some(Key::Down),
@@ -142,13 +146,20 @@ impl Editor {
                     parts.pop();
                 }
                 let lines: Vec<Vec<char>> = parts.iter().map(|s| s.chars().collect()).collect();
-                let lines = if lines.is_empty() { vec![Vec::new()] } else { lines };
+                let lines = if lines.is_empty() {
+                    vec![Vec::new()]
+                } else {
+                    lines
+                };
                 let n = lines.len();
                 let status = status
                     .unwrap_or_else(|| format!("Read {n} line{}", if n == 1 { "" } else { "s" }));
                 (lines, status)
             }
-            None => (vec![Vec::new()], status.unwrap_or_else(|| "New File".to_string())),
+            None => (
+                vec![Vec::new()],
+                status.unwrap_or_else(|| "New File".to_string()),
+            ),
         };
         Editor {
             lines,
@@ -178,20 +189,13 @@ impl Editor {
         if filename.is_empty() {
             return (None, None, None);
         }
-        if filename.ends_with(".wasm") {
-            match fs::read(filename) {
-                Ok(bytes) if wasmobj::verify(&bytes).is_ok() => {
-                    let content = wasmobj::read(&bytes).unwrap_or_default();
-                    (Some(String::from_utf8_lossy(&content).into_owned()), Some(bytes), None)
-                }
-                Ok(bytes) => (Some(String::from_utf8_lossy(&bytes).into_owned()), None, None),
-                Err(_) => (Some(String::new()), Some(Vec::new()), Some("New File".to_string())),
-            }
-        } else {
-            match fs::read_to_string(filename) {
-                Ok(text) => (Some(text), None, None),
-                Err(_) => (None, None, None),
-            }
+        match load_editable(filename) {
+            Ok(document) => (
+                Some(String::from_utf8_lossy(&document.content).into_owned()),
+                document.object,
+                document.is_new.then(|| "New File".to_string()),
+            ),
+            Err(_) => (None, None, None),
         }
     }
 
@@ -230,7 +234,11 @@ impl Editor {
 
         // Title bar (reverse video): app + filename + modified flag.
         let modflag = if self.modified { "  Modified" } else { "" };
-        let name = if self.filename.is_empty() { "New Buffer" } else { &self.filename };
+        let name = if self.filename.is_empty() {
+            "New Buffer"
+        } else {
+            &self.filename
+        };
         let title = format!("  WASM_OS nano    {name}{modflag}");
         s.push_str("\x1b[1;1H\x1b[7m");
         s.push_str(&fit(&title, self.cols));
@@ -385,21 +393,7 @@ impl Editor {
             self.filename = "untitled.txt".to_string();
         }
         let text = self.to_text();
-        let result: io::Result<()> = match &mut self.obj {
-            Some(obj) => {
-                if wasmobj::verify(obj).is_err() {
-                    // New document: mint an object sized to the content.
-                    let tier = wasmobj::Tier::for_len(text.len() as u32 + 4)
-                        .unwrap_or(wasmobj::Tier::K64);
-                    *obj = wasmobj::mint(tier, 0);
-                }
-                match wasmobj::save(obj, text.as_bytes()) {
-                    Ok(_) => fs::write(&self.filename, &obj[..]),
-                    Err(e) => Err(io::Error::other(format!("wasmobj: {e:?}"))),
-                }
-            }
-            None => fs::write(&self.filename, text),
-        };
+        let result: io::Result<()> = save_editable(&self.filename, &mut self.obj, text.as_bytes());
         match result {
             Ok(()) => {
                 let n = self.lines.len();
@@ -428,8 +422,14 @@ fn fit(s: &str, cols: usize) -> String {
 /// Read the terminal size from the environment (the host seeds `LINES`/`COLUMNS`
 /// when it binds the terminal), defaulting to the classic 80x24.
 fn term_size() -> (usize, usize) {
-    let rows = std::env::var("LINES").ok().and_then(|v| v.parse().ok()).unwrap_or(24usize);
-    let cols = std::env::var("COLUMNS").ok().and_then(|v| v.parse().ok()).unwrap_or(80usize);
+    let rows = std::env::var("LINES")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(24usize);
+    let cols = std::env::var("COLUMNS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(80usize);
     (rows.clamp(5, 200), cols.clamp(20, 400))
 }
 
@@ -453,7 +453,9 @@ fn main() {
 
     loop {
         ed.render(&mut out);
-        let Some(key) = read_key(&mut input) else { break };
+        let Some(key) = read_key(&mut input) else {
+            break;
+        };
         match key {
             Key::Left => ed.move_left(),
             Key::Right => ed.move_right(),

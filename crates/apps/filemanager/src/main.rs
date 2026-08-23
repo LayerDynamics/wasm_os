@@ -7,6 +7,7 @@
 //! associated apps" path; `.txt` files open in the editor when it is present.
 
 use wasmgfx::{rgb, Color, Framebuffer, GLYPH_H, GLYPH_W};
+use wasmobj::wasi::load_object;
 use wasmos_sys::{
     spawn, win_present, win_read_input, win_surface, Stdio, EV_KEY_DOWN, EV_POINTER_DOWN,
     EV_POINTER_MOVE, KEY_BACKSPACE, KEY_DOWN, KEY_ENTER, KEY_UP,
@@ -91,7 +92,12 @@ fn crumbs_for(cwd: &str) -> Vec<Crumb> {
         cum.push('/');
         cum.push_str(comp);
         let w = gw * comp.chars().count() as i32;
-        out.push(Crumb { x0: x, x1: x + w, label: comp.to_string(), path: cum.clone() });
+        out.push(Crumb {
+            x0: x,
+            x1: x + w,
+            label: comp.to_string(),
+            path: cum.clone(),
+        });
         x += w;
     }
     out
@@ -115,7 +121,9 @@ impl State {
         // Directories first, then files; each alphabetical (case-insensitive, so
         // e.g. /Volumes sorts with the lowercase dirs rather than ahead of them).
         self.entries.sort_by(|a, b| {
-            b.is_dir.cmp(&a.is_dir).then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+            b.is_dir
+                .cmp(&a.is_dir)
+                .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
         });
         self.selected = 0;
         self.scroll = 0;
@@ -130,7 +138,9 @@ impl State {
             return;
         }
         let ei = idx - if has_dotdot { 1 } else { 0 };
-        let Some(entry) = self.entries.get(ei) else { return };
+        let Some(entry) = self.entries.get(ei) else {
+            return;
+        };
         if entry.is_dir {
             self.cwd = join(&self.cwd, &entry.name);
             self.relist();
@@ -189,13 +199,22 @@ fn launch(path: &str) {
     let stdio = [Stdio::Terminal, Stdio::Terminal, Stdio::Terminal];
     // Read the file to classify it; an unreadable file falls back to the editor
     // (an empty buffer) rather than being executed.
-    let bytes = std::fs::read(path).unwrap_or_default();
+    let bytes = load_object(path).unwrap_or_default();
     match open_action(&bytes) {
         OpenAs::Run => {
             let _ = spawn(path, &[path], &stdio, "/", true, true, false, false);
         }
         OpenAs::Edit => {
-            let _ = spawn("/bin/editor", &["editor", path], &stdio, "/", true, true, false, false);
+            let _ = spawn(
+                "/bin/editor",
+                &["editor", path],
+                &stdio,
+                "/",
+                true,
+                true,
+                false,
+                false,
+            );
         }
     }
 }
@@ -206,7 +225,11 @@ fn draw(fb: &mut Framebuffer, st: &State) {
 
     // "↑ Up" button — dimmed and inert at the root, where there is nowhere to go up to.
     let at_root = st.cwd == "/";
-    let up_bg = if at_root { rgb(34, 40, 54) } else { rgb(60, 72, 96) };
+    let up_bg = if at_root {
+        rgb(34, 40, 54)
+    } else {
+        rgb(60, 72, 96)
+    };
     fb.fill_rect(UP_X0, 2, UP_X1 - UP_X0, HEADER_H - 4, up_bg);
     let up_fg = if at_root { rgb(96, 102, 116) } else { FG };
     fb.text(UP_X0 + 4, 7, "\u{2191} Up", up_fg);
@@ -240,7 +263,10 @@ fn draw(fb: &mut Framebuffer, st: &State) {
         } else {
             let e = &st.entries[idx - if has_dotdot { 1 } else { 0 }];
             let suffix = if e.is_dir { "/" } else { "" };
-            (if e.is_dir { DIR_ICON } else { FILE_ICON }, format!("{}{}", e.name, suffix))
+            (
+                if e.is_dir { DIR_ICON } else { FILE_ICON },
+                format!("{}{}", e.name, suffix),
+            )
         };
         fb.fill_rect(5, y + 3, GLYPH_W as i32, GLYPH_H as i32, icon);
         fb.text(5 + GLYPH_W as i32 + 4, y + 3, &text, FG);
@@ -253,7 +279,12 @@ fn main() {
         Err(_) => std::process::exit(1),
     };
     let mut fb = Framebuffer::new(W, H);
-    let mut st = State { cwd: "/".to_string(), entries: Vec::new(), selected: 0, scroll: 0 };
+    let mut st = State {
+        cwd: "/".to_string(),
+        entries: Vec::new(),
+        selected: 0,
+        scroll: 0,
+    };
     st.relist();
     draw(&mut fb, &st);
     win_present(surface, fb.bytes());
