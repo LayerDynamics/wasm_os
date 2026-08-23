@@ -1,12 +1,13 @@
 //! System Monitor (L3 / system monitor, FR-33 + FR-8) — a real `wasm32-wasip1` process.
 //!
 //! Draws the live process table to a canvas surface (read from the `proc_list`
-//! syscall) and acts on the selected process from brokered keyboard input:
-//!   k → SIGKILL (forceful)   t → SIGTERM (graceful)   r → renice (+1 priority)
+//! syscall) and acts on the selected process from brokered keyboard input or the
+//! visible KILL, TERM, and RENICE controls:
+//!   k/KILL → SIGKILL   t/TERM → SIGTERM   r/RENICE → renice (+1 priority)
 //! Process control uses the Signal capability, which the launcher delegates (the
 //! graphical sibling of the `kill`/`renice` coreutils). It refreshes the table on
-//! every input event, so interacting shows current state. init (pid 1) is
-//! protected — the monitor refuses to signal it.
+//! every input event, so interacting shows current state. Action results are shown
+//! in the header, and init (pid 1) is protected — the monitor refuses to signal it.
 
 use wasmgfx::{rgb, Color, Framebuffer, GLYPH_H, GLYPH_W};
 use wasmos_sys::{
@@ -18,6 +19,12 @@ const W: u32 = 520;
 const H: u32 = 360;
 const HEADER_H: i32 = 34;
 const ROW_H: i32 = 14;
+const ACTION_Y: i32 = 17;
+const ACTION_H: i32 = 13;
+const KILL_X: i32 = 6;
+const TERM_X: i32 = 72;
+const RENICE_X: i32 = 138;
+const ACTION_W: i32 = 58;
 
 const BG: Color = rgb(18, 20, 26);
 const HEADER_BG: Color = rgb(34, 40, 56);
@@ -35,6 +42,7 @@ const KEY_R: u32 = 'r' as u32;
 struct State {
     procs: Vec<ProcInfo>,
     selected: usize,
+    status: String,
 }
 
 impl State {
@@ -76,8 +84,21 @@ fn state_color(s: ProcState) -> Color {
 fn draw(fb: &mut Framebuffer, st: &State) {
     fb.clear(BG);
     fb.fill_rect(0, 0, W as i32, HEADER_H, HEADER_BG);
-    fb.text(6, 5, &format!("System Monitor — {} processes", st.procs.len()), FG);
-    fb.text(6, 19, "[k]ill  [t]erm  [r]enice   \u{2191}/\u{2193} select   (init pid 1 is protected)", DIM);
+    fb.text(
+        6,
+        5,
+        &format!("System Monitor — {} processes", st.procs.len()),
+        FG,
+    );
+    for (x, label, color) in [
+        (KILL_X, "KILL", rgb(120, 55, 62)),
+        (TERM_X, "TERM", rgb(105, 82, 48)),
+        (RENICE_X, "RENICE", rgb(48, 86, 112)),
+    ] {
+        fb.fill_rect(x, ACTION_Y, ACTION_W, ACTION_H, color);
+        fb.text(x + 5, ACTION_Y + 3, label, FG);
+    }
+    fb.text(205, ACTION_Y + 3, &st.status, DIM);
 
     // Column header.
     let cy = HEADER_H;
@@ -102,28 +123,61 @@ fn draw(fb: &mut Framebuffer, st: &State) {
             p.name,
         );
         // State-tinted dot, then the row text.
-        fb.fill_rect(2, y + 3, GLYPH_W as i32, GLYPH_H as i32, state_color(p.state));
+        fb.fill_rect(
+            2,
+            y + 3,
+            GLYPH_W as i32,
+            GLYPH_H as i32,
+            state_color(p.state),
+        );
         fb.text(2 + GLYPH_W as i32 + 2, y + 3, &row, FG);
     }
 }
 
 /// Act on the selected process. init (pid 1) is protected.
 fn act(st: &mut State, sig_or_renice: Action) {
-    let Some(pid) = st.selected_pid() else { return };
+    let Some(pid) = st.selected_pid() else {
+        st.status = "No process selected".to_string();
+        return;
+    };
     if pid == 1 {
+        st.status = "PID 1 is protected".to_string();
         return; // never signal init
     }
     match sig_or_renice {
         Action::Kill => {
-            let _ = kill(pid, SIGKILL);
+            st.status = action_status("killed", pid, kill(pid, SIGKILL));
         }
         Action::Term => {
-            let _ = kill(pid, SIGTERM);
+            st.status = action_status("terminated", pid, kill(pid, SIGTERM));
         }
         Action::Renice => {
             let cur = st.procs.get(st.selected).map(|p| p.priority).unwrap_or(5);
-            let _ = set_priority(pid, cur.saturating_add(1));
+            st.status = action_status("reniced", pid, set_priority(pid, cur.saturating_add(1)));
         }
+    }
+}
+
+fn action_status(action: &str, pid: u32, errno: u16) -> String {
+    if errno == 0 {
+        format!("{action} {pid}")
+    } else {
+        format!("{action} {pid} failed (errno {errno})")
+    }
+}
+
+fn action_at(x: i32, y: i32) -> Option<Action> {
+    if !(ACTION_Y..ACTION_Y + ACTION_H).contains(&y) {
+        return None;
+    }
+    if (KILL_X..KILL_X + ACTION_W).contains(&x) {
+        Some(Action::Kill)
+    } else if (TERM_X..TERM_X + ACTION_W).contains(&x) {
+        Some(Action::Term)
+    } else if (RENICE_X..RENICE_X + ACTION_W).contains(&x) {
+        Some(Action::Renice)
+    } else {
+        None
     }
 }
 
@@ -139,7 +193,11 @@ fn main() {
         Err(_) => std::process::exit(1),
     };
     let mut fb = Framebuffer::new(W, H);
-    let mut st = State { procs: Vec::new(), selected: 0 };
+    let mut st = State {
+        procs: Vec::new(),
+        selected: 0,
+        status: "Select a process".to_string(),
+    };
     st.refresh();
     // Seed the cursor on a killable process (not the protected init) so the first
     // k/t/r keypress acts on a real target.
@@ -158,6 +216,12 @@ fn main() {
         for ev in &events {
             match ev.kind {
                 EV_POINTER_MOVE | EV_POINTER_DOWN => {
+                    if ev.kind == EV_POINTER_DOWN {
+                        if let Some(action) = action_at(ev.x as i32, ev.y as i32) {
+                            act(&mut st, action);
+                            continue;
+                        }
+                    }
                     let y = ev.y as i32;
                     if y >= top {
                         let row = ((y - top) / ROW_H) as usize;

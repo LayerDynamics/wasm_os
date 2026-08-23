@@ -8,6 +8,7 @@ import { test, expect, type Page, type Locator } from "@playwright/test";
 // the target disappearing from the live process table.
 
 // Mirror of the app's layout constants (crates/apps/sysmon/src/main.rs).
+const W = 520;
 const H = 360;
 const HEADER_H = 34;
 const ROW_H = 14;
@@ -116,5 +117,32 @@ test("System Monitor kills via the keyboard (arrow-select + k), no mouse needed"
 
   await expect
     .poll(async () => (await listProcs(page)).find((x) => x.pid === victim)?.state ?? "gone", { timeout: 20_000 })
+    .toMatch(/zombie|gone/);
+});
+
+test("System Monitor manages a selected row through the visible KILL control", async ({ page }) => {
+  await ready(page);
+  const victim = await page.evaluate(async () => {
+    const w = (window as unknown as Win).__wasmos;
+    const bytes = await (await fetch("/packages/host/guests/sigdemo.wasm")).arrayBuffer();
+    return w.control.spawn(bytes, { name: "sigdemo", grantFsSubtree: "/" });
+  });
+
+  await page.locator(".wasmos-launcher").click();
+  await page.locator(".wasmos-launch-item", { hasText: "Monitor" }).click();
+  const canvas = page.locator(".wasmos-window canvas").last();
+  await expect(canvas).toBeVisible({ timeout: 10_000 });
+  const box = await canvas.boundingBox();
+  if (!box) throw new Error("no monitor canvas box");
+  const procs = (await listProcs(page)).sort((a, b) => a.pid - b.pid);
+  const idx = procs.findIndex((p) => p.pid === victim);
+  expect(idx).toBeGreaterThanOrEqual(0);
+
+  const rowTop = HEADER_H + ROW_H;
+  await page.mouse.click(box.x + box.width * 0.5, box.y + ((rowTop + idx * ROW_H + ROW_H / 2) / H) * box.height);
+  await page.mouse.click(box.x + ((6 + 29) / W) * box.width, box.y + ((17 + 6) / H) * box.height);
+
+  await expect
+    .poll(async () => (await listProcs(page)).find((p) => p.pid === victim)?.state ?? "gone", { timeout: 20_000 })
     .toMatch(/zombie|gone/);
 });

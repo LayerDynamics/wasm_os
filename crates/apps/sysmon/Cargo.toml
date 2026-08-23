@@ -6,8 +6,9 @@ license.workspace = true
 
 # Graphical System Monitor (L3 / system monitor, FR-33 + FR-8): a real wasm32-wasip1
 # process. It draws a live process table to a canvas surface (wasmgfx) from the
-# proc_list syscall and acts on the selected process via brokered keyboard input —
-# kill (SIGTERM/SIGKILL) and renice — using a delegated Signal capability.
+# proc_list syscall and acts on the selected process via brokered keyboard or
+# visible canvas controls — kill (SIGTERM/SIGKILL) and renice — using a delegated
+# Signal capability.
 [[bin]]
 name = "sysmon"
 path = "src/main.rs"
