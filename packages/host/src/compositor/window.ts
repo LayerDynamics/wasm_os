@@ -12,6 +12,7 @@ import type { SurfaceKind, WinState, WindowDelegate, WindowOptions } from "./typ
 const MIN_W = 160;
 const MIN_H = 96;
 const TITLEBAR_H = 28;
+const MENUBAR_H = 24;
 
 type ResizeDir = "n" | "s" | "e" | "w" | "ne" | "nw" | "se" | "sw";
 
@@ -72,10 +73,72 @@ export class Win {
     }
     titlebar.appendChild(btns);
 
+    const menubar = document.createElement("div");
+    menubar.className = "wasmos-menubar";
+    const menus: Array<{ label: string; items: Array<{ label: string; action?: () => void }> }> = [
+      {
+        label: "File",
+        items: [{ label: "Close", action: () => this.delegate.requestClose(this.id) }],
+      },
+      {
+        label: "Edit",
+        items: [{ label: "Select all", action: () => this.selectContent() }],
+      },
+      {
+        label: "View",
+        items: [
+          { label: "Minimize", action: () => this.minimize() },
+          { label: "Maximize", action: () => this.toggleMaximize() },
+        ],
+      },
+      {
+        label: "Help",
+        items: [{ label: "About WASM_OS", action: () => this.showAbout() }],
+      },
+    ];
+    for (const menu of menus) {
+      const group = document.createElement("div");
+      group.className = "wasmos-menu-group";
+      const trigger = document.createElement("button");
+      trigger.className = "wasmos-menu-trigger";
+      trigger.type = "button";
+      trigger.textContent = menu.label;
+      trigger.addEventListener("pointerdown", (e) => e.stopPropagation());
+      const popup = document.createElement("div");
+      popup.className = "wasmos-menu-popup";
+      popup.hidden = true;
+      trigger.addEventListener("click", (e) => {
+        e.stopPropagation();
+        for (const other of menubar.querySelectorAll<HTMLElement>(".wasmos-menu-popup")) {
+          if (other !== popup) other.hidden = true;
+        }
+        popup.hidden = !popup.hidden;
+      });
+      for (const item of menu.items) {
+        const action = document.createElement("button");
+        action.className = "wasmos-menu-item";
+        action.type = "button";
+        action.textContent = item.label;
+        action.addEventListener("click", (e) => {
+          e.stopPropagation();
+          popup.hidden = true;
+          item.action?.();
+        });
+        popup.appendChild(action);
+      }
+      group.append(trigger, popup);
+      menubar.appendChild(group);
+    }
+    menubar.addEventListener("pointerdown", (e) => e.stopPropagation());
+    document.addEventListener("click", () => {
+      for (const popup of menubar.querySelectorAll<HTMLElement>(".wasmos-menu-popup")) popup.hidden = true;
+    });
+
     const content = document.createElement("div");
     content.className = "wasmos-content";
 
     root.appendChild(titlebar);
+    root.appendChild(menubar);
     root.appendChild(content);
     for (const dir of ["n", "s", "e", "w", "ne", "nw", "se", "sw"] as ResizeDir[]) {
       const h = document.createElement("div");
@@ -130,7 +193,22 @@ export class Win {
 
   /** Content box size in CSS pixels (used by canvas surfaces in canvas surfaces). */
   contentSize(): { w: number; h: number } {
-    return { w: this.geom.w, h: this.geom.h - TITLEBAR_H };
+    return { w: this.geom.w, h: this.geom.h - TITLEBAR_H - MENUBAR_H };
+  }
+
+  private selectContent(): void {
+    const selection = window.getSelection();
+    if (!selection) return;
+    selection.selectAllChildren(this.content);
+  }
+
+  private showAbout(): void {
+    const about = document.createElement("div");
+    about.className = "wasmos-about-popup";
+    about.setAttribute("role", "status");
+    about.textContent = "WASM_OS — a Rust microkernel and Unix-like userland running in this browser tab.";
+    this.content.appendChild(about);
+    window.setTimeout(() => about.remove(), 4000);
   }
 
   /** Current window geometry in CSS pixels (session restore session persistence). */

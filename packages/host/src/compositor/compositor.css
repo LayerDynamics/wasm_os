@@ -164,6 +164,70 @@ body[data-theme="light"] .wasmos-clock { color: #4a5160; }
 .wasmos-winbtn:hover { background: #3a4150; color: #fff; }
 .wasmos-winbtn-close:hover { background: #c0392b; color: #fff; }
 
+.wasmos-menubar {
+  display: flex;
+  align-items: stretch;
+  height: 24px;
+  flex: 0 0 24px;
+  padding: 0 4px;
+  background: #181c24;
+  border-bottom: 1px solid #303746;
+  color: #c8ccd4;
+  font: 12px/24px system-ui, sans-serif;
+  user-select: none;
+}
+.wasmos-menu-group { position: relative; }
+.wasmos-menu-trigger {
+  height: 22px;
+  padding: 0 9px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+}
+.wasmos-menu-trigger:hover,
+.wasmos-menu-trigger:focus-visible { background: #2b6cb0; color: #fff; outline: none; }
+.wasmos-menu-popup {
+  position: absolute;
+  top: 23px;
+  left: 0;
+  min-width: 142px;
+  padding: 4px;
+  background: #14171c;
+  border: 1px solid #2c313a;
+  border-radius: 4px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+  z-index: 100001;
+}
+.wasmos-menu-item {
+  display: block;
+  width: 100%;
+  padding: 6px 9px;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: #d6d9df;
+  text-align: left;
+  cursor: pointer;
+  font: 12px/1.2 system-ui, sans-serif;
+}
+.wasmos-menu-item:hover,
+.wasmos-menu-item:focus-visible { background: #2b6cb0; color: #fff; outline: none; }
+.wasmos-about-popup {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: 12px;
+  padding: 8px 10px;
+  background: #20242c;
+  border: 1px solid #3b82f6;
+  border-radius: 4px;
+  color: #d6d9df;
+  font: 12px/1.35 system-ui, sans-serif;
+  z-index: 2;
+}
+
 .wasmos-content {
   flex: 1;
   position: relative;

@@ -22,11 +22,22 @@ test("boots to a desktop with a taskbar clock and a terminal window", async ({ p
   const windows = page.locator(".wasmos-window");
   await expect(windows).toHaveCount(1);
   await expect(windows.first().locator(".wasmos-title")).toContainText("Terminal");
+  await expect(windows.first().locator(".wasmos-menubar")).toBeVisible();
+  await expect(windows.first().locator(".wasmos-menu-trigger")).toHaveText(["File", "Edit", "View", "Help"]);
 
   // The clock is live: its text changes within ~2s.
   const clock = page.locator(".wasmos-clock");
   const t0 = await clock.textContent();
   await expect.poll(async () => clock.textContent(), { timeout: 3000 }).not.toBe(t0);
+});
+
+test("canvas application windows receive the shared application menu bar", async ({ page }) => {
+  await ready(page);
+  await page.locator(".wasmos-launcher").click();
+  await page.locator(".wasmos-launch-item", { hasText: "Paint" }).click();
+  const paint = page.locator(".wasmos-window", { has: page.locator("canvas") });
+  await expect(paint).toBeVisible();
+  await expect(paint.locator(".wasmos-menu-trigger")).toHaveText(["File", "Edit", "View", "Help"]);
 });
 
 test("a window can be dragged by its titlebar", async ({ page }) => {
