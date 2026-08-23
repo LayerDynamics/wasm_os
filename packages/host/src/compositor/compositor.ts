@@ -182,6 +182,10 @@ export class Compositor {
     return this.activeId !== null ? this.wins.get(this.activeId) : undefined;
   }
 
+  hasWindow(title: string): boolean {
+    return [...this.wins.values()].some((win) => win.title === title);
+  }
+
   private windowList(): Array<{ id: number; title: string; minimized: boolean; active: boolean }> {
     return this.zorder.map((id) => {
       const w = this.wins.get(id)!;

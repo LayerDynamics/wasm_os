@@ -118,6 +118,10 @@ test("the Welcome guide opens on load every visit until the user dismisses it", 
 
   // (1) On load, the guide opens by itself.
   await boot();
+  expect(await page.evaluate(() => (window as unknown as Win).__wasmos.compositor.windowList())).toEqual([
+    expect.objectContaining({ title: "Terminal — sh", minimized: true, active: false }),
+    expect.objectContaining({ title: "Welcome", minimized: false, active: true }),
+  ]);
   await waitWelcome();
   expect(await welcomeOpen()).toBe(true);
 

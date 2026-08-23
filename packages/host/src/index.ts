@@ -400,30 +400,6 @@ export async function startDesktop(opts: StartOptions = {}): Promise<ReadyState>
   };
 
   const state: ReadyState = { ...result, coldLoadMillis, shellPid, term, compositor, surfaces, session, inputMetrics };
-  window.__wasmos = state;
-
-  const statusText = `ready in ${coldLoadMillis}ms · tier ${result.features.tier} · shell pid ${shellPid}`;
-  opts.onStatus?.(statusText);
-
-  // Record a real boot log to /var/log (the kernel's actual boot facts for this run).
-  void control.fsWrite(
-    "/var/log/boot.log",
-    enc.encode(
-      `WASM_OS boot\n` +
-        `kernel boot: ${result.bootMillis}ms\n` +
-        `cold load (nav -> kernel ready): ${coldLoadMillis}ms\n` +
-        `feature tier: ${result.features.tier}\n` +
-        `guests loaded: ${BIN.length}\n` +
-        `shell pid: ${shellPid}\n`,
-    ),
-  );
-  const status = document.getElementById("status");
-  if (status) {
-    status.textContent = statusText;
-  }
-  window.dispatchEvent(
-    new CustomEvent("wasmos:ready", { detail: { bootMillis: result.bootMillis, coldLoadMillis, features: result.features } }),
-  );
 
   // The Welcome guide is owned by the on-load logic below — it opens until
   // dismissed — so it must NOT be recorded or re-opened by the session snapshot.
@@ -448,21 +424,51 @@ export async function startDesktop(opts: StartOptions = {}): Promise<ReadyState>
   if (!opts.welcomeOnLoad || welcomeDismissed) void session.restore();
 
   // Open the Welcome guide centered on every load, until the user dismisses it.
-  // Closing its window (which reaps its process) writes a dismissal marker so it
-  // stays closed on later visits. Gated to the real client (opts.welcomeOnLoad)
-  // so the deterministic E2E harness isn't perturbed by an extra window.
+  // Wait for its process-owned surface before publishing the ready state. Without
+  // that barrier, a user can activate the terminal during the gap and then have
+  // Welcome open afterward and steal focus from the terminal's foreground job.
   if (opts.welcomeOnLoad) {
-    void (async () => {
-      if (welcomeDismissed) return; // the user closed it on a previous visit
+    if (!welcomeDismissed) {
       const pid = await session.launch("welcome");
-      if (pid === undefined) return;
-      // Persist the dismissal when the user closes the guide's window — its process
-      // is reaped on close, firing onExit — so it does not reappear next load.
-      control.onExit((exited) => {
-        if (exited === pid) void control.fsWrite(WELCOME_DISMISSED_PATH, new Uint8Array([1])).catch(() => {});
-      });
-    })();
+      if (pid !== undefined) {
+        // Persist the dismissal when the guide's process exits after its window is
+        // closed, so it does not reappear on a later visit.
+        control.onExit((exited) => {
+          if (exited === pid) void control.fsWrite(WELCOME_DISMISSED_PATH, new Uint8Array([1])).catch(() => {});
+        });
+
+        const deadline = performance.now() + 10_000;
+        while (!compositor.hasWindow("Welcome") && performance.now() < deadline) {
+          await new Promise<void>((resolve) => setTimeout(resolve, 25));
+        }
+      }
+    }
   }
+
+  window.__wasmos = state;
+
+  const statusText = `ready in ${coldLoadMillis}ms · tier ${result.features.tier} · shell pid ${shellPid}`;
+  opts.onStatus?.(statusText);
+
+  // Record a real boot log to /var/log (the kernel's actual boot facts for this run).
+  void control.fsWrite(
+    "/var/log/boot.log",
+    enc.encode(
+      `WASM_OS boot\n` +
+        `kernel boot: ${result.bootMillis}ms\n` +
+        `cold load (nav -> kernel ready): ${coldLoadMillis}ms\n` +
+        `feature tier: ${result.features.tier}\n` +
+        `guests loaded: ${BIN.length}\n` +
+        `shell pid: ${shellPid}\n`,
+    ),
+  );
+  const status = document.getElementById("status");
+  if (status) {
+    status.textContent = statusText;
+  }
+  window.dispatchEvent(
+    new CustomEvent("wasmos:ready", { detail: { bootMillis: result.bootMillis, coldLoadMillis, features: result.features } }),
+  );
 
   return state;
 }
