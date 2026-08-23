@@ -86,6 +86,8 @@ function emulatorBoot(configUrl: string, cmdline?: string, memoryMb = 128) {
 /** A compositor surface a process created (desktop compositor): a shared RGBA framebuffer. */
 export interface SurfaceInfo {
   pid: number;
+  /** Kernel process name, including guests launched from the file manager. */
+  name?: string;
   surfaceId: number;
   width: number;
   height: number;
@@ -205,6 +207,7 @@ export async function boot(): Promise<BootResult> {
       error?: string;
       tag?: string;
       surfaceId?: number;
+      name?: string;
       width?: number;
       height?: number;
       sab?: SharedArrayBuffer;
@@ -220,6 +223,7 @@ export async function boot(): Promise<BootResult> {
     if (data.type === "surface" && data.surfaceId !== undefined && data.sab) {
       const info: SurfaceInfo = {
         pid: data.pid ?? 0,
+        name: data.name,
         surfaceId: data.surfaceId,
         width: data.width ?? 0,
         height: data.height ?? 0,

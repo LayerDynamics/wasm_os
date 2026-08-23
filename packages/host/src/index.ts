@@ -279,7 +279,7 @@ export async function startDesktop(opts: StartOptions = {}): Promise<ReadyState>
     { name: "lisp", label: "Lisp", opts: { grantGpu: true, grantInput: true, grantFsSubtree: "/home" } },
   ];
   // pid → human label so a process-owned window shows "Editor"/"Linux", not "App (pid 5)".
-  const APP_LABELS: Record<string, string> = { linux: "Linux" };
+  const APP_LABELS: Record<string, string> = { linux: "Linux", gfxspike: "Graphics Spike" };
   for (const app of APPS) APP_LABELS[app.name] = app.label;
 
   // Process-owned canvas surfaces (desktop compositor): a process calls win_surface → a canvas window
@@ -287,9 +287,9 @@ export async function startDesktop(opts: StartOptions = {}): Promise<ReadyState>
   const surfaces = new SurfaceManager(
     compositor,
     (canvas, pid) => inputRouter.bindCanvas(canvas, pid),
-    (pid) => {
+    (pid, processName) => {
       const name = session.appForPid(pid);
-      return (name && APP_LABELS[name]) || `App (pid ${pid})`;
+      return (name && APP_LABELS[name]) || (processName && APP_LABELS[processName]) || `App (pid ${pid})`;
     },
     (pid) => session.appForPid(pid) === "welcome", // the guide opens centered
     (pid) => (session.appForPid(pid) === "welcome" ? WELCOME_LINK_BAR_H : 0),

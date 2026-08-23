@@ -468,7 +468,8 @@ function instantiateProcess(pid: number, wasmBytes: ArrayBuffer | Uint8Array): v
     // which drives the canvas window + blits the shared framebuffer.
     if (d.type === "surface" && d.surfaceId !== undefined) {
       surfaceOwners.set(d.surfaceId, pid);
-      ctx.postMessage({ type: "surface", pid, surfaceId: d.surfaceId, width: d.width, height: d.height, sab: d.sab });
+      const proc = requireControl().listProcs().find((entry) => entry.pid === pid);
+      ctx.postMessage({ type: "surface", pid, name: proc?.name, surfaceId: d.surfaceId, width: d.width, height: d.height, sab: d.sab });
       return;
     }
     if (d.type === "present" && d.surfaceId !== undefined) {

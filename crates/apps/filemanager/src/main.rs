@@ -6,6 +6,7 @@
 //! Gpu+Input so graphical apps can draw). Launching is the FR-24 "open files with
 //! associated apps" path; `.txt` files open in the editor when it is present.
 
+use std::time::{Duration, Instant};
 use wasmgfx::{rgb, Color, Framebuffer, GLYPH_H, GLYPH_W};
 use wasmobj::wasi::load_object;
 use wasmos_sys::{
@@ -17,6 +18,7 @@ const W: u32 = 460;
 const H: u32 = 340;
 const HEADER_H: i32 = 22;
 const ROW_H: i32 = 14;
+const DUPLICATE_ACTIVATION_GUARD: Duration = Duration::from_millis(350);
 
 const BG: Color = rgb(24, 27, 34);
 const HEADER_BG: Color = rgb(40, 48, 65);
@@ -44,6 +46,7 @@ struct State {
     entries: Vec<Entry>,
     selected: usize,
     scroll: usize,
+    last_launch: Option<(String, Instant)>,
 }
 
 fn parent_of(path: &str) -> String {
@@ -145,8 +148,19 @@ impl State {
             self.cwd = join(&self.cwd, &entry.name);
             self.relist();
         } else {
-            launch(&join(&self.cwd, &entry.name));
+            self.launch_file(&join(&self.cwd, &entry.name));
         }
+    }
+
+    fn launch_file(&mut self, path: &str) {
+        let now = Instant::now();
+        if let Some((last_path, last_at)) = &self.last_launch {
+            if last_path == path && last_at.elapsed() < DUPLICATE_ACTIVATION_GUARD {
+                return;
+            }
+        }
+        self.last_launch = Some((path.to_string(), now));
+        launch(path);
     }
 
     /// Handle a click in the header bar at pixel `x`: the "↑ Up" button ascends one
@@ -174,6 +188,8 @@ impl State {
 enum OpenAs {
     /// Execute it as a process (a real `wasm32-wasi` executable module).
     Run,
+    /// Execute a command guest through the terminal without creating a desktop surface.
+    RunTerminal,
     /// Open it in the editor (documents and data — never executed).
     Edit,
 }
@@ -182,12 +198,21 @@ enum OpenAs {
 /// is run; everything else — wasmobj documents, text, and arbitrary data — opens in
 /// the editor. This is the guard against the old behaviour of `spawn`-ing any
 /// non-`.txt` file, which tried to execute non-wasm bytes as a process.
-fn open_action(bytes: &[u8]) -> OpenAs {
+fn open_action(path: &str, bytes: &[u8]) -> OpenAs {
     let is_wasm_module = bytes.starts_with(b"\0asm");
     // A wasmobj document is also a valid wasm module, but it is a *document* — open
     // it for editing, not execution. (It can still be run from the terminal.)
+    let app_name = path.rsplit('/').next().unwrap_or(path);
+    let is_graphical_app = matches!(
+        app_name,
+        "editor" | "filemanager" | "gfxspike" | "lisp" | "paint" | "sysmon" | "welcome"
+    );
     if is_wasm_module && wasmobj::verify(bytes).is_err() {
-        OpenAs::Run
+        if is_graphical_app {
+            OpenAs::Run
+        } else {
+            OpenAs::RunTerminal
+        }
     } else {
         OpenAs::Edit
     }
@@ -200,9 +225,12 @@ fn launch(path: &str) {
     // Read the file to classify it; an unreadable file falls back to the editor
     // (an empty buffer) rather than being executed.
     let bytes = load_object(path).unwrap_or_default();
-    match open_action(&bytes) {
+    match open_action(path, &bytes) {
         OpenAs::Run => {
             let _ = spawn(path, &[path], &stdio, "/", true, true, false, false);
+        }
+        OpenAs::RunTerminal => {
+            let _ = spawn(path, &[path], &stdio, "/", false, false, false, false);
         }
         OpenAs::Edit => {
             let _ = spawn(
@@ -284,6 +312,7 @@ fn main() {
         entries: Vec::new(),
         selected: 0,
         scroll: 0,
+        last_launch: None,
     };
     st.relist();
     draw(&mut fb, &st);
@@ -345,23 +374,30 @@ mod tests {
 
     #[test]
     fn text_and_data_open_in_editor_not_executed() {
-        assert_eq!(open_action(b"# readme\nhello world"), OpenAs::Edit);
-        assert_eq!(open_action(b"{\"json\":true}"), OpenAs::Edit);
-        assert_eq!(open_action(&[0xff, 0xd8, 0xff, 0xe0]), OpenAs::Edit); // JPEG header
-        assert_eq!(open_action(b""), OpenAs::Edit); // empty / unreadable
+        assert_eq!(
+            open_action("/home/readme", b"# readme\nhello world"),
+            OpenAs::Edit
+        );
+        assert_eq!(open_action("/home/data", b"{\"json\":true}"), OpenAs::Edit);
+        assert_eq!(
+            open_action("/home/photo.jpg", &[0xff, 0xd8, 0xff, 0xe0]),
+            OpenAs::Edit
+        ); // JPEG header
+        assert_eq!(open_action("/home/empty", b""), OpenAs::Edit); // empty / unreadable
     }
 
     #[test]
     fn wasmobj_document_opens_in_editor() {
         let mut obj = wasmobj::mint(wasmobj::Tier::K4, 0);
         wasmobj::save(&mut obj, b"a saved document").unwrap();
-        assert_eq!(open_action(&obj), OpenAs::Edit);
+        assert_eq!(open_action("/home/document.wasm", &obj), OpenAs::Edit);
     }
 
     #[test]
     fn executable_wasm_module_runs() {
         // A wasm module that is NOT a wasmobj document (no wob0 header) -> executable.
         let exe = b"\0asm\x01\x00\x00\x00";
-        assert_eq!(open_action(exe), OpenAs::Run);
+        assert_eq!(open_action("/usr/bin/paint", exe), OpenAs::Run);
+        assert_eq!(open_action("/usr/bin/ls", exe), OpenAs::RunTerminal);
     }
 }

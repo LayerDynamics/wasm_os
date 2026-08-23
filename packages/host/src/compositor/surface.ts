@@ -32,7 +32,7 @@ export class SurfaceManager {
     /** Bind pointer input on a new canvas to its owning process (brokered input). */
     private bindInput: (canvas: HTMLCanvasElement, ownerPid: number) => void = () => {},
     /** Title for a process-owned window, by owning pid (overridden in launcher and window lifecycle). */
-    private titleFor: (pid: number) => string = (pid) => `App (pid ${pid})`,
+    private titleFor: (pid: number, processName?: string) => string = (pid) => `App (pid ${pid})`,
     /** Whether a process-owned window should open centered (e.g. the Welcome guide). */
     private centeredFor: (pid: number) => boolean = () => false,
     /** Extra content height reserved below the canvas for host-provided controls. */
@@ -46,7 +46,7 @@ export class SurfaceManager {
   /** A process created a surface: open its canvas window and bind the framebuffer. */
   onSurface(info: SurfaceInfo): void {
     const win = this.compositor.open({
-      title: this.titleFor(info.pid),
+      title: this.titleFor(info.pid, info.name),
       width: info.width + 2,
       height: info.height + 30 + this.extraContentHeightFor(info.pid), // + titlebar + host controls
       ownerPid: info.pid,

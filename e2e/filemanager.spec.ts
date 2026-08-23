@@ -106,6 +106,7 @@ test("the file manager browses the VFS and launches a file into a new window (FR
   }
   expect(opened).toBe(true);
   await expect.poll(() => canvasCount(page), { timeout: 5_000 }).toBeGreaterThanOrEqual(2);
+  await expect(page.locator(".wasmos-title", { hasText: /App \(pid/ })).toHaveCount(0);
 });
 
 test("the file manager ascends out of a folder via the header 'Up' button (FR-24 usability)", async ({ page }) => {
