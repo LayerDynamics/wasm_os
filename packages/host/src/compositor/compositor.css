@@ -237,6 +237,15 @@ body[data-theme="light"] .wasmos-clock { color: #4a5160; }
 /* The terminal content host fills its window. */
 .wasmos-content > #terminal { width: 100%; height: 100%; }
 .wasmos-content > canvas { display: block; width: 100%; height: 100%; image-rendering: pixelated; }
+/* Guest canvas apps render at a fixed framebuffer size. A maximized window must
+ * give that bitmap more room without scaling its pixels and typography. */
+.wasmos-window-max .wasmos-content > canvas {
+  width: auto;
+  height: auto;
+  max-width: none;
+  max-height: none;
+  flex: 0 0 auto;
+}
 
 .wasmos-content-welcome { display: flex; flex-direction: column; }
 .wasmos-content-welcome > .wasmos-welcome-canvas {

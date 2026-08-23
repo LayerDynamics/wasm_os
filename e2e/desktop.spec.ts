@@ -79,6 +79,19 @@ test("maximize fills the workspace and toggles back", async ({ page }) => {
   expect(restored.width).toBeLessThan(deskBox.width - 4);
 });
 
+test("maximizing a canvas window keeps its native pixels and font size", async ({ page }) => {
+  await ready(page);
+  await page.locator(".wasmos-launcher").click();
+  await page.locator(".wasmos-launch-item", { hasText: "Paint" }).click();
+  const win = page.locator(".wasmos-window", { has: page.locator("canvas") });
+  const canvas = win.locator("canvas");
+  await expect(canvas).toBeVisible();
+  const native = await canvas.evaluate((el) => ({ width: el.width, height: el.height }));
+  await win.locator('[data-act="max"]').click();
+  const rendered = await canvas.evaluate((el) => ({ width: el.clientWidth, height: el.clientHeight }));
+  expect(rendered).toEqual(native);
+});
+
 test("minimize hides the window but keeps its taskbar button; restore brings it back", async ({ page }) => {
   await ready(page);
   const win = page.locator(".wasmos-window").first();
