@@ -1,6 +1,6 @@
 # process control and IPC Status — Multi-process, IPC & Persistence
 
-**Status:** ✅ Complete — current repository verification passed on 2026-08-22 via `npm run verify` (exit 0).
+**Status:** ✅ Complete — current repository verification passed on 2026-08-23 via `npm run verify` (exit 0).
 
 WASM_OS is now a **multi-process OS you can observe and control**. It sustains
 **≥32 concurrent processes** within the main-thread budget; processes talk to each
@@ -31,7 +31,7 @@ manifest, on top of the already-persistent VFS (FR-35).
 
 ```text
 build         : kernel component (wasm32-unknown-unknown) + jco bindings regenerated
-build:guests  : all shipped Rust wasm32-wasip1 guests, Zig guests, and the hand-authored WAT utility
+build:guests  : all shipped Rust wasm32-wasip1 guests, the Zig echo guest, and the hand-authored WAT utility
 binder        : kernel-check — wasmos-sys signatures conform to wit/kernel/kernel.wit, 18 verbs: spawn, pipe,
                 wait, proc-list, set-priority, chan-open/send/recv, shm-create/map/read/
                 write/grant, kill, sig-wait, win-surface/present/read-input (FR-36)
@@ -40,7 +40,7 @@ typecheck     : tsc -p packages/host/tsconfig.json --noEmit — clean
 cargo test    : workspace passed, including 110 kernel tests, process-control tests,
                 graphics SDK tests, and wasmobj tests
 vitest        : 32 passed (8 files)
-playwright    : 89 passed in the fast browser suite, including concurrency, channels,
+playwright    : 88 passed in the fast browser suite, including concurrency, channels,
                 shared memory, signals, priorities, System Monitor, and session restore
 ```
 

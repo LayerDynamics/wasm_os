@@ -1,6 +1,6 @@
 # WASM_OS app and terminal usability — current behavior
 
-Date: 2026-08-22
+Date: 2026-08-23
 Status: implemented
 
 WASM_OS is a browser-hosted desktop where the terminal and graphical apps are
@@ -16,7 +16,6 @@ The launcher registers these process-backed apps in
 - Files
 - Paint
 - Editor
-- Mandelbrot
 - Monitor
 - Lisp
 
@@ -28,10 +27,6 @@ minimized but remains available from the taskbar. Saved app windows wait until
 the Welcome guide has been dismissed, so a new visitor sees the instructions
 before the previous session is restored. Linux is an additional privileged
 process entry, not a replacement for the WASI apps.
-
-Mandelbrot is an interactive Zig guest rather than a fixed screenshot: drag to
-pan, use `+`/`-` to zoom, press `N` or Space for another seeded view, and press
-`R` to reseed the view.
 
 ## Runtime entry points
 
@@ -45,7 +40,7 @@ These are the non-test callers that make the workspace artifacts usable:
 | `crates/apps/nano` | The shell resolves `/usr/bin/nano`; nano takes the terminal into raw input mode and uses the shared document helpers. |
 | `crates/hello`, `catfile`, `crash`, `spinner`, `chandemo`, `shmdemo`, `sigdemo` | Boot installs each executable in the VFS, so the shell and the file manager can start it. `shmdemo` self-spawns its reader; the channel demo is usable as two pipeline stages; the signal and spinner processes are observable through the System Monitor. |
 | `crates/gfxspike` | Boot installs it as an executable WASM file; the file manager’s generic executable path starts it with `Gpu` and `Input`. |
-| `guests/zig/*` and `guests/wat/watinfo.wat` | The build scripts emit artifacts into the same VFS loader: `echo.zig` and `watinfo` are shell commands, and `mandelbrot` is a launcher app. |
+| `guests/zig/*` and `guests/wat/watinfo.wat` | The build scripts emit artifacts into the same VFS loader: `echo.zig` and `watinfo` are shell commands. |
 | `crates/wasmgfx`, `crates/wasmobj`, `crates/wasmos-sys` | These are libraries rather than standalone guests. The canvas apps import `wasmgfx`, Editor/File Manager/nano import `wasmobj`, and the shell, demos, and graphical apps import `wasmos-sys`. |
 | `packages/host/src/worker/wasi-runtime.ts` | `process-worker.ts` constructs one runtime for every spawned WASI process; `packages/host/src/wasi.ts` and the package export expose the same runtime type to host embedders. |
 
@@ -68,7 +63,7 @@ The terminal has two input modes:
 
 The editor consumes the brokered Home, End, Delete, and Tab keys directly. Tab
 inserts four spaces; Home and End move within the current line. Files, Paint,
-Mandelbrot, Monitor, Lisp, and the Linux console receive their respective
+Monitor, Lisp, and the Linux console receive their respective
 brokered input events through the same compositor path.
 
 ## Document path
@@ -81,13 +76,13 @@ the live app path instead of maintaining separate editor and nano logic.
 
 ## Verification
 
-The current local verification run completed on 2026-08-22:
+The current local verification run completed on 2026-08-23:
 
 ```text
 Binder generation/check: passed; 20 wasmos-sys stubs matched the WIT contract
 Rust workspace tests: passed
 Host tests: 32 passed
-Fast browser workflows: 89 passed
+Fast browser workflows: 88 passed
 Slow Linux browser workflows: 8 passed
 ```
 
@@ -99,21 +94,20 @@ serial console, process lifecycle, reload recovery, and framebuffer window.
 These checks exercise the production entry points; the reachability claims above
 come from the host registration and import paths in the source.
 
-The named-key matrix sends all 32 stable named-key values to each of the seven
-launcher canvas guests: Welcome, Files, Paint, Editor, Mandelbrot, Monitor, and
-Lisp. That is 224 real browser keydown events. The run recorded 224 generated,
-224 kernel-accepted, and 224 guest-rendered events, with 0 dropped, 0 missed,
+The named-key matrix sends all 32 stable named-key values to each of the six
+launcher canvas guests: Welcome, Files, Paint, Editor, Monitor, and Lisp. That is
+192 real browser keydown events. The run recorded 192 generated, 192
+kernel-accepted, and 192 guest-rendered events, with 0 dropped, 0 missed,
 and 0 pending. The measured input-to-paint results were:
 
 | Guest | p50 | p95 | max |
 |-------|-----|-----|-----|
-| Welcome | 5.63 ms | 13.47 ms | 15.00 ms |
-| Files | 3.55 ms | 7.89 ms | 8.09 ms |
-| Paint | 5.88 ms | 13.41 ms | 14.13 ms |
-| Editor | 3.40 ms | 7.29 ms | 7.97 ms |
-| Mandelbrot | 3.89 ms | 10.03 ms | 10.77 ms |
-| Monitor | 4.67 ms | 8.74 ms | 10.16 ms |
-| Lisp | 7.02 ms | 13.73 ms | 14.38 ms |
+| Welcome | 2.93 ms | 28.47 ms | 29.82 ms |
+| Files | 4.41 ms | 8.99 ms | 9.87 ms |
+| Paint | 4.13 ms | 7.90 ms | 8.45 ms |
+| Editor | 3.92 ms | 9.73 ms | 10.61 ms |
+| Monitor | 3.81 ms | 9.41 ms | 11.33 ms |
+| Lisp | 6.04 ms | 13.49 ms | 14.30 ms |
 
 The negative capability check is also real: a guest without `Input` generated
 one event, accepted zero, and recorded one drop. `InputMetrics` keeps separate
@@ -122,8 +116,8 @@ p95, max, and rates through `window.__wasmos.inputMetrics`. The terminal E2E
 also resets the same recorder, types a real `echo latency` command, waits for
 the shell output, and asserts that keystroke-to-echo p50/p95/max exist, p95 is
 below 100 ms, and dropped, missed, and pending counts are all zero.
-The latest isolated terminal run measured 13 input samples at p50 30.87 ms,
-p95 32.69 ms, and max 32.69 ms.
+The latest isolated terminal run measured 13 input samples at p50 31.36 ms,
+p95 33.63 ms, and max 33.63 ms.
 
 ## Follow-up work
 

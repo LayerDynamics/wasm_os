@@ -55,7 +55,6 @@ const INPUT_APPS = [
   { name: "filemanager", opts: { grantGpu: true, grantInput: true, grantSpawn: true, grantFsSubtree: "/" } },
   { name: "paint", opts: { grantGpu: true, grantInput: true, grantFsSubtree: "/" } },
   { name: "editor", opts: { grantGpu: true, grantInput: true, grantFsSubtree: "/" } },
-  { name: "mandelbrot", opts: { grantGpu: true, grantInput: true } },
   { name: "sysmon", opts: { grantGpu: true, grantInput: true, grantSignal: true } },
   { name: "lisp", opts: { grantGpu: true, grantInput: true, grantFsSubtree: "/home" } },
 ] as const;

@@ -1,6 +1,6 @@
 # desktop compositor Status — Compositor & Desktop (webtop)
 
-**Status:** ✅ Complete — current repository verification passed on 2026-08-22 via `npm run verify` (exit 0).
+**Status:** ✅ Complete — current repository verification passed on 2026-08-23 via `npm run verify` (exit 0).
 
 WASM_OS now boots to a **windowed desktop**. A host-side compositor manages real
 windows (move / resize / focus / minimize / maximize + z-order) with a taskbar
@@ -8,12 +8,10 @@ windows (move / resize / focus / minimize / maximize + z-order) with a taskbar
 **process-owned graphical windows**: a WASI process requests a surface
 (`win_surface`, Gpu-gated), draws into a shared framebuffer, and the compositor
 blits it to a `<canvas>`; the focused window's keyboard/mouse are **brokered to
-the owning process** (`win_read_input`, Input-gated). Seven process windows ship —
-**Files**, **Paint**, **Editor**, **Mandelbrot**, **Monitor**, **Lisp**, and
-**Welcome** — launchable from the taskbar or each other. One app (Mandelbrot) is authored in
-**Zig** (FR-14). Mandelbrot starts from browser CSPRNG-seeded coordinates, pans with a
-drag, zooms with `+`/`-`, and generates another seeded view with `N`/Space (`R`
-reseeds). Theme + wallpaper persist to `/home`.
+the owning process** (`win_read_input`, Input-gated). Six process windows ship —
+**Files**, **Paint**, **Editor**, **Monitor**, **Lisp**, and **Welcome** — launchable
+from the taskbar or each other. The Zig `echo` utility remains the polyglot FR-14
+guest. Theme + wallpaper persist to `/home`.
 
 ## Exit criteria
 
@@ -23,7 +21,7 @@ reseeds). Theme + wallpaper persist to `/home`.
 | 2 | **Window lifecycle** — open/close/focus/move/resize/min/max + z-order (FR-22) | `e2e/desktop.spec.ts` (5), `e2e/m3-marquee.spec.ts` (move+resize+focus) | ✅ PASS |
 | 3 | **Both surface kinds** concurrently (FR-23): terminal (DOM) + canvas process windows | `e2e/surface.spec.ts`, `e2e/desktop-concurrency.spec.ts` | ✅ PASS |
 | 4 | **File manager** (Rust process) browses the VFS and **launches a `.wasm`** (FR-24) | `e2e/filemanager.spec.ts` | ✅ PASS |
-| 5 | **Three sophisticated graphical apps**, interactive via brokered input (FR-25); **≥1 in Zig** (FR-14) | `e2e/paint.spec.ts`, `e2e/editor.spec.ts`, `e2e/mandelbrot.spec.ts` (Zig) | ✅ PASS |
+| 5 | **Two sophisticated graphical apps**, interactive via brokered input (FR-25) | `e2e/paint.spec.ts`, `e2e/editor.spec.ts` | ✅ PASS |
 | 6 | **Terminal + FM + ≥1 app concurrent**; a crashing app is contained — its window closes, the desktop + shell survive (FR-34) | `e2e/desktop-concurrency.spec.ts` (3) | ✅ PASS |
 | 7 | **Wallpaper + theme persist to `/home`** and survive reload (FR-26) | `e2e/theme.spec.ts`, `e2e/m3-marquee.spec.ts` | ✅ PASS |
 | 8 | `npm run verify` green **including** the kernel, process, and shell regression suite under the compositor | local `npm run verify` (exit 0) | ✅ PASS |
@@ -33,18 +31,18 @@ reseeds). Theme + wallpaper persist to `/home`.
 ```text
 build         : kernel component (wasm32-unknown-unknown) + jco bindings regenerated
 build:guests  : 20 Rust wasm32-wasip1 guests (incl. filemanager/paint/editor/gfxspike)
-                + 2 Zig wasm32-wasi guests (echo.zig, mandelbrot)
+                + 1 Zig wasm32-wasi guest (echo.zig)
 binder        : kernel-check — wasmos-sys signatures conform to wit/kernel/kernel.wit: spawn, pipe, wait,
                 win-surface, win-present, win-read-input (FR-36)
 lint          : clippy clean (-D warnings) on the whole workspace + kernel wasm target
 typecheck     : tsc -p packages/host/tsconfig.json --noEmit — clean
 cargo test    : workspace passed, including kernel, graphics SDK, and wasmobj tests
 vitest        : 32 passed (8 files)
-playwright    : 89 passed in the fast browser suite, including desktop windows,
-                brokered input, the seven launcher apps, and terminal recovery
+playwright    : 88 passed in the fast browser suite, including desktop windows,
+                brokered input, the six launcher apps, and terminal recovery
 
 Input evidence: the real Chromium matrix sent all 32 named keys to each of the
-seven launcher canvas guests (224 keydown events). All 224 were accepted by the
+six launcher canvas guests (192 keydown events). All 192 were accepted by the
 kernel and followed by a guest frame; 0 were dropped or missed. The matrix
 records p50/p95/max input-to-paint latency from the browser keydown through the
 surface blit, and requires p95 below 100 ms. The default-deny case separately
@@ -97,8 +95,8 @@ the `Input` capability.
 ## CI
 
 `.github/workflows/ci.yml` already installs **Zig 0.14.1** (official archive,
-sha256-pinned) and builds the Rust, Zig, and WAT guests before host tests; both Zig guests
-(`echo.zig`, `mandelbrot.zig`) were verified to compile on 0.14.1. The new app
+sha256-pinned) and builds the Rust, Zig, and WAT guests before host tests; the Zig guest
+(`echo.zig`) was verified to compile on 0.14.1. The new app
 crates are workspace members, so clippy/`build:guests` cover them with no workflow
 change. `test:rust` now also runs the `wasmgfx` unit tests.
 

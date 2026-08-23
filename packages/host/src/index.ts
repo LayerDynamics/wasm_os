@@ -34,8 +34,7 @@ const BIN = [
   "sh", "hello", "catfile", "echo", "cat", "grep", "ls", "wc", "cp", "mv", "rm", "mkdir", "pwd", "head", "tail", "env",
   "echo.zig", "watinfo", "crash",
   // desktop compositor graphical apps (canvas surfaces); launchable from the file manager.
-  // "mandelbrot" is the Zig polyglot app (FR-14 on the graphics path).
-  "gfxspike", "filemanager", "paint", "editor", "mandelbrot", "sysmon", "lisp", "welcome", "spinner", "chandemo", "shmdemo", "sigdemo", "kill", "renice", "ps", "top", "fetch", "mount", "whoami", "touch", "nano",
+  "gfxspike", "filemanager", "paint", "editor", "sysmon", "lisp", "welcome", "spinner", "chandemo", "shmdemo", "sigdemo", "kill", "renice", "ps", "top", "fetch", "mount", "whoami", "touch", "nano",
 ];
 const GUESTS = "/packages/host/guests";
 const WELCOME_LINK_BAR_H = 32;
@@ -275,7 +274,6 @@ export async function startDesktop(opts: StartOptions = {}): Promise<ReadyState>
     { name: "filemanager", label: "Files", opts: { grantGpu: true, grantInput: true, grantSpawn: true, grantFsSubtree: "/" } },
     { name: "paint", label: "Paint", opts: { grantGpu: true, grantInput: true, grantFsSubtree: "/" } },
     { name: "editor", label: "Editor", opts: { grantGpu: true, grantInput: true, grantFsSubtree: "/" } },
-    { name: "mandelbrot", label: "Mandelbrot", opts: { grantGpu: true, grantInput: true } },
     // System Monitor needs Signal (process control) in addition to Gpu+Input.
     { name: "sysmon", label: "Monitor", opts: { grantGpu: true, grantInput: true, grantSignal: true } },
     { name: "lisp", label: "Lisp", opts: { grantGpu: true, grantInput: true, grantFsSubtree: "/home" } },

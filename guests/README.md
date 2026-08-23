@@ -9,7 +9,7 @@ workspace.
 
 | Subdir | Toolchain | Target | Contents |
 |--------|-----------|--------|----------|
-| [`zig/`](./zig) | Zig (`zig build-exe`) | `wasm32-wasi` | `echo.zig` and `mandelbrot.zig` — the FR-14 polyglot guests |
+| [`zig/`](./zig) | Zig (`zig build-exe`) | `wasm32-wasi` | `echo.zig` — the FR-14 polyglot guest |
 | [`wat/`](./wat) | WABT (`wat2wasm`) | WASI Preview 1 core module | `watinfo.wat` — reads live `/proc/uptime` and writes it to stdout |
 
 All guests, regardless of toolchain, compile to the **same WASI Preview 1 ABI**

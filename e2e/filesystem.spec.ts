@@ -105,7 +105,7 @@ test("the boot registry installs every shipped guest under /usr/bin", async ({ p
   expect(installed).toEqual(expect.arrayContaining([
     "cat", "catfile", "chandemo", "crash", "cp", "echo", "echo.zig", "editor",
     "env", "fetch", "filemanager", "gfxspike", "grep", "head", "hello", "kill",
-    "lisp", "ls", "mandelbrot", "mkdir", "mount", "mv", "nano", "paint", "ps",
+    "lisp", "ls", "mkdir", "mount", "mv", "nano", "paint", "ps",
     "pwd", "renice", "rm", "sh", "shmdemo", "sigdemo", "spinner", "sysmon", "tail",
     "touch", "top", "watinfo", "wc", "welcome", "whoami",
   ].map((name) => `/usr/bin/${name}`)));

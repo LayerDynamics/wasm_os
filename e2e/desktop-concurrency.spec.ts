@@ -39,7 +39,7 @@ test("the launcher opens multiple apps concurrently in their own windows", async
 
   await openApp(page, "Files");
   await expect.poll(() => canvasCount(page), { timeout: 10_000 }).toBe(1);
-  await openApp(page, "Mandelbrot");
+  await openApp(page, "Paint");
   await expect.poll(() => canvasCount(page), { timeout: 10_000 }).toBe(2);
 
   // Terminal + two app windows are all on screen at once.

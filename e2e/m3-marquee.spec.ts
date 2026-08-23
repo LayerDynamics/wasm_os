@@ -28,13 +28,13 @@ test("boot → desktop → 3 windows concurrent → move/resize/focus → reload
   await ready(page);
   await expect(page.locator(".wasmos-window")).toHaveCount(1); // terminal
 
-  // Launch the file manager and the Zig Mandelbrot: three windows on the desktop.
+  // Launch the file manager and Paint: three windows on the desktop.
   await openApp(page, "Files");
-  await openApp(page, "Mandelbrot");
+  await openApp(page, "Paint");
   await expect.poll(() => page.locator(".wasmos-window canvas").count(), { timeout: 10_000 }).toBe(2);
   await expect(page.locator(".wasmos-window")).toHaveCount(3);
 
-  // The most-recent window (Mandelbrot) is focused; drag it by its titlebar to a
+  // The most-recent window (Paint) is focused; drag it by its titlebar to a
   // deterministic upper-left spot. Using an absolute target (not a delta) keeps the
   // window — and its SE resize handle — on-screen regardless of where the compositor
   // initially placed it, so the resize drag below has room to grow downward.

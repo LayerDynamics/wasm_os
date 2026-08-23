@@ -428,7 +428,7 @@ against the same WIT contract.
 | Target | Tooling | Generated output |
 |--------|---------|------------------|
 | Rust guest syscall transport | hand-written wire shim in `crates/wasmos-sys` | Binder checks names, parameter counts/types, and returns against `wit/kernel/kernel.wit` |
-| C / Zig guest syscall transport | no C guest is shipped; `echo.zig` uses stock WASI and `mandelbrot.zig` uses the hand-written `wasmos_kernel` wire format | the live Zig guests are built and run through the same process worker |
+| C / Zig guest syscall transport | no C guest is shipped; `echo.zig` uses stock WASI | the live Zig guest is built and run through the same process worker |
 | WAT process | hand-authored `guests/wat/watinfo.wat` compiled by `wat2wasm` | `packages/host/guests/watinfo.wasm`, installed as `/usr/bin/watinfo` |
 | Kernel host side | `cargo-component` | generated component bindings in `crates/kernel/src/bindings.rs` |
 | TS host bindings | `jco` | tracked JS/TypeScript output in `packages/abi/generated` |
@@ -665,7 +665,7 @@ Linux guest integration (emulator as privileged process)   ──► (needs desk
 | Metric | Target [PROPOSED] | Measurement Method |
 |--------|--------|--------------------|
 | V1 (shell and userland) reachable in target browsers | Boot→terminal works in cross-origin-isolated Chromium and Firefox | Playwright matrix run |
-| Polyglot proof | Rust and Zig produce running guests | CI builds Rust/Zig/WAT guests; `echo.zig` runs through the terminal and `mandelbrot.zig` runs through the compositor |
+| Polyglot proof | Rust and Zig produce running guests | CI builds Rust/Zig/WAT guests; `echo.zig` runs through the terminal |
 | Process isolation | 100% of cross-process memory-read attempts fail | Security suite |
 | Boot performance | Meets §2.2 cold/warm targets on reference machine | Bench harness in CI |
 | Crash containment | 0 kernel crashes from process traps over fault-injection suite | Fault-injection CI gate |

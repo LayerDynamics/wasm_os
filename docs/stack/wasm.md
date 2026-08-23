@@ -78,17 +78,15 @@ ordinary Rust (and Zig) programs that import standard
 ```bash
 npm run build:guests   # cargo build -p sh -p coreutils -p filemanager … \
                        #   --target wasm32-wasip1 --release
-                       # + zig build-exe for the polyglot guests (echo.zig, mandelbrot.zig)
+                       # + zig build-exe for the polyglot guest (echo.zig)
                        # + wat2wasm for the hand-authored WAT utility (watinfo)
                        # → copied into packages/host/guests/
 ```
 
-The Zig `echo`/`mandelbrot` guests
-([`guests/zig`](../../guests/zig)) and the hand-authored
+The Zig `echo` guest ([`guests/zig`](../../guests/zig)) and the hand-authored
 WAT module ([`guests/wat/watinfo.wat`](../../guests/wat/watinfo.wat))
 are the same kind of core module as the Rust guests. `echo.zig` is a stock-WASI
-coreutil; `mandelbrot.zig` uses the hand-authored `wasmos_kernel` surface to
-render, pan, zoom, and generate fresh seeded views. `watinfo` opens
+coreutil. `watinfo` opens
 `/proc/uptime` through WASI and is installed as
 `/usr/bin/watinfo` during boot. There is **no Component Model and no
 generated binding on this guest path**: each module is compiled to a core

@@ -13,7 +13,7 @@
     "binder:kernel-check": "binder kernel-check",
     "build:kernel": "cargo component build --release -p kernel --target wasm32-unknown-unknown",
     "build:guests": "cargo build -p hello -p crash -p catfile -p sh -p coreutils -p gfxspike -p filemanager -p paint -p editor -p sysmon -p lisp -p welcome -p nano -p spinner -p chandemo -p shmdemo -p sigdemo --target wasm32-wasip1 --release && mkdir -p packages/host/guests && for f in target/wasm32-wasip1/release/*.wasm; do case \"$(basename \"$f\")\" in kernel.wasm) ;; *) cp \"$f\" packages/host/guests/ ;; esac; done && npm run build:guests:zig && npm run build:guests:wat",
-    "build:guests:zig": "ZIG_GLOBAL_CACHE_DIR=.zig-cache zig build-exe guests/zig/echo.zig -target wasm32-wasi -O ReleaseSmall -femit-bin=packages/host/guests/echo.zig.wasm && ZIG_GLOBAL_CACHE_DIR=.zig-cache zig build-exe guests/zig/mandelbrot.zig -target wasm32-wasi -O ReleaseFast -femit-bin=packages/host/guests/mandelbrot.wasm",
+    "build:guests:zig": "ZIG_GLOBAL_CACHE_DIR=.zig-cache zig build-exe guests/zig/echo.zig -target wasm32-wasi -O ReleaseSmall -femit-bin=packages/host/guests/echo.zig.wasm",
     "build:guests:wat": "mkdir -p packages/host/guests && wat2wasm guests/wat/watinfo.wat -o packages/host/guests/watinfo.wasm",
     "build": "npm run build:kernel && npm run binder gen",
     "bundle": "esbuild packages/host/src/main.ts packages/host/src/worker/kernel-worker.ts packages/host/src/worker/process-worker.ts packages/host/src/worker/emulator-worker.ts --bundle --format=esm --outdir=dist --external:/third_party/tinyemu/riscvemu64-wasm.js",

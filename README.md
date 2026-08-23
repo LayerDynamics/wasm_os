@@ -11,9 +11,7 @@ host connects the kernel to browser workers, storage, a terminal, and a windowed
 desktop.
 
 The desktop includes a shell, core utilities, a file manager, Paint, an editor,
-a Lisp REPL, a system monitor, a Welcome window, and a Zig Mandelbrot viewer.
-Mandelbrot pans with a drag, zooms with `+`/`-`, and generates a new seeded view
-with `N` or Space (`R` reseeds it).
+a Lisp REPL, a system monitor, and a Welcome window.
 The taskbar can also start a RISC-V Linux guest in TinyEMU. The guest appears as
 one privileged process alongside the regular WASI processes.
 
@@ -77,7 +75,7 @@ work is easier to understand by its concrete result:
 | Kernel and storage | Scheduler, capability-mediated syscalls, and a VFS over in-memory storage, OPFS, and IndexedDB | [`docs/M0-STATUS.md`](docs/M0-STATUS.md) |
 | WASI process runtime | Rust, Zig, and hand-authored WAT guests run in separate workers and use WASI calls over the shared-memory ring | [`docs/M1-STATUS.md`](docs/M1-STATUS.md) |
 | Shell and userland | Rust shell with `$PATH`, pipelines, redirection, builtins, kernel pipes, exit codes, and core utilities | [`docs/M2-STATUS.md`](docs/M2-STATUS.md) |
-| Desktop and graphical apps | Windows, taskbar, focus, z-order, canvas surfaces, brokered input, file manager, Paint, Editor, System Monitor, Lisp, Welcome, and Mandelbrot | [`docs/M3-STATUS.md`](docs/M3-STATUS.md) |
+| Desktop and graphical apps | Windows, taskbar, focus, z-order, canvas surfaces, brokered input, file manager, Paint, Editor, System Monitor, Lisp, and Welcome | [`docs/M3-STATUS.md`](docs/M3-STATUS.md) |
 | Process control and IPC | Concurrent processes, message channels, explicit shared memory, signals, priorities, live metrics, and session restore | [`docs/M4-STATUS.md`](docs/M4-STATUS.md) |
 | Linux guest integration | TinyEMU RISC-V Linux, brokered networking, framebuffer console, kill/reap, session restore, and a 9p shared folder | [`docs/M5-STATUS.md`](docs/M5-STATUS.md) |
 
@@ -163,7 +161,7 @@ crates/
   apps/            # file manager, Paint, Editor, System Monitor, Lisp, Welcome, nano
   hello, crash, catfile, spinner, gfxspike, chandemo, shmdemo, sigdemo
                    # process, fault, graphics, IPC, and signal fixtures
-guests/zig/        # Zig echo and Mandelbrot guests
+guests/zig/        # Zig echo guest
 packages/host/     # workers, shared-memory ring, compositor, terminal, blockstores
 packages/abi/      # tracked JS/TypeScript bindings + ignored core wasm payloads
 wit/               # control, blockstore, and world ABI definitions
