@@ -91,6 +91,38 @@ test("Backspace deletes a character in the editor (brokered-input typing app)", 
   expect(text).toBe("abSEED"); // the "c" was deleted before the seed text
 });
 
+test("code-only Backspace still reaches the editor", async ({ page }) => {
+  await ready(page);
+
+  await page.evaluate(async () => {
+    const w = window as unknown as Win;
+    await w.__wasmos.control.fsWrite("/home/untitled.txt", new TextEncoder().encode("SEED"));
+    const bytes = await (await fetch("/packages/host/guests/editor.wasm")).arrayBuffer();
+    await w.__wasmos.control.spawn(bytes, { name: "editor", grantGpu: true, grantInput: true, grantFsSubtree: "/" });
+  });
+
+  const canvas = page.locator(".wasmos-window canvas").first();
+  await expect(canvas).toBeVisible({ timeout: 10_000 });
+  await page.waitForTimeout(300);
+  const box = await canvas.boundingBox();
+  if (!box) throw new Error("no canvas box");
+  await page.mouse.click(box.x + box.width * 0.5, box.y + box.height * 0.5);
+  await page.waitForTimeout(150);
+
+  await page.keyboard.type("abc", { delay: 30 });
+  await page.waitForTimeout(120);
+  await page.evaluate(() => window.dispatchEvent(new KeyboardEvent("keydown", { code: "Backspace", key: "" })));
+  await page.waitForTimeout(120);
+  await page.keyboard.press("Control+KeyS");
+  await page.waitForTimeout(400);
+
+  const text = await page.evaluate(async () => {
+    const bytes = await (window as unknown as Win).__wasmos.control.fsRead("/home/untitled.txt");
+    return new TextDecoder().decode(bytes);
+  });
+  expect(text).toBe("abSEED");
+});
+
 test("Delete (forward) removes the character under the cursor in the editor", async ({ page }) => {
   // Regression: the editor handled Backspace but not Delete (KEY_DELETE 0x108), so
   // forward-delete did nothing. The editor loads with the cursor at the start of the

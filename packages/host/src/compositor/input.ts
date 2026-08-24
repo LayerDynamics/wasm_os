@@ -282,7 +282,11 @@ export class InputRouter {
     if (Array.from(e.key).length === 1) {
       key = e.key.codePointAt(0)!; // the actual character (layout + shift applied)
     } else {
-      key = NAMED_KEYS[e.key] ?? 0;
+      // Some browser/keyboard combinations expose the physical key reliably in
+      // `code` while leaving `key` empty or layout-dependent. Named controls must
+      // still reach the guest in that case; printable input continues to use the
+      // layout-resolved `key` above.
+      key = NAMED_KEYS[e.key] ?? NAMED_KEYS[e.code] ?? 0;
       if (key === 0) return; // ignore pure modifiers (Shift/Control/…) and unmapped keys
     }
     if (kind !== EV_KEY_DOWN) {
