@@ -196,7 +196,7 @@ fn main() {
     let mut st = State {
         procs: Vec::new(),
         selected: 0,
-        status: "Select a process".to_string(),
+        status: "Press K to kill selected process".to_string(),
     };
     st.refresh();
     // Seed the cursor on a killable process (not the protected init) so the first

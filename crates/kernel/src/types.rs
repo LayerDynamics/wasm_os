@@ -33,9 +33,21 @@ pub struct Rights {
 }
 
 impl Rights {
-    pub const R: Rights = Rights { read: true, write: false, exec: false };
-    pub const RW: Rights = Rights { read: true, write: true, exec: false };
-    pub const RWX: Rights = Rights { read: true, write: true, exec: true };
+    pub const R: Rights = Rights {
+        read: true,
+        write: false,
+        exec: false,
+    };
+    pub const RW: Rights = Rights {
+        read: true,
+        write: true,
+        exec: false,
+    };
+    pub const RWX: Rights = Rights {
+        read: true,
+        write: true,
+        exec: true,
+    };
 
     /// True if `self` grants at least every right `needed` requires.
     pub fn covers(&self, needed: &Rights) -> bool {
@@ -47,7 +59,10 @@ impl Rights {
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Capability {
     /// Access to a filesystem subtree with the given rights.
-    FsPath { subtree: String, rights: Rights },
+    FsPath {
+        subtree: String,
+        rights: Rights,
+    },
     Net,
     Clock,
     Entropy,
@@ -88,14 +103,15 @@ impl CapabilitySet {
     /// Default-deny authorization check.
     pub fn allows(&self, requested: &Capability) -> bool {
         match requested {
-            Capability::FsPath { subtree: req_path, rights: req_rights } => {
-                self.caps.iter().any(|held| match held {
-                    Capability::FsPath { subtree, rights } => {
-                        path_within(subtree, req_path) && rights.covers(req_rights)
-                    }
-                    _ => false,
-                })
-            }
+            Capability::FsPath {
+                subtree: req_path,
+                rights: req_rights,
+            } => self.caps.iter().any(|held| match held {
+                Capability::FsPath { subtree, rights } => {
+                    path_within(subtree, req_path) && rights.covers(req_rights)
+                }
+                _ => false,
+            }),
             other => self.caps.iter().any(|held| held == other),
         }
     }
@@ -119,13 +135,13 @@ impl CapabilitySet {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DescKind {
     Stdin,
-    Stdout,                 // captured into Process::stdout
-    Stderr,                 // captured into Process::stderr
-    Dir { path: String },   // a directory (the preopen "/" or an opened dir)
-    File { path: String },  // a regular file backed by the VFS
-    PipeRead { id: u32 },   // the read end of a kernel pipe (shell and userland)
-    PipeWrite { id: u32 },  // the write end of a kernel pipe (shell and userland)
-    Terminal,               // a write end bound to the interactive terminal (shell and userland)
+    Stdout,                // captured into Process::stdout
+    Stderr,                // captured into Process::stderr
+    Dir { path: String },  // a directory (the preopen "/" or an opened dir)
+    File { path: String }, // a regular file backed by the VFS
+    PipeRead { id: u32 },  // the read end of a kernel pipe (shell and userland)
+    PipeWrite { id: u32 }, // the write end of a kernel pipe (shell and userland)
+    Terminal,              // a write end bound to the interactive terminal (shell and userland)
 }
 
 /// An open file descriptor: what it points at, the read/write cursor, and the
@@ -264,12 +280,37 @@ pub fn default_env() -> Vec<String> {
 /// plus the preopened root directory at fd 3. Subsequent opens start at fd 4.
 fn std_fds() -> BTreeMap<u32, Descriptor> {
     let mut fds = BTreeMap::new();
-    fds.insert(0, Descriptor { kind: DescKind::Stdin, offset: 0, rights: Rights::R });
-    fds.insert(1, Descriptor { kind: DescKind::Stdout, offset: 0, rights: Rights::RW });
-    fds.insert(2, Descriptor { kind: DescKind::Stderr, offset: 0, rights: Rights::RW });
+    fds.insert(
+        0,
+        Descriptor {
+            kind: DescKind::Stdin,
+            offset: 0,
+            rights: Rights::R,
+        },
+    );
+    fds.insert(
+        1,
+        Descriptor {
+            kind: DescKind::Stdout,
+            offset: 0,
+            rights: Rights::RW,
+        },
+    );
+    fds.insert(
+        2,
+        Descriptor {
+            kind: DescKind::Stderr,
+            offset: 0,
+            rights: Rights::RW,
+        },
+    );
     fds.insert(
         PREOPEN_FD,
-        Descriptor { kind: DescKind::Dir { path: "/".into() }, offset: 0, rights: Rights::RWX },
+        Descriptor {
+            kind: DescKind::Dir { path: "/".into() },
+            offset: 0,
+            rights: Rights::RWX,
+        },
     );
     fds
 }
@@ -313,7 +354,12 @@ impl Default for ProcTable {
 impl ProcTable {
     pub fn new() -> Self {
         // PID 0 is reserved (idle/kernel sentinel); real entries start at 1.
-        Self { procs: Vec::new(), next_pid: 1, surface_owners: BTreeMap::new(), next_surface_id: 1 }
+        Self {
+            procs: Vec::new(),
+            next_pid: 1,
+            surface_owners: BTreeMap::new(),
+            next_surface_id: 1,
+        }
     }
 
     // --- Compositor surfaces (desktop compositor) ---
@@ -336,8 +382,12 @@ impl ProcTable {
     /// Release every surface owned by `pid` (called on process exit, launcher and window lifecycle), and
     /// return the freed surface ids so the host can tear down their windows.
     pub fn free_surfaces_of(&mut self, pid: u32) -> Vec<u32> {
-        let freed: Vec<u32> =
-            self.surface_owners.iter().filter(|(_, &p)| p == pid).map(|(&id, _)| id).collect();
+        let freed: Vec<u32> = self
+            .surface_owners
+            .iter()
+            .filter(|(_, &p)| p == pid)
+            .map(|(&id, _)| id)
+            .collect();
         for id in &freed {
             self.surface_owners.remove(id);
         }
@@ -391,7 +441,9 @@ impl ProcTable {
 
     /// All `(chan_id, end)` a process holds — used to release them on exit.
     pub fn channels_of(&self, pid: u32) -> Vec<(u32, u8)> {
-        self.get(pid).map(|p| p.channels.iter().map(|(&id, &e)| (id, e)).collect()).unwrap_or_default()
+        self.get(pid)
+            .map(|p| p.channels.iter().map(|(&id, &e)| (id, e)).collect())
+            .unwrap_or_default()
     }
 
     pub fn get(&self, pid: u32) -> Option<&Process> {
@@ -429,7 +481,11 @@ impl ProcTable {
     /// Install a descriptor at a specific fd number (used to configure a child's
     /// stdio 0/1/2 at spawn). Replaces any existing descriptor at that fd.
     pub fn set_fd(&mut self, pid: u32, fd: u32, desc: Descriptor) -> bool {
-        self.get_mut(pid).map(|p| { p.fds.insert(fd, desc); }).is_some()
+        self.get_mut(pid)
+            .map(|p| {
+                p.fds.insert(fd, desc);
+            })
+            .is_some()
     }
 
     pub fn set_argv(&mut self, pid: u32, argv: Vec<String>) -> bool {
@@ -480,15 +536,19 @@ impl ProcTable {
     /// Install a descriptor at an exact number. This is used only by
     /// `fd_renumber`; normal opens continue allocating from `next_fd`.
     pub fn install_fd(&mut self, pid: u32, fd: u32, desc: Descriptor) -> bool {
-        self.get_mut(pid).map(|p| {
-            p.next_fd = p.next_fd.max(fd.saturating_add(1));
-            p.fds.insert(fd, desc);
-        }).is_some()
+        self.get_mut(pid)
+            .map(|p| {
+                p.next_fd = p.next_fd.max(fd.saturating_add(1));
+                p.fds.insert(fd, desc);
+            })
+            .is_some()
     }
 
     /// WASI fd-flags currently set on `fd` (0 if none / unknown), for `fd_fdstat_get`.
     pub fn fd_flags(&self, pid: u32, fd: u32) -> u16 {
-        self.get(pid).and_then(|p| p.fd_flags.get(&fd).copied()).unwrap_or(0)
+        self.get(pid)
+            .and_then(|p| p.fd_flags.get(&fd).copied())
+            .unwrap_or(0)
     }
 
     /// Set the WASI fd-flags on `fd` (`fd_fdstat_set_flags`). Returns false if the
@@ -505,12 +565,16 @@ impl ProcTable {
 
     /// Append bytes to a process's captured stdout. Returns false if pid unknown.
     pub fn push_stdout(&mut self, pid: u32, bytes: &[u8]) -> bool {
-        self.get_mut(pid).map(|p| p.stdout.extend_from_slice(bytes)).is_some()
+        self.get_mut(pid)
+            .map(|p| p.stdout.extend_from_slice(bytes))
+            .is_some()
     }
 
     /// Append bytes to a process's captured stderr. Returns false if pid unknown.
     pub fn push_stderr(&mut self, pid: u32, bytes: &[u8]) -> bool {
-        self.get_mut(pid).map(|p| p.stderr.extend_from_slice(bytes)).is_some()
+        self.get_mut(pid)
+            .map(|p| p.stderr.extend_from_slice(bytes))
+            .is_some()
     }
 
     /// Drain and return `(stdout, stderr)` for `pid` (empty if unknown).
@@ -523,7 +587,9 @@ impl ProcTable {
 
     /// Record a process's exit code (does not change state; the caller zombifies).
     pub fn set_exit(&mut self, pid: u32, code: i32) -> bool {
-        self.get_mut(pid).map(|p| p.exit_code = Some(code)).is_some()
+        self.get_mut(pid)
+            .map(|p| p.exit_code = Some(code))
+            .is_some()
     }
 
     pub fn exit_code(&self, pid: u32) -> Option<i32> {
@@ -534,7 +600,9 @@ impl ProcTable {
 
     /// Append input bytes to a process's stdin buffer (terminal keystrokes).
     pub fn push_stdin(&mut self, pid: u32, bytes: &[u8]) -> bool {
-        self.get_mut(pid).map(|p| p.stdin.extend(bytes.iter().copied())).is_some()
+        self.get_mut(pid)
+            .map(|p| p.stdin.extend(bytes.iter().copied()))
+            .is_some()
     }
 
     /// Mark a process's stdin as closed (subsequent empty reads return EOF).
@@ -565,7 +633,9 @@ impl ProcTable {
 
     /// Append brokered input event bytes for a process (compositor → focused win).
     pub fn push_input(&mut self, pid: u32, bytes: &[u8]) -> bool {
-        self.get_mut(pid).map(|p| p.input.extend(bytes.iter().copied())).is_some()
+        self.get_mut(pid)
+            .map(|p| p.input.extend(bytes.iter().copied()))
+            .is_some()
     }
 
     /// Drain up to `max` input bytes from the front of a process's input queue.
@@ -644,7 +714,8 @@ impl ProcTable {
     /// Remove a zombie from the table, freeing its slot.
     pub fn reap(&mut self, pid: u32) -> bool {
         let before = self.procs.len();
-        self.procs.retain(|p| !(p.pid == pid && p.state == ProcState::Zombie));
+        self.procs
+            .retain(|p| !(p.pid == pid && p.state == ProcState::Zombie));
         self.procs.len() != before
     }
 
@@ -688,6 +759,13 @@ impl ProcTable {
         self.get_mut(pid).map(|p| p.parent = Some(parent)).is_some()
     }
 
+    /// Return the spawning parent, if this process was created by another guest.
+    /// Host-launched desktop processes have no parent and are reaped by the
+    /// kernel as soon as their forced termination teardown completes.
+    pub fn parent_of(&self, pid: u32) -> Option<u32> {
+        self.get(pid).and_then(|p| p.parent)
+    }
+
     /// Change a process's scheduling priority (FR-8). Returns the old priority so
     /// the caller can re-bucket it in the scheduler if it is ready.
     pub fn set_priority(&mut self, pid: u32, priority: u8) -> Option<u8> {
@@ -700,7 +778,9 @@ impl ProcTable {
 
     /// Push a pending signal for a process; returns false if the pid is unknown.
     pub fn push_signal(&mut self, pid: u32, sig: u8) -> bool {
-        self.get_mut(pid).map(|p| p.pending_signals.push_back(sig)).is_some()
+        self.get_mut(pid)
+            .map(|p| p.pending_signals.push_back(sig))
+            .is_some()
     }
 
     /// Drain and return a process's pending signals (consumed by `sig_pending`).
@@ -728,27 +808,51 @@ mod tests {
     fn capability_set_is_default_deny() {
         let caps = CapabilitySet::default();
         assert!(!caps.allows(&Capability::Net));
-        assert!(!caps.allows(&Capability::FsPath { subtree: "/home".into(), rights: Rights::R }));
+        assert!(!caps.allows(&Capability::FsPath {
+            subtree: "/home".into(),
+            rights: Rights::R
+        }));
     }
 
     #[test]
     fn fs_capability_respects_subtree_and_rights() {
         let mut caps = CapabilitySet::default();
-        caps.grant(Capability::FsPath { subtree: "/home/user".into(), rights: Rights::RW });
+        caps.grant(Capability::FsPath {
+            subtree: "/home/user".into(),
+            rights: Rights::RW,
+        });
         // within subtree, rights covered
-        assert!(caps.allows(&Capability::FsPath { subtree: "/home/user/a.txt".into(), rights: Rights::R }));
-        assert!(caps.allows(&Capability::FsPath { subtree: "/home/user".into(), rights: Rights::RW }));
+        assert!(caps.allows(&Capability::FsPath {
+            subtree: "/home/user/a.txt".into(),
+            rights: Rights::R
+        }));
+        assert!(caps.allows(&Capability::FsPath {
+            subtree: "/home/user".into(),
+            rights: Rights::RW
+        }));
         // outside subtree
-        assert!(!caps.allows(&Capability::FsPath { subtree: "/etc".into(), rights: Rights::R }));
+        assert!(!caps.allows(&Capability::FsPath {
+            subtree: "/etc".into(),
+            rights: Rights::R
+        }));
         // escalated rights denied
-        assert!(!caps.allows(&Capability::FsPath { subtree: "/home/user/a".into(), rights: Rights::RWX }));
+        assert!(!caps.allows(&Capability::FsPath {
+            subtree: "/home/user/a".into(),
+            rights: Rights::RWX
+        }));
     }
 
     #[test]
     fn root_capability_covers_everything() {
         let mut caps = CapabilitySet::default();
-        caps.grant(Capability::FsPath { subtree: "/".into(), rights: Rights::RWX });
-        assert!(caps.allows(&Capability::FsPath { subtree: "/any/deep/path".into(), rights: Rights::RW }));
+        caps.grant(Capability::FsPath {
+            subtree: "/".into(),
+            rights: Rights::RWX,
+        });
+        assert!(caps.allows(&Capability::FsPath {
+            subtree: "/any/deep/path".into(),
+            rights: Rights::RW
+        }));
     }
 
     #[test]
@@ -811,7 +915,10 @@ mod tests {
         assert_eq!(t.fd(pid, 1).unwrap().kind, DescKind::Stdout);
         assert_eq!(t.fd(pid, 2).unwrap().kind, DescKind::Stderr);
         // fd 3 is the preopened root directory (so guest WASI libc can path_open).
-        assert_eq!(t.fd(pid, PREOPEN_FD).unwrap().kind, DescKind::Dir { path: "/".into() });
+        assert_eq!(
+            t.fd(pid, PREOPEN_FD).unwrap().kind,
+            DescKind::Dir { path: "/".into() }
+        );
         // No fd 4 yet.
         assert!(t.fd(pid, 4).is_none());
     }
@@ -820,12 +927,42 @@ mod tests {
     fn open_fd_allocates_increasing_fds_from_4() {
         let mut t = ProcTable::new();
         let pid = t.spawn("p", 5, CapabilitySet::default());
-        let a = t.open_fd(pid, Descriptor { kind: DescKind::File { path: "/a".into() }, offset: 0, rights: Rights::R }).unwrap();
-        let b = t.open_fd(pid, Descriptor { kind: DescKind::File { path: "/b".into() }, offset: 0, rights: Rights::R }).unwrap();
+        let a = t
+            .open_fd(
+                pid,
+                Descriptor {
+                    kind: DescKind::File { path: "/a".into() },
+                    offset: 0,
+                    rights: Rights::R,
+                },
+            )
+            .unwrap();
+        let b = t
+            .open_fd(
+                pid,
+                Descriptor {
+                    kind: DescKind::File { path: "/b".into() },
+                    offset: 0,
+                    rights: Rights::R,
+                },
+            )
+            .unwrap();
         assert_eq!(a, 4); // first open is fd 4 (0/1/2 std + 3 preopen)
         assert_eq!(b, 5);
-        assert_eq!(t.fd(pid, a).unwrap().kind, DescKind::File { path: "/a".into() });
-        assert!(t.open_fd(999, Descriptor { kind: DescKind::File { path: "/x".into() }, offset: 0, rights: Rights::R }).is_none());
+        assert_eq!(
+            t.fd(pid, a).unwrap().kind,
+            DescKind::File { path: "/a".into() }
+        );
+        assert!(t
+            .open_fd(
+                999,
+                Descriptor {
+                    kind: DescKind::File { path: "/x".into() },
+                    offset: 0,
+                    rights: Rights::R
+                }
+            )
+            .is_none());
     }
 
     #[test]
@@ -833,7 +970,18 @@ mod tests {
         let mut t = ProcTable::new();
         let a = t.spawn("a", 5, CapabilitySet::default());
         let b = t.spawn("b", 5, CapabilitySet::default());
-        let fda = t.open_fd(a, Descriptor { kind: DescKind::File { path: "/secret".into() }, offset: 0, rights: Rights::RW }).unwrap();
+        let fda = t
+            .open_fd(
+                a,
+                Descriptor {
+                    kind: DescKind::File {
+                        path: "/secret".into(),
+                    },
+                    offset: 0,
+                    rights: Rights::RW,
+                },
+            )
+            .unwrap();
         // B's table is unaffected by A's open.
         assert!(t.fd(b, fda).is_none());
         // Closing A's fd does not touch B.

@@ -72,7 +72,7 @@ test("System Monitor renders the process table and kills the selected process (F
   await page.mouse.click(cssX, cssY);
   await page.keyboard.press("k");
 
-  // The kernel reaped the victim: it leaves the live process table (or zombifies).
+  // The kernel reaped the host-launched root victim: it leaves the live process table.
   await expect
     .poll(
       async () => {
@@ -81,7 +81,7 @@ test("System Monitor renders the process table and kills the selected process (F
       },
       { timeout: 20_000 },
     )
-    .toMatch(/zombie|gone/);
+    .toBe("gone");
 });
 
 test("System Monitor kills via the keyboard (arrow-select + k), no mouse needed", async ({ page }) => {
@@ -117,7 +117,7 @@ test("System Monitor kills via the keyboard (arrow-select + k), no mouse needed"
 
   await expect
     .poll(async () => (await listProcs(page)).find((x) => x.pid === victim)?.state ?? "gone", { timeout: 20_000 })
-    .toMatch(/zombie|gone/);
+    .toBe("gone");
 });
 
 test("System Monitor manages a selected row through the visible KILL control", async ({ page }) => {
@@ -144,5 +144,5 @@ test("System Monitor manages a selected row through the visible KILL control", a
 
   await expect
     .poll(async () => (await listProcs(page)).find((p) => p.pid === victim)?.state ?? "gone", { timeout: 20_000 })
-    .toMatch(/zombie|gone/);
+    .toBe("gone");
 });

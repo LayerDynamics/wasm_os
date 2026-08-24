@@ -44,7 +44,11 @@ pub struct InputDelivery {
 }
 
 impl KernelCore {
-    pub fn new(home: Box<dyn Blockstore>, mnt: Box<dyn Blockstore>, sys: Box<dyn Blockstore>) -> Self {
+    pub fn new(
+        home: Box<dyn Blockstore>,
+        mnt: Box<dyn Blockstore>,
+        sys: Box<dyn Blockstore>,
+    ) -> Self {
         Self {
             vfs: Vfs::new(home, mnt, sys),
             procs: ProcTable::new(),
@@ -69,19 +73,47 @@ impl KernelCore {
         let _ = self.vfs.mount("/mnt", Backend::Idb);
         // Persistent system dirs live on the sys store (separate from /home so the two
         // wipe independently). Mount BEFORE mkdir_p so dir markers route correctly.
-        for d in ["/etc", "/var", "/opt", "/srv", "/root", "/usr/local", "/Volumes"] {
+        for d in [
+            "/etc",
+            "/var",
+            "/opt",
+            "/srv",
+            "/root",
+            "/usr/local",
+            "/Volumes",
+        ] {
             let _ = self.vfs.mount(d, Backend::Sys);
         }
         // Build the standard filesystem hierarchy (FHS). Idempotent every boot: tmpfs
         // dirs are recreated, persistent dirs already exist on their stores. /proc and
         // /dev are synthetic and mounted separately.
         for d in [
-            "/bin", "/sbin", "/lib", "/usr", "/usr/bin", "/usr/sbin", "/usr/lib",
-            "/usr/local", "/etc", "/var", "/var/log", "/var/tmp", "/tmp", "/run",
-            "/opt", "/srv", "/mnt", "/media", "/home", "/root", "/boot", "/Volumes",
+            "/bin",
+            "/sbin",
+            "/lib",
+            "/usr",
+            "/usr/bin",
+            "/usr/sbin",
+            "/usr/lib",
+            "/usr/local",
+            "/etc",
+            "/var",
+            "/var/log",
+            "/var/tmp",
+            "/tmp",
+            "/run",
+            "/opt",
+            "/srv",
+            "/mnt",
+            "/media",
+            "/home",
+            "/root",
+            "/boot",
+            "/Volumes",
             // /proc and /dev are synthetic (reads route to procfs/devfs); the markers
             // just make them visible in `ls /`.
-            "/proc", "/dev",
+            "/proc",
+            "/dev",
         ] {
             let _ = self.vfs.mkdir_p(d);
         }
@@ -89,7 +121,10 @@ impl KernelCore {
         // init holds full FS rights and the right to spawn (it launches the
         // userland in WASI process runtime). Registering it drives the full kernel/VFS bootstrap process path.
         let mut caps = CapabilitySet::default();
-        caps.grant(Capability::FsPath { subtree: "/".into(), rights: Rights::RWX });
+        caps.grant(Capability::FsPath {
+            subtree: "/".into(),
+            rights: Rights::RWX,
+        });
         caps.grant(Capability::Spawn);
 
         let init = self.procs.spawn("init", 10, caps);
@@ -115,7 +150,8 @@ impl KernelCore {
     }
     pub fn read(&self, path: &str) -> Result<Vec<u8>, FsError> {
         if crate::procfs::is_proc(path) {
-            return crate::procfs::read(&self.procs, &self.vfs.mount_list(), 0, path).ok_or(FsError::NotFound);
+            return crate::procfs::read(&self.procs, &self.vfs.mount_list(), 0, path)
+                .ok_or(FsError::NotFound);
         }
         if crate::devfs::is_dev(path) {
             // Endless devices can't be "read whole" — return a bounded 64-byte sample.
@@ -127,12 +163,20 @@ impl KernelCore {
         let base = path.trim_end_matches('/');
         if crate::procfs::is_proc(path) {
             return crate::procfs::readdir(&self.procs, path)
-                .map(|es| es.into_iter().map(|e| format!("{base}/{}", e.name)).collect())
+                .map(|es| {
+                    es.into_iter()
+                        .map(|e| format!("{base}/{}", e.name))
+                        .collect()
+                })
                 .ok_or(FsError::NotFound);
         }
         if crate::devfs::is_dev(path) {
             return crate::devfs::readdir(path)
-                .map(|es| es.into_iter().map(|e| format!("{base}/{}", e.name)).collect())
+                .map(|es| {
+                    es.into_iter()
+                        .map(|e| format!("{base}/{}", e.name))
+                        .collect()
+                })
                 .ok_or(FsError::NotFound);
         }
         self.vfs.list(path)
@@ -211,7 +255,10 @@ impl KernelCore {
     ) -> u32 {
         let mut caps = CapabilitySet::default();
         if let Some((subtree, rights)) = grant_fs {
-            caps.grant(Capability::FsPath { subtree: subtree.to_string(), rights });
+            caps.grant(Capability::FsPath {
+                subtree: subtree.to_string(),
+                rights,
+            });
         }
         if grant_spawn {
             caps.grant(Capability::Spawn);
@@ -240,7 +287,10 @@ impl KernelCore {
     /// it is a separate worker with no access to other processes' memory.
     pub fn spawn_emulator(&mut self, name: &str) -> u32 {
         let mut caps = CapabilitySet::default();
-        caps.grant(Capability::FsPath { subtree: "/".into(), rights: Rights::RWX });
+        caps.grant(Capability::FsPath {
+            subtree: "/".into(),
+            rights: Rights::RWX,
+        });
         caps.grant(Capability::Gpu);
         caps.grant(Capability::Input);
         caps.grant(Capability::Net);
@@ -387,7 +437,9 @@ impl KernelCore {
             return err(syscall::errno::PIPE); // peer permanently gone
         }
         // Wake a receiver parked on the PEER endpoint.
-        let wakeups = self.procs.take_blocked_on(&WaitReason::ChanRecv(id, 1 - end));
+        let wakeups = self
+            .procs
+            .take_blocked_on(&WaitReason::ChanRecv(id, 1 - end));
         syscall::SyscallOutcome {
             reply: Some(syscall::errno::SUCCESS.to_le_bytes().to_vec()),
             wakeups,
@@ -435,7 +487,10 @@ impl KernelCore {
         let mut wakeups = Vec::new();
         for (id, end) in self.procs.channels_of(pid) {
             self.chans.close(id, end);
-            wakeups.extend(self.procs.take_blocked_on(&WaitReason::ChanRecv(id, 1 - end)));
+            wakeups.extend(
+                self.procs
+                    .take_blocked_on(&WaitReason::ChanRecv(id, 1 - end)),
+            );
         }
         wakeups
     }
@@ -485,7 +540,9 @@ impl KernelCore {
         let off = u32::from_le_bytes([req[5], req[6], req[7], req[8]]) as usize;
         let len = u32::from_le_bytes([req[9], req[10], req[11], req[12]]) as usize;
         if !self.shm.has_access(id, pid) {
-            return syscall::SyscallOutcome::ready(syscall::errno::NOTCAPABLE.to_le_bytes().to_vec());
+            return syscall::SyscallOutcome::ready(
+                syscall::errno::NOTCAPABLE.to_le_bytes().to_vec(),
+            );
         }
         let data = self.shm.read(id, off, len);
         let mut b = syscall::errno::SUCCESS.to_le_bytes().to_vec();
@@ -535,7 +592,9 @@ impl KernelCore {
     /// Signalling another process requires the Signal capability (self always
     /// allowed). SIGKILL (9) is uncatchable + forceful: the kernel runs the
     /// target's full exit teardown (pipes/channels/shm released, waiters woken) and
-    /// asks the host to terminate its worker (`reap`). SIGTERM (15) is catchable +
+    /// asks the host to terminate its worker (`reap`). Host-launched roots have
+    /// no parent and are removed from the process table immediately; guest
+    /// children remain zombies until their parent calls `wait`. SIGTERM (15) is catchable +
     /// cooperative: it queues a pending signal and wakes the target if it is parked
     /// in `sig_wait()`, so the guest can observe it and exit gracefully.
     fn kill_syscall(&mut self, pid: u32, req: &[u8]) -> syscall::SyscallOutcome {
@@ -560,14 +619,23 @@ impl KernelCore {
                 // releases pipes/surfaces and wakes its waiters exactly as a clean
                 // exit would, then release its channels + shm (the kcore-level
                 // siblings of that teardown) and ask the host to reap its worker.
+                let parent = self.procs.parent_of(target);
                 let mut exit_req = vec![0x10u8];
                 exit_req.extend_from_slice(&(128u32 + SIGKILL as u32).to_le_bytes());
-                let mut out =
-                    syscall::dispatch(&mut self.vfs, &mut self.procs, &mut self.pipes, target, &exit_req);
+                let mut out = syscall::dispatch(
+                    &mut self.vfs,
+                    &mut self.procs,
+                    &mut self.pipes,
+                    target,
+                    &exit_req,
+                );
                 out.wakeups.extend(self.close_proc_channels(target));
                 self.shm.free_owned(target);
                 self.net_responses.remove(&target);
                 out.reap.push(target);
+                if parent.is_none() {
+                    self.procs.reap(target);
+                }
                 // The forged exit's SUCCESS reply belongs to `target`'s (now dead)
                 // ring; replace it with this caller's kill reply.
                 out.reply = Some(syscall::errno::SUCCESS.to_le_bytes().to_vec());
@@ -619,11 +687,17 @@ impl KernelCore {
     /// the response. Reply: `[errno u16][len u32][body]` (IO on a fetch failure).
     fn net_request_syscall(&mut self, pid: u32, req: &[u8]) -> syscall::SyscallOutcome {
         if !self.procs.has_cap(pid, &Capability::Net) {
-            return syscall::SyscallOutcome::ready(syscall::errno::NOTCAPABLE.to_le_bytes().to_vec());
+            return syscall::SyscallOutcome::ready(
+                syscall::errno::NOTCAPABLE.to_le_bytes().to_vec(),
+            );
         }
         // The host delivered the response → drain + return it.
         if let Some((ok, body)) = self.net_responses.remove(&pid) {
-            let errno = if ok { syscall::errno::SUCCESS } else { syscall::errno::IO };
+            let errno = if ok {
+                syscall::errno::SUCCESS
+            } else {
+                syscall::errno::IO
+            };
             let mut b = errno.to_le_bytes().to_vec();
             b.extend_from_slice(&(body.len() as u32).to_le_bytes());
             b.extend_from_slice(&body);
@@ -677,7 +751,10 @@ impl KernelCore {
     /// Returns the pids whose parked `win_read_input` calls are now runnable.
     pub fn deliver_input(&mut self, pid: u32, bytes: &[u8]) -> InputDelivery {
         if !self.procs.has_cap(pid, &Capability::Input) {
-            return InputDelivery { accepted: false, wakeups: Vec::new() };
+            return InputDelivery {
+                accepted: false,
+                wakeups: Vec::new(),
+            };
         }
         self.procs.push_input(pid, bytes);
         let wakeups = if self.procs.blocked_on(pid) == Some(crate::types::WaitReason::Input) {
@@ -686,7 +763,10 @@ impl KernelCore {
         } else {
             vec![]
         };
-        InputDelivery { accepted: true, wakeups }
+        InputDelivery {
+            accepted: true,
+            wakeups,
+        }
     }
 
     /// The process's exit code, if it has exited (FR-5 `wait`).
@@ -708,12 +788,23 @@ mod tests {
     #[derive(Default)]
     struct MemStore(BTreeMap<String, Vec<u8>>);
     impl Blockstore for MemStore {
-        fn get(&self, k: &str) -> Option<Vec<u8>> { self.0.get(k).cloned() }
-        fn put(&mut self, k: &str, v: Vec<u8>) -> bool { self.0.insert(k.into(), v); true }
-        fn list(&self, p: &str) -> Vec<String> {
-            self.0.keys().filter(|k| k.starts_with(p)).cloned().collect()
+        fn get(&self, k: &str) -> Option<Vec<u8>> {
+            self.0.get(k).cloned()
         }
-        fn delete(&mut self, k: &str) -> bool { self.0.remove(k).is_some() }
+        fn put(&mut self, k: &str, v: Vec<u8>) -> bool {
+            self.0.insert(k.into(), v);
+            true
+        }
+        fn list(&self, p: &str) -> Vec<String> {
+            self.0
+                .keys()
+                .filter(|k| k.starts_with(p))
+                .cloned()
+                .collect()
+        }
+        fn delete(&mut self, k: &str) -> bool {
+            self.0.remove(k).is_some()
+        }
     }
 
     fn core() -> KernelCore {
@@ -739,7 +830,13 @@ mod tests {
 
         // init's capabilities are real and enforced (default-deny otherwise).
         assert!(k.check_cap(1, &Capability::Spawn));
-        assert!(k.check_cap(1, &Capability::FsPath { subtree: "/home/x".into(), rights: Rights::RW }));
+        assert!(k.check_cap(
+            1,
+            &Capability::FsPath {
+                subtree: "/home/x".into(),
+                rights: Rights::RW
+            }
+        ));
         assert!(!k.check_cap(1, &Capability::Net)); // not granted
     }
 
@@ -756,8 +853,8 @@ mod tests {
         let mut k = core();
         k.boot();
         k.write("/scratch", b"t".to_vec()).unwrap(); // tmpfs
-        k.write("/home/a", b"h".to_vec()).unwrap();   // opfs
-        k.write("/mnt/b", b"m".to_vec()).unwrap();    // idb
+        k.write("/home/a", b"h".to_vec()).unwrap(); // opfs
+        k.write("/mnt/b", b"m".to_vec()).unwrap(); // idb
         assert_eq!(k.read("/scratch").unwrap(), b"t");
         assert_eq!(k.read("/home/a").unwrap(), b"h");
         assert_eq!(k.read("/mnt/b").unwrap(), b"m");
@@ -791,10 +888,13 @@ mod tests {
         k.boot();
         let pid = k.spawn("hello", Some(("/", Rights::RW)), false, false, false);
         assert!(pid > 1); // init is pid 1
-        // Process is Ready and enqueued.
+                          // Process is Ready and enqueued.
         assert!(k.ready_count() >= 1);
         // Route an fd_write to stdout, then proc_exit(0).
-        let resp = k.service_syscall(pid, &fd_write_req(1, b"hi")).reply.expect("ready");
+        let resp = k
+            .service_syscall(pid, &fd_write_req(1, b"hi"))
+            .reply
+            .expect("ready");
         assert_eq!(u16::from_le_bytes([resp[0], resp[1]]), 0); // SUCCESS
         k.service_syscall(pid, &proc_exit_req(0));
         let (out, _err) = k.take_capture(pid);
@@ -816,7 +916,10 @@ mod tests {
         assert_eq!(k.deliver_stdin(pid, b"hi\n"), vec![pid]);
 
         // Re-driving the SAME request now returns the delivered bytes.
-        let resp = k.service_syscall(pid, &req).reply.expect("ready after deliver");
+        let resp = k
+            .service_syscall(pid, &req)
+            .reply
+            .expect("ready after deliver");
         assert_eq!(u16::from_le_bytes([resp[0], resp[1]]), 0); // SUCCESS
         let n = u32::from_le_bytes([resp[2], resp[3], resp[4], resp[5]]) as usize;
         assert_eq!(&resp[6..6 + n], b"hi\n");
@@ -855,8 +958,20 @@ mod tests {
         assert!(!k.check_cap(a, &Capability::Shm));
         assert!(!k.check_cap(b, &Capability::Shm));
         // Each has exactly the FS grant it asked for, nothing more.
-        assert!(k.check_cap(a, &Capability::FsPath { subtree: "/home/x".into(), rights: Rights::R }));
-        assert!(!k.check_cap(a, &Capability::FsPath { subtree: "/mnt".into(), rights: Rights::R }));
+        assert!(k.check_cap(
+            a,
+            &Capability::FsPath {
+                subtree: "/home/x".into(),
+                rights: Rights::R
+            }
+        ));
+        assert!(!k.check_cap(
+            a,
+            &Capability::FsPath {
+                subtree: "/mnt".into(),
+                rights: Rights::R
+            }
+        ));
     }
 
     #[test]
@@ -867,7 +982,13 @@ mod tests {
         let pid = k.spawn("bare", None, false, false, false);
         assert!(!k.check_cap(pid, &Capability::Spawn));
         assert!(!k.check_cap(pid, &Capability::Shm));
-        assert!(!k.check_cap(pid, &Capability::FsPath { subtree: "/".into(), rights: Rights::R }));
+        assert!(!k.check_cap(
+            pid,
+            &Capability::FsPath {
+                subtree: "/".into(),
+                rights: Rights::R
+            }
+        ));
         // With spawn grant.
         let p2 = k.spawn("launcher", None, true, false, false);
         assert!(k.check_cap(p2, &Capability::Spawn));
@@ -891,7 +1012,7 @@ mod tests {
         k.boot();
         let with = k.spawn("g", None, false, false, true); // Input granted
         let without = k.spawn("n", None, false, false, false); // no Input
-        // Default-deny: a process without Input receives nothing (no wakeups).
+                                                               // Default-deny: a process without Input receives nothing (no wakeups).
         let denied = k.deliver_input(without, &[0u8; 12]);
         assert!(!denied.accepted);
         assert!(denied.wakeups.is_empty());
@@ -931,14 +1052,27 @@ mod tests {
         let mut self_req = vec![0x31u8];
         self_req.extend_from_slice(&pid.to_le_bytes());
         self_req.push(9);
-        assert_eq!(read_u16(&k.service_syscall(pid, &self_req).reply.unwrap()), 0);
-        assert_eq!(k.list_procs().iter().find(|i| i.pid == pid).unwrap().priority, 9);
+        assert_eq!(
+            read_u16(&k.service_syscall(pid, &self_req).reply.unwrap()),
+            0
+        );
+        assert_eq!(
+            k.list_procs()
+                .iter()
+                .find(|i| i.pid == pid)
+                .unwrap()
+                .priority,
+            9
+        );
 
         // Renicing ANOTHER process without the Signal capability is denied.
         let mut other_req = vec![0x31u8];
         other_req.extend_from_slice(&1u32.to_le_bytes()); // init
         other_req.push(3);
-        assert_eq!(read_u16(&k.service_syscall(pid, &other_req).reply.unwrap()), 76); // NOTCAPABLE
+        assert_eq!(
+            read_u16(&k.service_syscall(pid, &other_req).reply.unwrap()),
+            76
+        ); // NOTCAPABLE
     }
 
     // --- message channels: message channels through the kernel core ---
@@ -996,7 +1130,10 @@ mod tests {
 
         // A process cannot receive on a channel it never opened.
         let c = k.spawn("c", None, false, false, false);
-        assert_eq!(read_u16(&k.service_syscall(c, &chan_recv_req(id)).reply.unwrap()), 8); // BADF
+        assert_eq!(
+            read_u16(&k.service_syscall(c, &chan_recv_req(id)).reply.unwrap()),
+            8
+        ); // BADF
     }
 
     // --- shared memory: shared memory through the kernel core ---
@@ -1032,34 +1169,70 @@ mod tests {
         let rc = k.service_syscall(owner, &shm_create_req(64)).reply.unwrap();
         assert_eq!(read_u16(&rc), 0);
         let id = u32::from_le_bytes([rc[2], rc[3], rc[4], rc[5]]);
-        assert_eq!(read_u16(&k.service_syscall(owner, &shm_write_req(id, 8, b"SHARED-MEM")).reply.unwrap()), 0);
+        assert_eq!(
+            read_u16(
+                &k.service_syscall(owner, &shm_write_req(id, 8, b"SHARED-MEM"))
+                    .reply
+                    .unwrap()
+            ),
+            0
+        );
 
         // Default-deny: peer cannot map/read/write before being granted.
         let mut map_req = vec![0x36u8];
         map_req.extend_from_slice(&id.to_le_bytes());
-        assert_eq!(read_u16(&k.service_syscall(peer, &map_req).reply.unwrap()), 76); // NOTCAPABLE
-        assert_eq!(read_u16(&k.service_syscall(peer, &shm_read_req(id, 8, 10)).reply.unwrap()), 76);
+        assert_eq!(
+            read_u16(&k.service_syscall(peer, &map_req).reply.unwrap()),
+            76
+        ); // NOTCAPABLE
+        assert_eq!(
+            read_u16(
+                &k.service_syscall(peer, &shm_read_req(id, 8, 10))
+                    .reply
+                    .unwrap()
+            ),
+            76
+        );
 
         // A non-owner cannot grant; the owner can.
         let mut steal = vec![0x39u8];
         steal.extend_from_slice(&id.to_le_bytes());
         steal.extend_from_slice(&peer.to_le_bytes());
-        assert_eq!(read_u16(&k.service_syscall(peer, &steal).reply.unwrap()), 76); // peer isn't owner
+        assert_eq!(
+            read_u16(&k.service_syscall(peer, &steal).reply.unwrap()),
+            76
+        ); // peer isn't owner
         let mut grant = vec![0x39u8];
         grant.extend_from_slice(&id.to_le_bytes());
         grant.extend_from_slice(&peer.to_le_bytes());
-        assert_eq!(read_u16(&k.service_syscall(owner, &grant).reply.unwrap()), 0);
+        assert_eq!(
+            read_u16(&k.service_syscall(owner, &grant).reply.unwrap()),
+            0
+        );
 
         // Now peer maps + reads exactly what the owner wrote (shared region).
-        assert_eq!(read_u16(&k.service_syscall(peer, &map_req).reply.unwrap()), 0);
-        let rr = k.service_syscall(peer, &shm_read_req(id, 8, 10)).reply.unwrap();
+        assert_eq!(
+            read_u16(&k.service_syscall(peer, &map_req).reply.unwrap()),
+            0
+        );
+        let rr = k
+            .service_syscall(peer, &shm_read_req(id, 8, 10))
+            .reply
+            .unwrap();
         assert_eq!(read_u16(&rr), 0);
         let n = u32::from_le_bytes([rr[2], rr[3], rr[4], rr[5]]) as usize;
         assert_eq!(&rr[6..6 + n], b"SHARED-MEM");
 
         // owner exits → region is freed; peer's access is revoked.
         k.service_syscall(owner, &proc_exit_req(0));
-        assert_eq!(read_u16(&k.service_syscall(peer, &shm_read_req(id, 8, 10)).reply.unwrap()), 76);
+        assert_eq!(
+            read_u16(
+                &k.service_syscall(peer, &shm_read_req(id, 8, 10))
+                    .reply
+                    .unwrap()
+            ),
+            76
+        );
     }
 
     // --- signals: signals (SIGTERM cooperative + SIGKILL forceful) ---
@@ -1081,11 +1254,32 @@ mod tests {
         let bystander = k.spawn("bystander", None, false, false, false);
 
         // Default-deny: a process without Signal cannot signal another.
-        assert_eq!(read_u16(&k.service_syscall(bystander, &kill_req(victim, 15)).reply.unwrap()), 76); // NOTCAPABLE
-        // Unknown pid → SRCH.
-        assert_eq!(read_u16(&k.service_syscall(signaler, &kill_req(9999, 15)).reply.unwrap()), 71); // SRCH
-        // Self-signalling is always allowed (no Signal cap required).
-        assert_eq!(read_u16(&k.service_syscall(victim, &kill_req(victim, 15)).reply.unwrap()), 0);
+        assert_eq!(
+            read_u16(
+                &k.service_syscall(bystander, &kill_req(victim, 15))
+                    .reply
+                    .unwrap()
+            ),
+            76
+        ); // NOTCAPABLE
+           // Unknown pid → SRCH.
+        assert_eq!(
+            read_u16(
+                &k.service_syscall(signaler, &kill_req(9999, 15))
+                    .reply
+                    .unwrap()
+            ),
+            71
+        ); // SRCH
+           // Self-signalling is always allowed (no Signal cap required).
+        assert_eq!(
+            read_u16(
+                &k.service_syscall(victim, &kill_req(victim, 15))
+                    .reply
+                    .unwrap()
+            ),
+            0
+        );
         // (drain the self-delivered signal so the park test below starts clean)
         let drained = k.service_syscall(victim, &[0x3Bu8]).reply.unwrap();
         assert_eq!(read_u16(&drained), 0);
@@ -1100,22 +1294,20 @@ mod tests {
         let count = u32::from_le_bytes([got[2], got[3], got[4], got[5]]) as usize;
         assert_eq!(&got[6..6 + count], &[15u8]); // SIGTERM observed
 
-        // SIGKILL is forceful: the kernel zombifies the target and asks the host
-        // to reap its worker.
+        // SIGKILL is forceful: the kernel tears down the target and asks the host
+        // to reap its worker. This host-launched root has no parent, so its kernel
+        // record is removed immediately instead of becoming an uncollectable zombie.
         let killed = k.service_syscall(signaler, &kill_req(victim, 9));
         assert_eq!(read_u16(&killed.reply.unwrap()), 0);
         assert_eq!(killed.reap, vec![victim]);
-        assert_eq!(
-            k.list_procs().iter().find(|i| i.pid == victim).unwrap().state.as_str(),
-            "zombie"
-        );
+        assert!(k.list_procs().iter().all(|i| i.pid != victim));
     }
 
     #[test]
     fn sigkill_reaps_a_process_currently_parked_in_sig_wait() {
         // The exact scenario e2e/signals.spec.ts:79 exercises: a process is parked
         // in sig_wait (no signal yet) and is SIGKILL'd while still blocked. It must
-        // become a zombie (and be reaped) regardless of the parked state.
+        // be removed from the process table regardless of the parked state.
         let mut k = core();
         k.boot();
         let signaler = k.spawn("signaler", None, false, false, false);
@@ -1124,13 +1316,21 @@ mod tests {
 
         // Victim parks in sig_wait (no pending signal) — state becomes blocked.
         assert!(k.service_syscall(victim, &[0x3Bu8]).reply.is_none());
-        assert_eq!(k.list_procs().iter().find(|i| i.pid == victim).unwrap().state.as_str(), "blocked");
+        assert_eq!(
+            k.list_procs()
+                .iter()
+                .find(|i| i.pid == victim)
+                .unwrap()
+                .state
+                .as_str(),
+            "blocked"
+        );
 
-        // SIGKILL the still-parked victim → it zombifies + is reaped immediately.
+        // SIGKILL the still-parked root victim → it is reaped immediately.
         let killed = k.service_syscall(signaler, &kill_req(victim, 9));
         assert_eq!(read_u16(&killed.reply.unwrap()), 0);
         assert_eq!(killed.reap, vec![victim]);
-        assert_eq!(k.list_procs().iter().find(|i| i.pid == victim).unwrap().state.as_str(), "zombie");
+        assert!(k.list_procs().iter().all(|i| i.pid != victim));
     }
 
     // --- privileged Linux process: the emulator as a privileged (Native, non-ring) process ---
@@ -1161,8 +1361,11 @@ mod tests {
 
         // The emulator is reaped; the unrelated peer is untouched (FR-6 isolation).
         let infos = k.list_procs();
-        assert_eq!(infos.iter().find(|i| i.pid == emu).unwrap().state.as_str(), "zombie");
-        assert_ne!(infos.iter().find(|i| i.pid == peer).unwrap().state.as_str(), "zombie");
+        assert!(infos.iter().all(|i| i.pid != emu));
+        assert_ne!(
+            infos.iter().find(|i| i.pid == peer).unwrap().state.as_str(),
+            "zombie"
+        );
     }
 
     // --- network broker: brokered networking (net_request) ---
