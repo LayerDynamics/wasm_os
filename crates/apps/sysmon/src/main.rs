@@ -1,9 +1,9 @@
 //! System Monitor (L3 / system monitor, FR-33 + FR-8) — a real `wasm32-wasip1` process.
 //!
 //! Draws the live process table to a canvas surface (read from the `proc_list`
-//! syscall) and acts on the selected process from brokered keyboard input or the
-//! visible KILL, TERM, and RENICE controls:
-//!   k/KILL → SIGKILL   t/TERM → SIGTERM   r/RENICE → renice (+1 priority)
+//! syscall) and acts on the process selected with the mouse or keyboard. The
+//! visible controls spell out the same shortcuts:
+//!   Kill [K] → SIGKILL   Terminate [T] → SIGTERM   Raise priority [R] → +1 priority
 //! Process control uses the Signal capability, which the launcher delegates (the
 //! graphical sibling of the `kill`/`renice` coreutils). It refreshes the table on
 //! every input event, so interacting shows current state. Action results are shown
@@ -17,14 +17,14 @@ use wasmos_sys::{
 
 const W: u32 = 520;
 const H: u32 = 360;
-const HEADER_H: i32 = 34;
+const HEADER_H: i32 = 48;
 const ROW_H: i32 = 14;
 const ACTION_Y: i32 = 17;
 const ACTION_H: i32 = 13;
 const KILL_X: i32 = 6;
-const TERM_X: i32 = 72;
-const RENICE_X: i32 = 138;
-const ACTION_W: i32 = 58;
+const TERM_X: i32 = 112;
+const PRIORITY_X: i32 = 218;
+const ACTION_W: i32 = 100;
 
 const BG: Color = rgb(18, 20, 26);
 const HEADER_BG: Color = rgb(34, 40, 56);
@@ -91,14 +91,14 @@ fn draw(fb: &mut Framebuffer, st: &State) {
         FG,
     );
     for (x, label, color) in [
-        (KILL_X, "KILL", rgb(120, 55, 62)),
-        (TERM_X, "TERM", rgb(105, 82, 48)),
-        (RENICE_X, "RENICE", rgb(48, 86, 112)),
+        (KILL_X, "Kill [K]", rgb(120, 55, 62)),
+        (TERM_X, "Terminate [T]", rgb(105, 82, 48)),
+        (PRIORITY_X, "Raise priority [R]", rgb(48, 86, 112)),
     ] {
         fb.fill_rect(x, ACTION_Y, ACTION_W, ACTION_H, color);
         fb.text(x + 5, ACTION_Y + 3, label, FG);
     }
-    fb.text(205, ACTION_Y + 3, &st.status, DIM);
+    fb.text(6, 34, &st.status, DIM);
 
     // Column header.
     let cy = HEADER_H;
@@ -146,14 +146,18 @@ fn act(st: &mut State, sig_or_renice: Action) {
     }
     match sig_or_renice {
         Action::Kill => {
-            st.status = action_status("killed", pid, kill(pid, SIGKILL));
+            st.status = action_status("Killed", pid, kill(pid, SIGKILL));
         }
         Action::Term => {
-            st.status = action_status("terminated", pid, kill(pid, SIGTERM));
+            st.status = action_status("Terminate sent to", pid, kill(pid, SIGTERM));
         }
         Action::Renice => {
             let cur = st.procs.get(st.selected).map(|p| p.priority).unwrap_or(5);
-            st.status = action_status("reniced", pid, set_priority(pid, cur.saturating_add(1)));
+            st.status = action_status(
+                "Raised priority for",
+                pid,
+                set_priority(pid, cur.saturating_add(1)),
+            );
         }
     }
 }
@@ -174,7 +178,7 @@ fn action_at(x: i32, y: i32) -> Option<Action> {
         Some(Action::Kill)
     } else if (TERM_X..TERM_X + ACTION_W).contains(&x) {
         Some(Action::Term)
-    } else if (RENICE_X..RENICE_X + ACTION_W).contains(&x) {
+    } else if (PRIORITY_X..PRIORITY_X + ACTION_W).contains(&x) {
         Some(Action::Renice)
     } else {
         None
@@ -196,7 +200,7 @@ fn main() {
     let mut st = State {
         procs: Vec::new(),
         selected: 0,
-        status: "Press K to kill selected process".to_string(),
+        status: "Click a row to select a process".to_string(),
     };
     st.refresh();
     // Seed the cursor on a killable process (not the protected init) so the first
@@ -227,6 +231,8 @@ fn main() {
                         let row = ((y - top) / ROW_H) as usize;
                         if row < st.procs.len() {
                             st.selected = row;
+                            let p = &st.procs[row];
+                            st.status = format!("Selected PID {} ({})", p.pid, p.name);
                         }
                     }
                 }

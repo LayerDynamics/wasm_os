@@ -10,7 +10,7 @@ import { test, expect, type Page, type Locator } from "@playwright/test";
 // Mirror of the app's layout constants (crates/apps/sysmon/src/main.rs).
 const W = 520;
 const H = 360;
-const HEADER_H = 34;
+const HEADER_H = 48;
 const ROW_H = 14;
 
 type Proc = { pid: number; name: string; state: string };
@@ -140,7 +140,8 @@ test("System Monitor manages a selected row through the visible KILL control", a
 
   const rowTop = HEADER_H + ROW_H;
   await page.mouse.click(box.x + box.width * 0.5, box.y + ((rowTop + idx * ROW_H + ROW_H / 2) / H) * box.height);
-  await page.mouse.click(box.x + ((6 + 29) / W) * box.width, box.y + ((17 + 6) / H) * box.height);
+  // The explicit Kill [K] control is the first 100px action button.
+  await page.mouse.click(box.x + ((6 + 50) / W) * box.width, box.y + ((17 + 6) / H) * box.height);
 
   await expect
     .poll(async () => (await listProcs(page)).find((p) => p.pid === victim)?.state ?? "gone", { timeout: 20_000 })
