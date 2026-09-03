@@ -17,8 +17,7 @@ one privileged process alongside the regular WASI processes.
 
 This is a research and learning project, not a secure general-purpose operating
 system. It requires a cross-origin-isolated page, targets modern browsers, and
-does not promise a stable ABI. Browser storage persists files for the origin, but
-the running machine exists only while the page is open.
+is not to be used for anything that matters. Browser storage persists files for the origin, but the running machine exists only while the page is open.
 
 ## How it works
 
@@ -64,24 +63,6 @@ Processes start with no optional capabilities. The kernel delegates capabilities
 such as `Gpu`, `Input`, `Shm`, `Signal`, and `Net` only when the parent has the
 corresponding authority. A trapping guest becomes a zombie; the kernel and its
 other processes continue running.
-
-## Implemented work
-
-The status reports are named after the original development sequence, but the
-work is easier to understand by its concrete result:
-
-| Area | What is implemented | Status report |
-|---|---|---|
-| Kernel and storage | Scheduler, capability-mediated syscalls, and a VFS over in-memory storage, OPFS, and IndexedDB | [`docs/M0-STATUS.md`](docs/M0-STATUS.md) |
-| WASI process runtime | Rust, Zig, and hand-authored WAT guests run in separate workers and use WASI calls over the shared-memory ring | [`docs/M1-STATUS.md`](docs/M1-STATUS.md) |
-| Shell and userland | Rust shell with `$PATH`, pipelines, redirection, builtins, kernel pipes, exit codes, and core utilities | [`docs/M2-STATUS.md`](docs/M2-STATUS.md) |
-| Desktop and graphical apps | Windows, taskbar, focus, z-order, canvas surfaces, brokered input, file manager, Paint, Editor, System Monitor, Lisp, and Welcome | [`docs/M3-STATUS.md`](docs/M3-STATUS.md) |
-| Process control and IPC | Concurrent processes, message channels, explicit shared memory, signals, priorities, live metrics, and session restore | [`docs/M4-STATUS.md`](docs/M4-STATUS.md) |
-| Linux guest integration | TinyEMU RISC-V Linux, brokered networking, framebuffer console, kill/reap, session restore, and a 9p shared folder | [`docs/M5-STATUS.md`](docs/M5-STATUS.md) |
-
-These reports contain the detailed exit checks and implementation decisions. The
-repository's current behavior is defined by the source and tests they reference,
-not by the old sequence labels.
 
 ## Quick start
 
@@ -130,7 +111,7 @@ from the VFS paths installed during boot.
 Individual checks are available when iterating:
 
 | Command | Coverage |
-|---|---|
+| --- | --- |
 | `npm run build` | Kernel component and generated host bindings |
 | `npm run build:guests` | Rust, Zig, and WAT `wasm32-wasi` guest binaries |
 | `npm run binder:kernel-check` | Guest syscall stubs against `wit/` |
@@ -142,11 +123,6 @@ Individual checks are available when iterating:
 | `npm run build:web` | Build the packaged React client and its hashed browser assets |
 | `npm run test:e2e` | Fast Playwright tests in real Chromium |
 | `npm run test:e2e:slow` | Linux boot and emulator tests |
-
-The browser tests use real workers, OPFS, IndexedDB, and the assembled kernel
-runtime. They cover boot and persistence, process isolation, crash containment,
-shell pipelines and redirection, core utilities, desktop behavior, IPC,
-concurrency, signals, metrics, session restore, and the Linux guest.
 
 ## Repository layout
 
@@ -161,7 +137,6 @@ crates/
   apps/            # file manager, Paint, Editor, System Monitor, Lisp, Welcome, nano
   hello, crash, catfile, spinner, gfxspike, chandemo, shmdemo, sigdemo
                    # process, fault, graphics, IPC, and signal fixtures
-guests/zig/        # Zig echo guest
 packages/host/     # workers, shared-memory ring, compositor, terminal, blockstores
 packages/abi/      # tracked JS/TypeScript bindings + ignored core wasm payloads
 wit/               # control, blockstore, and world ABI definitions
@@ -178,10 +153,8 @@ on Linux x86_64.
 
 ## Scope and limitations
 
-- The process model is cooperative rather than preemptive.
 - Only a cross-origin-isolated Chromium or Firefox page can boot the current
   runtime; non-isolated contexts are rejected before worker startup.
-- The WIT ABI is still an implementation contract, not a compatibility promise.
 - The project has no threat model for mutually hostile third-party guests.
 - Files persist in the origin's OPFS and IndexedDB, but a running process and the
   emulator are recreated when the page reloads.

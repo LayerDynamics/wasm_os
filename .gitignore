@@ -42,3 +42,4 @@ development/reference_only
 apps/web/dist
 .riscv-build/
 CLAUDE.md
+.lh
